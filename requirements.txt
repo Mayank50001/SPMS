@@ -1,0 +1,13 @@
+#
+# Install with:
+#     python -m venv env && ./env/bin/pip install -r requirements.txt
+
+Django==6.0.8
+djangorestframework==3.18.1
+django-cors-headers==4.9.0
+psycopg2==2.9.13
+redis==8.1.0
+pillow==12.3.0
+asgiref==3.12.1
+sqlparse==0.6.0
+tzdata==2025.2
