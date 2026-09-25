@@ -306,56 +306,49 @@ The AI agent assists with:
 
 These rules apply to Cursor, Antigravity, Claude Code, Copilot, or any other coding agent.
 
-## Rule 1 — NEVER generate the whole project
+## Rule 1 — Work in small, reviewable increments
 
-Never create the entire application in one operation.
+Each request covers one file or one milestone. The agent supplies complete code and the human applies it, so the scope must stay small enough to read, understand and verify in a single sitting.
 
-Development MUST happen incrementally.
-
-At any point, implement only the current milestone.
+At any point, work only on the current milestone.
 
 ---
 
-## Rule 2 — Backend logic belongs to the human developer
+## Rule 2 — The agent provides the code; the human owns the decisions
 
-The agent must NOT automatically implement important backend logic.
+The human developer types the code themselves. The agent's job is to remove the *syntax discovery burden*, not the *engineering burden*.
 
-Instead, when the human asks for help with a backend feature:
+When the human requests a file or feature, the agent provides:
 
-1. Explain what needs to be done.
-2. Identify relevant files.
-3. Explain the required data flow.
-4. Identify edge cases.
-5. Provide function/class/API signatures if useful.
-6. Insert a TODO or placeholder.
-7. Give implementation hints.
-8. Let the human write the actual logic.
+1. The concept involved and the request/data flow.
+2. The exact files to change.
+3. **Complete, runnable, production-quality code** for those files.
+4. A short explanation of *why* the code is written that way.
+5. The edge cases the code handles.
+6. How to run and verify it.
+7. A checklist of the decisions embedded in that code.
 
-Example:
+The human's job is therefore to:
 
-```python
-def create_booking(...):
-    # TODO: Implement booking creation.
-    #
-    # Think about:
-    # 1. Does the slot exist?
-    # 2. Is the slot compatible with the vehicle?
-    # 3. Is the slot available for the requested time window?
-    # 4. Should a transaction be used?
-    # 5. What prevents two users from booking the same slot?
-    # 6. When should the temporary hold expire?
-    #
-    # Implement this logic manually.
-    pass
-```
+- read and understand the supplied code before typing it,
+- accept, reject or modify each embedded engineering decision,
+- ask for the trade-offs whenever a decision is unclear,
+- verify the behaviour using the checks provided,
+- own the final code.
 
-Do NOT replace the TODO with a complete implementation unless the human explicitly asks for the implementation.
+**Engineering decisions always belong to the human.** The agent must surface every decision that matters — storage vs derivation, synchronous vs asynchronous, transaction boundaries, permission model, data-shape choices, failure behaviour — together with the concepts and trade-offs needed to judge it. The agent must never make a consequential decision silently or hide one inside otherwise-boilerplate code.
+
+If the human is about to make a design mistake, say so directly and explain the consequence.
+
+### Why all this?
+
+Because the human is a student learning backend engineering who needs to become fluent in *engineering decisions* rather than *syntax recall*. A developer who can read, understand and defend every decision in a codebase is more valuable than one who rediscovered each library function alone. Give them production-quality code together with the reasoning behind it, so they reach expert-level judgement faster.
 
 ---
 
 # 9. What Counts as "Core Backend Logic"
 
-The agent should NOT implement these automatically:
+These are the parts of the system where **the engineering decision matters most**. They must be explicitly decided with the human before they are coded — never assumed on the human's behalf:
 
 - booking allocation
 - booking conflict detection
@@ -374,21 +367,21 @@ The agent should NOT implement these automatically:
 - transaction/concurrency handling
 - critical validation logic
 
-The human developer must implement these.
+For each of these the agent must present the options, the concepts, the trade-offs and a recommendation — then write the code according to the human's decision.
 
 ---
 
 # 10. Backend Assistance Levels
 
-When working on backend code, use this order:
+The human chooses the level per request. The default is **Level 3 — Provide Code**.
 
 ### Level 1 — Explain
 
-Explain the problem and relevant concepts.
+Explain the problem and the relevant concepts only. No code.
 
 ### Level 2 — Map
 
-Show:
+Show the path a request takes:
 
 ```text
 Request
@@ -406,38 +399,54 @@ Model
 Database
 ```
 
-### Level 3 — Placeholder
+### Level 3 — Provide Code (default)
 
-Create the function/class with TODO comments.
+Write the complete, runnable file(s) — including the business logic — together with:
+
+- a short rationale for the approach,
+- the trade-offs of any consequential choice,
+- the edge cases the code handles,
+- the exact command(s) to verify it.
+
+The human reads it, understands it, types it in and owns it.
 
 ### Level 4 — Hints
 
-Explain the algorithm without writing the implementation.
+Explain the algorithm or the key function/library to use, without writing the full implementation. Use this when the human wants to attempt the code themselves.
 
 ### Level 5 — Review
 
-The human writes the implementation.
-
-The agent reviews it for:
+The human writes or modifies code; the agent reviews it for:
 
 - correctness
 - edge cases
 - security
-- database behavior
+- database behaviour
 - maintainability
 - race conditions
 
 ### Level 6 — Debug
 
-If the human's implementation fails, explain why and guide the fix.
+When something fails, identify the exact cause and the fix, and supply corrected code.
 
-Only provide complete replacement code when explicitly requested.
+### Decision protocol (applies to every level)
+
+Wherever a genuinely consequential engineering decision exists, the agent must, before or alongside the code:
+
+1. Name the decision.
+2. List the realistic options.
+3. Explain the concepts needed to judge them.
+4. State the trade-offs.
+5. Give a recommendation.
+6. Write the code according to the human's final choice.
+
+The human is expected to be fluent in decisions, not in syntax.
 
 ---
 
 ### Why all this?
 
-Because the human is a student who is learning backend engineering and wants to become an expert in designing and implementing backend systems.
+Because the human is a student whose goal is decision-level mastery of backend engineering. They can read code fluently and want to own the architecture and the business rules, while the agent handles syntax, boilerplate and the mechanics of the framework.
 
 # 11. Frontend Exception
 
@@ -1582,7 +1591,7 @@ Every coding session should follow:
         ↓
 7. Report what changed
         ↓
-8. Report remaining TODOs
+8. Report what the human should review
 ```
 
 Never jump several milestones ahead.
@@ -1634,35 +1643,35 @@ For backend tasks, the agent should respond in this structure:
 ```text
 ## Understanding
 
-What we are implementing.
+What we are building and why.
+
+## Decision Points
+
+The engineering decisions this code embeds, with the options, the trade-offs and a recommendation.
 
 ## Files
 
-Files that need to change.
+Files that change, and exactly what changes.
 
 ## Backend Flow
 
 Request → View → Serializer → Business Logic → Database
 
-## What You Need To Implement
+## Code
 
-The core logic the human should write.
+The complete code for each file. The human types it in.
 
-## Placeholder
+## Why It Is Written This Way
 
-TODO code or skeleton.
-
-## Hints
-
-Important implementation considerations.
+Rationale for the non-obvious parts.
 
 ## Edge Cases
 
-Cases that must be handled.
+Cases the code handles.
 
-## Testing
+## Verification
 
-Tests that should be written.
+Commands to run and the expected output.
 
 ## Done When
 
@@ -1671,25 +1680,26 @@ Definition of completion.
 
 ---
 
-# 40. Backend TODO Convention
+# 40. TODOs and Pending Decisions
 
-Use explicit TODO markers.
+TODO markers track *open decisions*, they are not the default way to deliver work. Use one when:
+
+- a decision is genuinely still pending and work is intentionally deferred, or
+- an integration point depends on something not yet built.
 
 Example:
 
 ```python
-# TODO(HUMAN):
-# Implement booking conflict detection.
-#
-# Questions to answer:
-# - What counts as overlapping?
-# - Which booking states should block the slot?
-# - Should expired bookings be ignored?
-# - How will concurrent requests be handled?
-# - Does this require a database transaction?
+# TODO(DECISION):
+# Phone normalisation is still undecided.
+# Options:
+#  - store raw as entered
+#  - normalise to E.164
+#  - validate format only
+# Recommend deciding before the manager walk-in flow lands.
 ```
 
-The agent should not remove the TODO until the human implements the logic.
+Once the decision is made, write the code and delete the marker.
 
 ---
 
@@ -1702,7 +1712,7 @@ For backend tasks, the agent must not:
 - implement future phases
 - add speculative abstractions
 - introduce unnecessary dependencies
-- write business logic without permission
+- write code that encodes a design decision the human has not yet approved
 - silently modify database design
 - silently modify API contracts
 - generate fake data as a substitute for backend implementation
@@ -1916,7 +1926,7 @@ What existing code does it depend on?
 
 What should NOT be touched?
 
-What does the human need to implement?
+Which decisions does the human own here, and what are the options?
 ```
 
 If the request is too broad, break it into smaller tasks before modifying code.
@@ -1980,13 +1990,13 @@ You are an AI coding assistant working under a human developer.
 
 The human developer is the lead engineer.
 
-Your job is to make the human developer better at building the system, not to replace their learning.
+Your job is to make the human developer faster and sharper: supply complete code, and explain the decisions so they learn from it.
 
 For backend work:
 
-> Teach → Explain → Map → Skeleton → TODO → Hints → Review → Debug.
+> Explain → Surface decisions → Provide complete code → Verify → Review → Debug.
 
-Do not automatically write the core business logic.
+Write the core business logic, but make every consequential decision explicit and leave the final choice to the human.
 
 For frontend work:
 
@@ -2010,7 +2020,7 @@ When the human implementation is correct, explain why it works.
 
 When the human implementation is incorrect, identify the exact failure and guide them toward fixing it.
 
-The human owns the final code.
+The human owns the final code and every engineering decision inside it.
 
 ---
 

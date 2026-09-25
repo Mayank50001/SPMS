@@ -81,3 +81,23 @@ one-line rationale. Complements the spec in [`PROJECT.md`](../PROJECT.md).
   routed in `config/urls.py`.
 - **Rationale:** It is an infrastructure concern, not a domain concern; adding
   an app for it would be premature structure.
+
+## D11 — Custom User model: email login, single `role` field, `is_active` suspension
+
+- **Decision:** `apps.accounts.User` extends `AbstractBaseUser` +
+  `PermissionsMixin`. `email` is the `USERNAME_FIELD` (unique login
+  identifier); `phone` is optional and unique; `full_name` is required;
+  `role` is a `TextChoices` enum (`CONSUMER`, `MANAGER`, `ADMIN`) defaulting
+  to the least-privileged `CONSUMER`; account suspension is modelled by
+  `is_active=False`. A custom `UserManager` provides `create_user` /
+  `create_superuser` (the latter forces `is_staff`, `is_superuser`,
+  `role=ADMIN`). `AUTH_USER_MODEL = 'accounts.User'`.
+- **Rationale:** Email is the natural login identifier for an SPA (no separate
+  username); a single role field models the three actors in PROJECT.md §16
+  without a permissions-matrix table; `is_active=False` gives the
+  Administrator the "suspend users" capability required by §16. The database
+  was reset (dropped and recreated) before the first accounts migration
+  because `auth_user` had already been created by an earlier `migrate`.
+- **Status:** Model, manager, settings wiring and admin registration
+  implemented. Registration, JWT and role/authorization enforcement remain
+  open (`TODO(HUMAN)` markers in `apps/accounts/models.py`).

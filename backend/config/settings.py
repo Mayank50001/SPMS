@@ -170,6 +170,11 @@ DATABASES = {
 # Authentication / authorization
 # ---------------------------------------------------------------------------
 
+# Custom email-based user model (apps.accounts.User). Django requires this to be
+# set before the first accounts migration is applied, which is why the database
+# was reset before generating that migration.
+AUTH_USER_MODEL = "accounts.User"
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},

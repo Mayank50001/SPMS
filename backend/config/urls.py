@@ -13,6 +13,7 @@ from .views import health
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/health/", health, name="health"),
+    path("api/", include("apps/accounts/urls"))
 ]
 
 # Placeholder for future app API routing (do NOT enable yet):
