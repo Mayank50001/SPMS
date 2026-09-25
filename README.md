@@ -4,10 +4,12 @@ An academic mini-project: a software-based parking management platform that lets
 consumers discover lots and book slots, managers operate lots and walk-ins, and
 administrators manage users and view platform reports.
 
-This repository currently contains **Phase 0 (repository setup)** plus the
-minimal **Phase 1 (backend foundation)** bootstrap needed to verify the
-structure. No business logic has been implemented yet. The authoritative
-specification is [`PROJECT.md`](PROJECT.md).
+Currently at **Phase 2 (authentication and users)**. Phase 0 (repository setup)
+and Phase 1 (backend foundation) are complete; the custom user model and
+consumer self-registration are in place. The authoritative specification is
+[`PROJECT.md`](PROJECT.md). For what is built and what comes next see
+[`docs/PROGRESS.md`](docs/PROGRESS.md); for the agreed architecture decisions see
+[`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ---
 
@@ -16,10 +18,10 @@ specification is [`PROJECT.md`](PROJECT.md).
 | Layer     | Technology                                             |
 |-----------|--------------------------------------------------------|
 | Backend   | Python 3.13, Django 6, Django REST Framework           |
-| Database  | PostgreSQL (mandatory — never substitute)              |
+| Database  | PostgreSQL (mandatory — never substitute, D4)           |
 | Frontend  | React 19, TypeScript, Vite                             |
-| Auth (planned) | JWT via `djangorestframework-simplejwt` (not yet wired) |
-| Testing (planned) | Django `TestCase` / `TransactionTestCase` (not pytest) |
+| Auth      | JWT via `djangorestframework-simplejwt` (D1)           |
+| Testing (planned) | Django `TestCase` / `TransactionTestCase` (not pytest, D7) |
 
 ---
 
@@ -32,14 +34,15 @@ ParkingManagementSystem/
 ├── requirements.txt        # Python dependencies (pinned)
 ├── .gitignore              # ignores .env, db.sqlite3, venvs, caches
 ├── docs/
-│   └── DECISIONS.md        # decision log (agreed architecture decisions)
+│   ├── DECISIONS.md        # decision log (agreed architecture decisions)
+│   └── PROGRESS.md         # phase tracker + current working state
 ├── backend/
 │   ├── manage.py
 │   ├── .env                # local secrets (git-ignored)
 │   ├── .env.example        # template for .env
 │   ├── config/             # project configuration package
 │   │   ├── settings.py     # single settings module (not yet split)
-│   │   ├── urls.py         # root URLconf (admin + /api/health/)
+│   │   ├── urls.py         # root URLconf (admin, /api/health/, app routes)
 │   │   ├── views.py        # project-level health view
 │   │   ├── wsgi.py
 │   │   └── asgi.py
@@ -82,7 +85,7 @@ cp backend/.env.example backend/.env
 # then edit backend/.env and set DB_NAME / DB_USER / DB_PASSWORD / DB_HOST / DB_PORT
 ```
 
-Run migrations (built-in Django apps only at this phase):
+Run migrations:
 
 ```bash
 cd backend
@@ -130,7 +133,24 @@ npm run build
 
 ---
 
-## Health endpoint
+## API
+
+| Method | Endpoint              | Auth        | Purpose                          |
+|--------|-----------------------|-------------|----------------------------------|
+| GET    | `/api/health/`        | Public      | Liveness probe                   |
+| POST   | `/api/auth/register/` | Public      | Consumer self-registration       |
+| POST   | `/api/auth/login/`    | Public      | Obtain JWT access + refresh      |
+| POST   | `/api/auth/refresh/`  | Public      | Exchange refresh for access      |
+| POST   | `/api/auth/logout/`   | Bearer      | Invalidate the refresh token     |
+| GET    | `/api/auth/me/`       | Bearer      | Current user profile             |
+
+Authenticated requests use the standard header:
+
+```text
+Authorization: Bearer <access_token>
+```
+
+### Health endpoint
 
 ```text
 GET /api/health/
@@ -147,3 +167,35 @@ Example:
 ```bash
 curl -i http://127.0.0.1:8000/api/health/
 ```
+
+### Registration
+
+```text
+POST /api/auth/register/
+```
+
+Request:
+
+```json
+{
+  "email": "Test.User@Example.COM",
+  "full_name": "Test User",
+  "phone": "9876543210",
+  "password": "Tr0ub4dor&3",
+  "password_confirm": "Tr0ub4dor&3"
+}
+```
+
+Response `201` — note the email is returned lower-cased (D13):
+
+```json
+{
+  "id": 1,
+  "email": "test.user@example.com",
+  "full_name": "Test User",
+  "phone": "9876543210"
+}
+```
+
+`role` is never accepted from the client; self-registration always produces a
+`CONSUMER` (D11).

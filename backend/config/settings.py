@@ -23,6 +23,7 @@ https://docs.djangoproject.com/en/6.0/topics/settings/
 """
 
 import os
+from datetime import timedelta
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -98,6 +99,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     # Third-party
+    "rest_framework_simplejwt.token_blacklist",
     "rest_framework",
     "corsheaders",
     # Local domain apps (modular monolith, PROJECT.md §13/§14)
@@ -213,13 +215,46 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
 # ---------------------------------------------------------------------------
-# Django REST Framework (minimal — no authentication classes enabled yet)
+# Django REST Framework
 # ---------------------------------------------------------------------------
 
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+}
+
+# ---------------------------------------------------------------------------
+# JWT (djangorestframework-simplejwt) — D1
+# ---------------------------------------------------------------------------
+
+# Access tokens CANNOT be revoked once issued; only refresh tokens can be
+# blacklisted. The access lifetime is therefore the only bound on how long a
+# leaked access token stays useful, so keep it short.
+JWT_ACCESS_TOKEN_MINUTES = int(os.environ.get("JWT_ACCESS_TOKEN_MINUTES", "30"))
+JWT_REFRESH_TOKEN_DAYS = int(os.environ.get("JWT_REFRESH_TOKEN_DAYS", "7"))
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=JWT_ACCESS_TOKEN_MINUTES),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=JWT_REFRESH_TOKEN_DAYS),
+    # Refresh tokens are single-use: /api/auth/refresh/ returns a new refresh
+    # token and blacklists the one presented. A stolen refresh token is usable
+    # at most once, and the thief's use invalidates the legitimate session --
+    # a detectable signal rather than silent long-term access.
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    # Keep the Django admin's "last login" column accurate.
+    "UPDATE_LAST_LOGIN": True,
+    "AUTH_HEADER_TYPES": ("Bearer",),
+    # Separate signing key so rotating SECRET_KEY does not silently invalidate
+    # every issued token, and vice versa. Falls back to SECRET_KEY when unset.
+    "SIGNING_KEY": os.environ.get("JWT_SIGNING_KEY") or SECRET_KEY,
 }
 
 
