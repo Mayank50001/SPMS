@@ -238,7 +238,10 @@ one-line rationale. Complements the spec in [`PROJECT.md`](../PROJECT.md).
   the actor is always an Administrator, the privilege-escalation question
   ("may a Manager create an Administrator?") collapses to a single permission
   check rather than a role-transition matrix.
-- **Status:** Decided; the endpoint is not yet implemented (Phase 2 remainder).
+- **Status:** Implemented for **creation** (`POST /api/users/`, D26). Administrators
+  may list and retrieve accounts and create `MANAGER`/`ADMIN` accounts; only an
+  Administrator can reach those endpoints. Changing an *existing* role and
+  suspension are the next increment (D24).
 
 ## D21 — Email login canonicalises the identifier, then matches exactly
 
@@ -263,3 +266,121 @@ one-line rationale. Complements the spec in [`PROJECT.md`](../PROJECT.md).
   which is the same Phase 10 gap D13 already records.
 - **Status:** Implemented and verified (`apps/accounts/tests.py`:
   `EmailNormalisationTests`).
+
+## D22 — Password similarity is checked against `email` and `full_name`
+
+- **Decision:** The `UserAttributeSimilarityValidator` entry in
+  `AUTH_PASSWORD_VALIDATORS` is configured with
+  `OPTIONS: {"user_attributes": ("email", "full_name")}`, replacing Django's
+  default list (`username`, `first_name`, `last_name`, `email`). Configuration is
+  done through `OPTIONS` in settings rather than a validator subclass.
+- **Rationale:** None of the default attribute names exists on this `User` model
+  (its name field is `full_name`, and there is no `username`/`first_name`/
+  `last_name`), and the validator silently skips attributes that are absent. As a
+  result the password was compared against the email only, voiding D14's claim
+  that the name was covered. `OPTIONS` is sufficient because Django's
+  `get_password_validators` constructs each validator as `klass(**OPTIONS)` and
+  the validator's constructor accepts `user_attributes` directly; a subclass
+  would add a class to maintain for no extra behaviour. Keeping the policy in
+  settings preserves D14's single-source-of-truth property.
+- **Consequence:** A password equal to the full name, or to one word of it, is
+  now rejected (`password_too_similar`). `phone` is intentionally not compared:
+  the registration serializer's unsaved `User` candidate does not carry it, and
+  it is optional. Revisit if password/phone similarity is wanted.
+- **Status:** Implemented and verified (`settings.py`,
+  `apps/accounts/tests.py::PasswordSimilarityTest`).
+
+## D23 — `phone` is optional, non-unique contact info
+
+- **Decision:** `User.phone` keeps `null=True` / `blank=True` but **drops**
+  `unique=True`. It is stored digits-only (spaces/`+`/dashes stripped), is
+  optional, may be shared by more than one account, and is **not** verified in
+  the core project. Email-OTP verification is a separate deferred feature.
+- **Rationale:** The original design made `phone` globally unique and writable
+  with no way to prove ownership. Anyone could register someone else's number,
+  permanently blocking the real owner, and the endpoint became an
+  account-existence oracle for any number. The proposed email-OTP fix does not
+  address this: it proves ownership of the **email**, not the phone, so the lock
+  would survive untouched. Phone is not an authentication factor (login is by
+  email), so global uniqueness buys nothing and only creates the lock.
+- **Consequence:** Two accounts may share a phone number; PROJECT.md §35's
+  "duplicate phone" is no longer an error by design. If duplicate detection is
+  later wanted it is a soft/admin concern, or a constraint on *verified* numbers
+  once phone verification exists. Digits-only storage avoids `"98765 43210"`
+  and `"9876543210"` being treated as different values; `max_length=15` still
+  holds (E.164's maximum is 15 digits).
+- **Status:** Implemented and verified (`models.py::User.normalize_phone` +
+  `save()`, migration `0002_alter_user_phone`, `apps/accounts/tests.py::PhoneFieldTests`).
+  Existing rows are not retro-normalised; a data check is in PROGRESS.md.
+
+## D24 — `role` is mutable by an Administrator; the last Administrator is protected
+
+- **Decision:** `role` is **not** frozen at creation. An Administrator may change
+  another account's role (the endpoint is not yet implemented). Authority is
+  **global** — there is one pool of Administrators, not region-scoped ones. The
+  **last active Administrator** (an account with `role=ADMIN` and
+  `is_active=True`) can neither be demoted nor suspended, so the platform can
+  never be left with zero administrators. Regional administration is explicitly
+  deferred (see PROGRESS.md "Deferred features"), and audit logging of role and
+  suspension changes is deferred.
+- **Rationale:** PROJECT.md §16 gives Administrators user management, and the
+  operating model needs to correct mistakes (a Manager promoted in error). The
+  lockout risk is the one guard that matters: without it, a single demotion could
+  make user management impossible with no in-app recovery. Global scope is chosen
+  deliberately for simplicity (PROJECT.md §47): region-scoped administrators —
+  where each Administrator supervises the lots and Managers of one region —
+  are a real design but add a `Region` entity, a conditional
+  `role=ADMIN ⇒ region` constraint, region-scoped authorization across accounts,
+  parking and reports, and a region-aware demotion guard. That is out of scope
+  for the academic build and is recorded for a future phase instead.
+- **Consequence:** An Administrator can change their own role when other active
+  Administrators remain (the guard, not a self-check, prevents lockout). The guard
+  is a count of active Administrators and must be evaluated inside a transaction
+  with row locking at implementation time: two Administrators demoting each other
+  concurrently could each observe "another admin exists" and both proceed, ending
+  with zero — the same class of race as booking (D3). Role changes take effect on
+  the next request with no token invalidation, because D15 re-reads the user.
+- **Status:** Decided. Privileged account **creation** is implemented
+  (`POST /api/users/`, D26). The role-change and suspend/activate endpoints that
+  carry this guard are the next increment; they are where the transactional row
+  lock described above must be applied.
+
+## D25 — Consumer profile self-update via `PATCH /api/auth/me/`
+
+- **Decision:** `MeView` becomes a `RetrieveUpdateAPIView`. `GET` returns the full
+  profile through `UserSerializer`; `PATCH` accepts only `full_name` and `phone`
+  through `ProfileUpdateSerializer` and responds with the full read shape again.
+  `PUT` is disabled. `email` is **not** editable (it is the login identifier and
+  changing it needs re-verification), and `role`, `is_active` and `password` are
+  not fields, so a consumer cannot alter their own privileges or status.
+- **Rationale:** The object is always `request.user` and no id appears in the URL,
+  so ownership (PROJECT.md §20 Invariant 2) is structural rather than a permission
+  check that can be forgotten. Disabling `PUT` prevents a partial payload from
+  blanking the profile. Answering `PATCH` with the read serializer keeps one shape
+  per resource, so a frontend never special-cases GET versus PATCH.
+- **Consequence:** `email` changes remain an open gap until email-OTP verification
+  exists. Phone changes reuse D23's digits-only normalisation. No migration.
+- **Status:** Implemented and verified (`apps/accounts/tests.py::ProfileUpdateTests`).
+
+## D26 — Administrator user-management endpoints
+
+- **Decision:** `apps/accounts` exposes an Administrator-only user surface:
+  `GET /api/users/` (list; optional `role`, `is_active` and `search` filters),
+  `GET /api/users/{id}/`, and `POST /api/users/`. All three require `IsAdmin`.
+  `POST` creates only `MANAGER` and `ADMIN` accounts (D20): `role` is a
+  `ChoiceField` limited to those two, so a `CONSUMER` cannot be created here.
+  Every response is a `UserSerializer`, and `is_staff`/`is_superuser` are never
+  exposed, keeping API authority (`role`) separate from Django-admin access.
+- **Rationale:** D20 names Administrators as the creators of privileged accounts,
+  which makes this the only path to a `MANAGER`/`ADMIN` account (self-registration
+  is hardwired to `CONSUMER`). Restricting the roles prevents two divergent
+  registration paths for consumers. Returning one read shape for `GET` and `POST`
+  makes password leakage structurally impossible. The filter/search logic is
+  written with query-param `if`s rather than `django-filter`, because that package
+  is not installed and PROJECT.md §12 forbids adding dependencies unapproved.
+- **Consequence:** The Administrator sets the initial password and it is validated
+  by the same `AUTH_PASSWORD_VALIDATORS` stack as registration (D14); there is no
+  forced-change-on-first-login yet. The list endpoint is unpaginated (Phase 10
+  hardening). Role change and suspend/activate remain unimplemented (D24).
+- **Status:** Implemented and verified
+  (`apps/accounts/tests.py::AdminUserManagementTests`).

@@ -17,7 +17,7 @@ Last updated: 2026-09-27 · Current phase: **2 — Authentication and users**
 |-------|-------|--------|
 | 0 | Repository setup | ✅ Done |
 | 1 | Backend foundation (config, PostgreSQL, health) | ✅ Done |
-| 2 | **Authentication and users** | 🔵 In progress — auth complete, users incomplete |
+| 2 | **Authentication and users** | 🔵 In progress — auth, profile, privileged accounts done; vehicles + role-change remainder |
 | 3 | Parking domain (lots, slots, pricing) | ⚪ Not started |
 | 4 | Booking | ⚪ Not started |
 | 5 | Payment | ⚪ Not started |
@@ -72,6 +72,7 @@ Last updated: 2026-09-27 · Current phase: **2 — Authentication and users**
 | POST | `/api/auth/refresh/` | public | rotates the refresh token |
 | POST | `/api/auth/logout/` | Bearer | blacklists the refresh token |
 | GET | `/api/auth/me/` | Bearer | own profile, no id in the URL |
+| PATCH | `/api/auth/me/` | Bearer | update own `full_name` / `phone` (D25) |
 | GET | `/api/health/` | public | needed the new `AllowAny` (D18) |
 
 - Verified by hand: token pair issued; no role present in the token claims;
@@ -82,6 +83,25 @@ Last updated: 2026-09-27 · Current phase: **2 — Authentication and users**
   stays valid until it expires — inherent to stateless JWT, bounded by the
   30-minute lifetime.
 
+### Account and user management surface (D23, D25, D26)
+
+- `phone` is optional, non-unique and stored digits-only (D23, migration
+  `0002_alter_user_phone`).
+- `MeView` is a `RetrieveUpdateAPIView`; `GET` and `PATCH` act on the caller's
+  own profile (D25). `PUT` is disabled so a partial payload cannot blank it.
+
+| Method | Endpoint | Auth | Notes |
+|---|---|---|---|
+| PATCH | `/api/auth/me/` | Bearer | edit own `full_name` / `phone`; `email`/`role` are not writable |
+| GET | `/api/users/` | Admin | user directory; filters `role`, `is_active`, `search` |
+| POST | `/api/users/` | Admin | create a `MANAGER` or `ADMIN` account (D20, D26) |
+| GET | `/api/users/{id}/` | Admin | retrieve one account |
+
+- Verified by `apps/accounts/tests.py::{PhoneFieldTests, ProfileUpdateTests,
+  AdminUserManagementTests}`. A Manager or Consumer gets `403` on the admin
+  surface; anonymous gets `401`.
+- Not yet implemented: role change and suspend/activate (D24).
+
 ---
 
 ## Phase 2 — correctness review (2026-09-25) — addressed 2026-09-27
@@ -89,10 +109,10 @@ Last updated: 2026-09-27 · Current phase: **2 — Authentication and users**
 Found by reading the code and reproducing each case in `manage.py shell`. All are
 confined to `apps/accounts/`; none changes the architecture.
 
-> **Status (2026-09-27):** B1, B2, B3 and B5 are resolved; B4 is consciously left
-> open (now item 2b); B6 is resolved. Resolutions are recorded against each item.
-> Regression tests added in `apps/accounts/tests.py`; `manage.py test
-> apps.accounts` passes (9 tests).
+> **Status (2026-09-27):** B1–B5 resolved (B5 documented rather than refactored;
+> see below); B6 resolved. Resolutions are recorded against each item. Regression
+> tests added in `apps/accounts/tests.py`; `manage.py test apps.accounts` passes
+> (33 tests).
 
 ### B1 — `role` is writable (breaks D11 and D20) 🔴 — RESOLVED (verified 2026-09-27)
 
@@ -146,20 +166,29 @@ lookup half is now handled in `UserManager.get_by_natural_key`, which strips and
 lower-cases the incoming identifier before an exact match. Because both sides are
 canonical, the comparison stays exact and index-friendly (no `iexact`). See D21.
 
-### B4 — `validate_password(..., user=candidate)` cannot run the similarity check (voids D14's rationale) 🟡 — OPEN
+### B4 — `validate_password(..., user=candidate)` cannot run the similarity check (voids D14's rationale) 🟡 — RESOLVED (2026-09-27)
 
 `UserAttributeSimilarityValidator.DEFAULT_USER_ATTRIBUTES` is
 `('username', 'first_name', 'last_name', 'email')`. This user model has no
 `username` and no `first_name`; its name field is `full_name`, which is not in
-that list. Verified:
+that list. Verified with a name sharing no words with the email:
 
-| password equals | result |
-|---|---|
-| the email | rejected — "too similar to the email" |
-| `full_name` | **accepted** |
+| password equals | before | after |
+|---|---|---|
+| the email | rejected | rejected |
+| `full_name` | **accepted** | rejected |
+| one word of the name | **accepted** | rejected |
+| unrelated strong password | accepted | accepted |
 
-So the unsaved-`User` construction only enables the *email* comparison, not the
-name comparison D14 claims. Consciously accepted for now; tracked as open item 2b.
+The unsaved-`User` construction therefore enabled only the *email* comparison,
+not the name comparison D14 claims.
+
+**Fix applied (D22):** the first entry in `AUTH_PASSWORD_VALIDATORS` now passes
+`OPTIONS: {"user_attributes": ("email", "full_name")}`. This is a **settings-only**
+change — the registration serializer already builds its unsaved `User` with both
+fields, so no code change was needed. The subclass the review suggested was
+unnecessary: Django's loader constructs validators with `klass(**OPTIONS)`.
+Tests: `PasswordSimilarityTest`.
 
 ### B5 — `User = get_user_model()` at import time 🟡 — DOCUMENTED (accepted)
 
@@ -195,17 +224,23 @@ does not justify hand-maintaining field constraints today.
 
 | Item | Notes |
 |------|-------|
-| Consumer profile | Update endpoint for `full_name` / `phone`; `/api/auth/me/` is read-only today |
+| Role change + suspend/activate | Administrator-only `PATCH /api/users/{id}/` implementing D24's last-active-Administrator guard. Must use `transaction.atomic()` + `select_for_update()` (two admins demoting each other concurrently) |
 | `Vehicle` model + CRUD | Consumer vehicle registration, scoped to the owner (§16, Invariant 2) |
-| Manager/Admin account creation | Administrator-only endpoint (D20) |
+| Forced password change | Privileged accounts keep the Administrator-set initial password until changed (D26); needs a `must_change_password` flag + change-password endpoint |
+| List pagination | `/api/users/` returns an unpaginated list (D26); revisit at Phase 10 |
 | Throttling | `AnonRateThrottle` on login and registration (§45). **Deliberately scheduled after vehicles** (decided 2026-09-25) |
 | Refresh-serializer error shape | `TokenRefreshView` uses simplejwt's default serializer, so a bad/expired refresh token returns `detail`, not the `{"refresh": [...]}` shape `LogoutView` uses. Cosmetic, decided 2026-09-25 |
 | Bare `/api/` route | `config/urls.py` mounts `apps.accounts.urls` at `api/` directly. Deliberate; a namespaced prefix can wait until parking routes land |
 
-Done since the last update: the correctness-review fixes B1/B2/B3/B5 (and B6
-docstrings), the B3b case-insensitive login lookup (D21), and regression tests in
-`apps/accounts/tests.py` (registration leaks nothing; email normalisation; login
-accepts any casing). `manage.py test apps.accounts` → 9 tests, all pass.
+Done since the last update: phone as non-unique, digits-only contact info (D23,
+migration `0002_alter_user_phone`); consumer profile self-update via
+`PATCH /api/auth/me/` (D25); Administrator user management — list, retrieve and
+create `MANAGER`/`ADMIN` accounts at `/api/users/` (D26). Regression tests added
+in `apps/accounts/tests.py` (phone normalisation; profile ownership; the
+Administrator authorization matrix). `manage.py test apps.accounts` → 33 tests,
+all pass. **Pending data check** after the phone migration:
+`SELECT id, phone FROM accounts_user WHERE phone IS NOT NULL AND phone !~ '^[0-9]+$';`
+(existing rows are not retro-normalised).
 
 ---
 
@@ -214,18 +249,16 @@ accepts any casing). `manage.py test apps.accounts` → 9 tests, all pass.
 Deliberately deferred. Each needs a human decision before the code that depends
 on it is written.
 
-1. **Phone normalisation** — `models.py:78`. Store raw, normalise to E.164, or
-   validate format only? §35 lists "duplicate phone". Note the side effect that
-   makes this urgent: `phone` is globally unique and writable, so anyone may
-   register with a number they do not own, permanently blocking the real owner and
-   turning the endpoint into an account-existence oracle for that number. Do
-   consumers need to verify a phone at all before booking?
-2. **Role mutability** — `models.py:84`. Is `role` frozen at account creation, or
-   mutable afterwards? D20 settles *who* may create privileged accounts
-   (Administrators only); it does not settle whether an existing role can change.
-2b. **Password-name similarity** — see B4. Accept that `full_name` is not checked,
-   or add a `UserAttributeSimilarityValidator` subclass with
-   `DEFAULT_USER_ATTRIBUTES = ("email", "full_name")`.
+1. ~~**Phone normalisation**~~ → resolved (D23). Drop global uniqueness; phone
+   becomes optional, digits-only contact info with no verification (the lock was
+   caused by uniqueness, not by the absence of verification). Email-OTP
+   verification is scheduled separately — see "Deferred features" below.
+2. ~~**Role mutability**~~ → resolved (D24). Global Administrators; `role` is
+   mutable by an Administrator; the last active Administrator cannot be demoted
+   or suspended; regional administration and audit logging are deferred.
+2b. ~~**Password-name similarity**~~ → resolved (B4/D22).
+   `AUTH_PASSWORD_VALIDATORS` now passes `user_attributes=("email", "full_name")`;
+   the validator subclass the review suggested was unnecessary.
 3. ~~**Where role checks live**~~ → resolved: `apps/accounts/permissions.py`
    (`HasRole` base + `IsConsumer` / `IsManager` / `IsAdmin`), verified by
    `apps/accounts/tests.py` through DRF's real view machinery.
@@ -239,6 +272,30 @@ Resolved since the last update:
 - ~~Refresh-token blacklisting~~ → D17. Enabled, with rotation.
 - ~~Email case-sensitivity on login (B3b)~~ → D21. Storage and lookup both
   canonicalise the identifier, then match exactly.
+
+## Deferred features
+
+Scheduled, not dropped. Each is recorded here until it gets its own decision
+entry.
+
+- **Email-OTP verification (registration hardening).** Verify ownership of the
+  email before an account becomes active, to reduce fake accounts and email
+  squatting. Explicitly **not** a substitute for phone verification: it proves
+  ownership of the email, not the phone. Scope: an OTP/token model, lazy expiry
+  (D6 — no scheduler), an email-sending path (console backend locally), resend +
+  throttling, and a multi-step registration contract (register → inactive →
+  verify → activate), which changes the `/api/auth/register/` contract.
+- **Regional administration.** An Administrator who supervises the lots and
+  Managers of one region, with region-scoped rather than global authority.
+  Considered and deliberately deferred until after the core project (D24): it
+  needs a `Region` entity, a conditional `role=ADMIN ⇒ region` constraint,
+  region-scoped authorization across accounts/parking/reports, and a
+  region-aware demotion guard — and a Manager whose lots span several regions
+  makes it more involved still. Revisit once the core system is complete.
+- **Audit logging.** Recording who changed a user's role or suspended an account
+  (`AuditLog`, PROJECT.md §15). Deferred alongside the role-change endpoint.
+- **Role change endpoint.** Unblocked by D24 but not yet implemented; the
+  last-active-Administrator guard needs transactional row locking (see D24).
 
 ---
 
