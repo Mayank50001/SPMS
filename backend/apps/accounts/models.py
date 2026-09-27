@@ -1,12 +1,10 @@
 """Accounts domain models.
 
-This module currently defines the project's custom ``User`` model and its
-manager only. Vehicles, role/authorization helpers and account-status business
-rules are deliberately *not* implemented here (PROJECT.md §8, §9).
-
-Schema/scaffolding is in scope for this task; business logic is owned by the
-human developer. Search for ``TODO(HUMAN)`` below for the decisions that are
-still open.
+Defines the custom ``User`` model and its manager. Role-based authorization is
+implemented as DRF permission classes in ``apps/accounts/permissions.py`` rather
+than here; this module holds only state and persistence. ``TODO(HUMAN)`` and
+``TODO(DECISION)`` markers flag decisions that are still open (PROJECT.md §8,
+§40).
 """
 
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
@@ -53,6 +51,23 @@ class UserManager(BaseUserManager):
 
         return self.create_user(email, password, **extra_fields)
 
+    def get_by_natural_key(self, username):
+        """Find a user by login identifier, canonicalising it first.
+
+        ``email`` is the login identifier and is stored lower-cased by
+        ``User.save()`` (D13), so the *incoming* identifier must be canonicalised
+        the same way before an exact match -- otherwise a user who types
+        "John@Gmail.com" would not reach the row stored as "john@gmail.com".
+
+        This method is the single lookup used by Django's authentication
+        backend, so putting the rule here makes every path case-insensitive at
+        once: the API login, the Django admin and ``manage.py shell``. Because
+        both sides are already lower-case, the comparison stays exact and can
+        use the unique index (no ``iexact``/``UPPER()`` scan).
+        """
+        normalized = (username or "").strip().lower()
+        return self.get(**{self.model.USERNAME_FIELD: normalized})
+
 
 class User(AbstractBaseUser, PermissionsMixin):
     """SPMS account identity.
@@ -81,33 +96,31 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     full_name = models.CharField(max_length=150)
 
-    # TODO(HUMAN): Decide how `role` is enforced server-side (PROJECT.md §25).
+    # Role assignment policy:
     #
-    # Questions to answer:
-    # - Who is allowed to set/change a user's role? (Privilege-escalation risk:
-    #   a Consumer must never promote themselves, and a Manager must not create
-    #   Administrators.)
-    # - Is `role` mutable after creation, or frozen at account creation?
-    # - Should role checks live in a DRF permission class, a model/service
-    #   method, or both?
+    # - Self-registration always produces CONSUMER (the default below). `role`
+    #   is not a serializer field, so a client can never propose one (§24, §45).
+    # - Manager and Administrator accounts are created only by an existing
+    #   Administrator (D20), so privilege escalation reduces to one check.
+    # - Role checks live in `apps/accounts/permissions.py` as DRF permission
+    #   classes (IsConsumer / IsManager / IsAdmin), never in client-supplied data.
     #
-    # The default below is least-privilege (self-registration => CONSUMER).
-    # NEVER rely on a client-supplied role (§24, §45): the backend is
-    # authoritative.
+    # TODO(DECISION): Is `role` mutable after creation? Allowing an Administrator
+    # to change an existing role requires an endpoint, an audit trail, and a
+    # decision about demotion. Token invalidation is NOT part of that decision:
+    # D15 re-reads the user per request, so a demotion takes effect immediately.
+
     role = models.CharField(
         max_length=20,
         choices=Role.choices,
         default=Role.CONSUMER,
     )
 
-    # TODO(HUMAN): Define what suspension (is_active=False) must do in practice.
-    #
-    # Questions to answer:
-    # - Must an in-flight JWT stop working immediately once suspended? If so,
-    #   how is that enforced (per-request DB check vs. token blacklist)?
-    # - Does suspension block login only, or all authenticated requests?
-    # - Is there an audit trail for who suspended whom and when? (PROJECT.md
-    #   §16: Administrator "suspend users".)
+    # Suspension is ``is_active=False`` (D11). Resolved by D15: JWTAuthentication
+    # re-reads the user on every request, so suspension blocks all authenticated
+    # requests on the very next call, and TokenObtainPairSerializer refuses to
+    # issue tokens to an inactive account at all. No revocation list is needed.
+    # Still open: an audit trail for who suspended whom (PROJECT.md §16).
     is_active = models.BooleanField(default=True)
 
     is_staff = models.BooleanField(default=False)
@@ -128,6 +141,12 @@ class User(AbstractBaseUser, PermissionsMixin):
         return self.email
 
     def save(self, *args, **kwargs):
+        # ``email`` is the login identifier, so exactly one stored
+        # representation exists (D13). The assignment matters: ``strip()`` and
+        # ``lower()`` return *new* strings, and discarding the result was the B3
+        # bug. Queryset ``.update()`` bypasses ``save()``; nothing does that
+        # today (a DB-level ``Lower("email")`` unique constraint is a Phase 10
+        # hardening item).
         if self.email:
-            self.email.strip().lower()
+            self.email = self.email.strip().lower()
         super().save(*args, **kwargs)

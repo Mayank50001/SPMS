@@ -184,8 +184,9 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-# JWT (djangorestframework-simplejwt) is the agreed auth mechanism and will be
-# wired in a later phase. It is NOT installed or configured in this task.
+# JWT (djangorestframework-simplejwt) is the agreed auth mechanism (D1). It is
+# configured in the SIMPLE_JWT block below and selected through
+# DEFAULT_AUTHENTICATION_CLASSES above.
 
 
 # ---------------------------------------------------------------------------

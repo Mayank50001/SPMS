@@ -7,7 +7,7 @@ Companion to [`DECISIONS.md`](DECISIONS.md) (agreed architecture decisions) and
 is built, what is next, and which decisions are still open. Update at the end of
 every milestone.
 
-Last updated: 2026-09-25 · Current phase: **2 — Authentication and users**
+Last updated: 2026-09-27 · Current phase: **2 — Authentication and users**
 
 ---
 
@@ -84,15 +84,128 @@ Last updated: 2026-09-25 · Current phase: **2 — Authentication and users**
 
 ---
 
+## Phase 2 — correctness review (2026-09-25) — addressed 2026-09-27
+
+Found by reading the code and reproducing each case in `manage.py shell`. All are
+confined to `apps/accounts/`; none changes the architecture.
+
+> **Status (2026-09-27):** B1, B2, B3 and B5 are resolved; B4 is consciously left
+> open (now item 2b); B6 is resolved. Resolutions are recorded against each item.
+> Regression tests added in `apps/accounts/tests.py`; `manage.py test
+> apps.accounts` passes (9 tests).
+
+### B1 — `role` is writable (breaks D11 and D20) 🔴 — RESOLVED (verified 2026-09-27)
+
+`RegisterSerializer.Meta.fields` listed `role` and did not mark it read-only, so
+`POST /api/auth/register/` with `{"role": "ADMIN"}` created an Administrator. The
+summary below that said "`role` is not a serializer field, so a client cannot
+propose one" was **wrong**. This is the privilege-escalation path §24/§45 exist to
+close.
+
+**Fix applied:** `"role"` is not in `Meta.fields`. The model default supplies
+`CONSUMER`.
+
+### B2 — `password` is not `write_only`, so the hash is returned 🟠 — RESOLVED
+
+`password_confirm` is declared `write_only=True`; `password` was left as the
+auto-generated model field, which is not. Serialising a saved instance returned
+`pbkdf2_sha256$1200000$...` in the response body.
+
+**Fix applied:** `password` is now declared explicitly with `write_only=True`
+(and `max_length=128`, mirroring the model field, so declaring it by hand does not
+silently drop the limit). Both password fields are covered by the new tests.
+
+### B3 — `User.save()` never persists the lower-cased email (breaks D13) 🔴 — RESOLVED
+
+```python
+def save(self, *args, **kwargs):
+    if self.email:
+        self.email.strip().lower()     # result discarded
+    super().save(*args, **kwargs)
+```
+
+`strip()` and `lower()` return new strings; nothing was assigned. Verified: input
+`CaseTest@Example.com` was stored as `CaseTest@example.com`
+(`create_user` calls `normalize_email`, which lower-cases only the *domain*).
+
+> **Correction:** the original note claimed `authenticate()` matches with
+> `__iexact`, so "login still passes". That is **false**. `ModelBackend` calls
+> `UserManager.get_by_natural_key`, which does an exact `get(email=...)`;
+> reproduced against the live database, `authenticate("casetest@example.com")`
+> returned `None`. The bug therefore broke login for any user who registered with
+> mixed-case email.
+
+**Fix applied:** `self.email = self.email.strip().lower()`. Reproduced before and
+after: stored value is now `verifysave@example.com` and every casing authenticates.
+
+### B3b — login lookup was case-sensitive — RESOLVED (with B3)
+
+Fixing storage alone would have introduced a new trap: register `John@Gmail.com`
+(stored `john@gmail.com`), then fail to log in when typing `John@Gmail.com`. The
+lookup half is now handled in `UserManager.get_by_natural_key`, which strips and
+lower-cases the incoming identifier before an exact match. Because both sides are
+canonical, the comparison stays exact and index-friendly (no `iexact`). See D21.
+
+### B4 — `validate_password(..., user=candidate)` cannot run the similarity check (voids D14's rationale) 🟡 — OPEN
+
+`UserAttributeSimilarityValidator.DEFAULT_USER_ATTRIBUTES` is
+`('username', 'first_name', 'last_name', 'email')`. This user model has no
+`username` and no `first_name`; its name field is `full_name`, which is not in
+that list. Verified:
+
+| password equals | result |
+|---|---|
+| the email | rejected — "too similar to the email" |
+| `full_name` | **accepted** |
+
+So the unsaved-`User` construction only enables the *email* comparison, not the
+name comparison D14 claims. Consciously accepted for now; tracked as open item 2b.
+
+### B5 — `User = get_user_model()` at import time 🟡 — DOCUMENTED (accepted)
+
+`serializers.py` resolves the model during module import. Anything that imports
+this module while apps are still loading raises `AppRegistryNotReady`. It works
+today only because nothing imports it early.
+
+> **Correction:** the suggested fix — "`Meta.model = User` (a lazy string)" — is
+> **not possible**. DRF 3.18.1's `ModelSerializer` reads `self.Meta.model`
+> directly and does not accept a `"app.Model"` string. Also,
+> `UniqueValidator(queryset=User.objects.all())` is itself an import-time registry
+> access, so a lazy `Meta.model` would not fully de-lazify the module anyway.
+
+**Resolution (Option B, 2026-09-27):** keep `ModelSerializer` and the eager
+`get_user_model()`, and document the constraint in the module docstring: the
+module must not be imported from `models.py`, `apps.py` or any other app-loading
+code. The realistic alternative (plain `serializers.Serializer` with explicit
+fields and lazy lookups) was declined because the risk is latent and the benefit
+does not justify hand-maintaining field constraints today.
+
+### B6 — stale docstrings 🟢 — RESOLVED
+
+- `apps/accounts/models.py` module docstring now points at `permissions.py` for
+  role/authorization and no longer claims that logic is unimplemented; the
+  resolved `is_active` `TODO(HUMAN)` (superseded by D15) was replaced with a note.
+- `serializers.py` is now `black`-clean and documents the B5 constraint;
+  `config/urls.py` docstring no longer says only health and admin are routed;
+  `config/settings.py` no longer says JWT is "not configured in this task".
+
+---
+
 ## Phase 2 — remaining
 
 | Item | Notes |
 |------|-------|
-| `permissions.py` | Role permission classes (`IsConsumer`, `IsManager`, `IsAdmin`) reading `request.user.role`. Closes `TODO(HUMAN)` at `models.py:84` |
 | Consumer profile | Update endpoint for `full_name` / `phone`; `/api/auth/me/` is read-only today |
 | `Vehicle` model + CRUD | Consumer vehicle registration, scoped to the owner (§16, Invariant 2) |
 | Manager/Admin account creation | Administrator-only endpoint (D20) |
 | Throttling | `AnonRateThrottle` on login and registration (§45). **Deliberately scheduled after vehicles** (decided 2026-09-25) |
+| Refresh-serializer error shape | `TokenRefreshView` uses simplejwt's default serializer, so a bad/expired refresh token returns `detail`, not the `{"refresh": [...]}` shape `LogoutView` uses. Cosmetic, decided 2026-09-25 |
+| Bare `/api/` route | `config/urls.py` mounts `apps.accounts.urls` at `api/` directly. Deliberate; a namespaced prefix can wait until parking routes land |
+
+Done since the last update: the correctness-review fixes B1/B2/B3/B5 (and B6
+docstrings), the B3b case-insensitive login lookup (D21), and regression tests in
+`apps/accounts/tests.py` (registration leaks nothing; email normalisation; login
+accepts any casing). `manage.py test apps.accounts` → 9 tests, all pass.
 
 ---
 
@@ -102,13 +215,20 @@ Deliberately deferred. Each needs a human decision before the code that depends
 on it is written.
 
 1. **Phone normalisation** — `models.py:78`. Store raw, normalise to E.164, or
-   validate format only? §35 lists "duplicate phone".
+   validate format only? §35 lists "duplicate phone". Note the side effect that
+   makes this urgent: `phone` is globally unique and writable, so anyone may
+   register with a number they do not own, permanently blocking the real owner and
+   turning the endpoint into an account-existence oracle for that number. Do
+   consumers need to verify a phone at all before booking?
 2. **Role mutability** — `models.py:84`. Is `role` frozen at account creation, or
    mutable afterwards? D20 settles *who* may create privileged accounts
    (Administrators only); it does not settle whether an existing role can change.
-3. **Where role checks live** — `models.py:84`. DRF permission class, model
-   method, view mixin, or a combination? A `permissions.py` module is the natural
-   home.
+2b. **Password-name similarity** — see B4. Accept that `full_name` is not checked,
+   or add a `UserAttributeSimilarityValidator` subclass with
+   `DEFAULT_USER_ATTRIBUTES = ("email", "full_name")`.
+3. ~~**Where role checks live**~~ → resolved: `apps/accounts/permissions.py`
+   (`HasRole` base + `IsConsumer` / `IsManager` / `IsAdmin`), verified by
+   `apps/accounts/tests.py` through DRF's real view machinery.
 4. **`Booking.user` nullability** — D8, planned for Phase 4.
 
 Resolved since the last update:
@@ -117,6 +237,8 @@ Resolved since the last update:
   request, so `is_active=False` blocks all authenticated requests immediately;
   no revocation list needed.
 - ~~Refresh-token blacklisting~~ → D17. Enabled, with rotation.
+- ~~Email case-sensitivity on login (B3b)~~ → D21. Storage and lookup both
+  canonicalise the identifier, then match exactly.
 
 ---
 

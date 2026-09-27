@@ -1,8 +1,8 @@
 """Root URL configuration.
 
-Only the health endpoint and the Django admin are routed at this phase.
-Application URLs (``/api/accounts/``, ``/api/parking-lots/``, ...) will be
-added incrementally, each through its own ``apps/<domain>/urls.py`` module.
+Routes the health probe, the Django admin and the accounts API. Future domain
+APIs (``/api/parking-lots/``, ...) are added incrementally, each through its own
+``apps/<domain>/urls.py`` module.
 """
 
 from django.contrib import admin

@@ -239,3 +239,27 @@ one-line rationale. Complements the spec in [`PROJECT.md`](../PROJECT.md).
   ("may a Manager create an Administrator?") collapses to a single permission
   check rather than a role-transition matrix.
 - **Status:** Decided; the endpoint is not yet implemented (Phase 2 remainder).
+
+## D21 — Email login canonicalises the identifier, then matches exactly
+
+- **Decision:** `email` is stored canonicalised (stripped and lower-cased) by
+  `User.save()`, and `UserManager.get_by_natural_key` strips and lower-cases the
+  *incoming* identifier before an exact `get(email=...)`. No case-insensitive
+  (`iexact`/`UPPER()`) database comparison is used.
+- **Rationale:** D13 makes email the login identifier and requires matching to be
+  case-insensitive, but `ModelBackend.authenticate` looks the user up through
+  `get_by_natural_key`, which was a plain exact `get`. That made login
+  case-sensitive: a user who registered as `John@Gmail.com` (stored
+  `john@gmail.com`) could not log in by typing `John@Gmail.com`. Canonicalising
+  both sides satisfies D13's intent while keeping the comparison exact, so it
+  still uses the unique index. Placing the rule in the manager — rather than in
+  `LoginSerializer` — makes every authentication path benefit, including the
+  Django admin and `manage.py shell`, so no future entry point has to remember
+  to normalise. The rejected alternative, an `iexact` lookup at the manager, was
+  functionally equivalent here but would have forced a non-indexed comparison.
+- **Consequence:** Two accounts differing only by email case remain impossible via
+  the API (the registration serializer's `iexact` `UniqueValidator` rejects
+  them); a raw-SQL/`.update()` insert bypassing `save()` could still create one,
+  which is the same Phase 10 gap D13 already records.
+- **Status:** Implemented and verified (`apps/accounts/tests.py`:
+  `EmailNormalisationTests`).
