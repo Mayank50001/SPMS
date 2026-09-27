@@ -178,7 +178,15 @@ DATABASES = {
 AUTH_USER_MODEL = "accounts.User"
 
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    # B4: the default attribute list is ('username', 'first_name',
+        # 'last_name', 'email'), none of which is this model's name field, so
+        # full_name was never compared. Point the validator at the fields this
+        # model actually has. The registration serializer already builds its
+        # unsaved User with both, so no serializer change is needed.
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
+        "OPTIONS" : {"user_attributes": ("email", "full_name")},
+    },
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},

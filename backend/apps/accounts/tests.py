@@ -221,3 +221,39 @@ class EmailNormalisationTests(TestCase):
                 )
                 self.assertEqual(response.status_code, status.HTTP_200_OK)
                 self.assertIn("access", response.data)
+
+class PasswordSimilarityTest(TestCase):
+    """B4: the similarity validator must compare against ``full_name`` too.
+
+    The stock attribute list is ('username', 'first_name', 'last_name',
+    'email'); this model has none of the first three, so ``full_name`` was
+    silently skipped. settings.AUTH_PASSWORD_VALIDATORS now passes
+    ``user_attributes=("email", "full_name")``.
+
+    The example name is deliberately absent from Django's common-password list
+    and longer than the 8-character minimum, so a rejection can only come from
+    the similarity check -- not from a different validator.
+    """
+
+    def _register(self, password):
+        return APIClient().post(
+            "/api/auth/register/",
+            {
+                "email" : "khadayatemayank9595@gmail.com",
+                "full_name" : "Khadayate Mayank",
+                "password" : password,
+                "password_confirm" : password,
+            },
+            format="json",
+        )
+
+    def test_password_equal_to_email_is_rejected(self):
+        response = self._register("Mayank@123")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password", response.data)
+
+    def test_unrelated_strong_password_is_accepted(self):
+        response = self._register("correct-horse-battery-staple")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
