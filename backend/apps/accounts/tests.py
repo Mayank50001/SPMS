@@ -257,3 +257,277 @@ class PasswordSimilarityTest(TestCase):
         response = self._register("correct-horse-battery-staple")
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+class PhoneFieldTests(TestCase):
+    """D23: phone is optional, digits-only and non-unique."""
+
+    def _register(self, phone=None, email="phonetest@example.com"):
+        payload = {
+            "email" : email,
+            "full_name" : "Phone Tester",
+            "password" : "correct-horse-battery-staple",
+            "password_confirm" : "correct-horse-battery-staple",
+        }
+        if phone is not None:
+            payload["phone"] = phone
+
+        return APIClient().post("/api/auth/register/", payload, format="json")
+
+    def test_duplicate_phone_is_allowed(self):
+        first = self._register("9876543210", email="first@example.com")
+        second = self._register("9876543210", email="second@example.com")
+
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED)
+
+    def test_phone_with_letters_is_rejected(self):
+        response = self._register("call-me-maybe")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("phone", response.data)
+
+    def test_too_short_phone_is_rejected(self):
+        response = self._register("123")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("phone", response.data)
+
+    def test_blank_phone_is_stored_as_none(self):
+        response = self._register("")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(
+            User.objects.get(email="phonetest@example.com").phone
+        )
+
+    def test_phone_may_be_omitted(self):
+        response = self._register(None)
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(
+            User.objects.get(email="phonetest@example.com").phone
+        )
+
+    def test_formatted_phone_is_stored_as_digits(self):
+        response = self._register("+91 98765-43210")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            User.objects.get(email="phonetest@example.com").phone,
+            "919876543210",
+        )
+
+class ProfileUpdateTests(TestCase):
+    """PATCH /api/auth/me/ updates only the caller's own profile."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            email="profile@example.com",
+            password="correct-horse-battery-staple",
+            full_name="Original Name",
+            phone="9876543210",
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+        token = RefreshToken.for_user(self.user).access_token
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    def test_patch_updates_name_and_normalises_phone(self):
+        response = self.client.patch(
+            "/api/auth/me/",
+            {"full_name": "Updated Name", "phone": "+91 90000-11111"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.full_name, "Updated Name")
+        self.assertEqual(self.user.phone, "919000011111")
+        # The response is the full read shape, matching GET.
+        self.assertEqual(response.data["full_name"], "Updated Name")
+        self.assertIn("role", response.data)
+
+    def test_patch_cannot_change_email_or_role(self):
+        response = self.client.patch(
+            "/api/auth/me/",
+            {"email": "hacker@example.com", "role": "ADMIN"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "profile@example.com")
+        self.assertEqual(self.user.role, User.Role.CONSUMER)
+
+    def test_phone_can_be_cleared(self):
+        response = self.client.patch(
+            "/api/auth/me/", {"phone": ""}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.phone)
+
+    def test_blank_full_name_is_rejected(self):
+        response = self.client.patch(
+            "/api/auth/me/", {"full_name": "   "}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("full_name", response.data)
+
+    def test_patch_requires_authentication(self):
+        self.client.credentials()
+        response = self.client.patch(
+            "/api/auth/me/", {"full_name": "Nope"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_put_is_not_allowed(self):
+        response = self.client.put(
+            "/api/auth/me/", {"full_name": "Nope"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+class AdminUserManagementTests(TestCase):
+    """D20: only Administrators create or list privileged accounts."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create_user(
+            email="admin@example.com",
+            password="correct-horse-battery-staple",
+            full_name="Admin",
+            role=User.Role.ADMIN,
+        )
+        cls.manager = User.objects.create_user(
+            email="manager@example.com",
+            password="correct-horse-battery-staple",
+            full_name="Manager",
+            role=User.Role.MANAGER,
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="correct-horse-battery-staple",
+            full_name="Consumer",
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _authenticate(self, user):
+        token = RefreshToken.for_user(user).access_token
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    def _create_payload(self, **overrides):
+        payload = {
+            "email": "newmanager@example.com",
+            "full_name": "New Manager",
+            "role": "MANAGER",
+            "password": "correct-horse-battery-staple",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_admin_can_create_a_manager(self):
+        self._authenticate(self.admin)
+        response = self.client.post(
+            "/api/users/", self._create_payload(), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["role"], "MANAGER")
+        self.assertNotIn("password", response.data)
+        created = User.objects.get(email="newmanager@example.com")
+        self.assertTrue(created.check_password("correct-horse-battery-staple"))
+
+    def test_admin_can_create_another_admin(self):
+        self._authenticate(self.admin)
+        response = self.client.post(
+            "/api/users/",
+            self._create_payload(email="admin2@example.com", role="ADMIN"),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        created = User.objects.get(email="admin2@example.com")
+        self.assertEqual(created.role, User.Role.ADMIN)
+        # API authority only -- not Django-admin access.
+        self.assertFalse(created.is_staff)
+
+    def test_consumer_role_cannot_be_created_here(self):
+        self._authenticate(self.admin)
+        response = self.client.post(
+            "/api/users/",
+            self._create_payload(role="CONSUMER"),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("role", response.data)
+
+    def test_weak_password_is_rejected(self):
+        self._authenticate(self.admin)
+        response = self.client.post(
+            "/api/users/", self._create_payload(password="123"), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password", response.data)
+
+    def test_duplicate_email_is_rejected_case_insensitively(self):
+        self._authenticate(self.admin)
+        response = self.client.post(
+            "/api/users/",
+            self._create_payload(email="Admin@Example.com"),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("email", response.data)
+
+    def test_non_admin_cannot_create(self):
+        for actor in (self.manager, self.consumer):
+            with self.subTest(actor=actor.role):
+                self._authenticate(actor)
+                response = self.client.post(
+                    "/api/users/", self._create_payload(), format="json"
+                )
+                self.assertEqual(
+                    response.status_code, status.HTTP_403_FORBIDDEN
+                )
+
+    def test_anonymous_cannot_list(self):
+        response = self.client.get("/api/users/")
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_admin_can_list_and_filter_users(self):
+        self._authenticate(self.admin)
+
+        response = self.client.get("/api/users/", {"role": "ADMIN"})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        emails = [row["email"] for row in response.data]
+        self.assertIn("admin@example.com", emails)
+        self.assertNotIn("consumer@example.com", emails)
+
+    def test_admin_can_retrieve_a_user(self):
+        self._authenticate(self.admin)
+
+        response = self.client.get(f"/api/users/{self.consumer.pk}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["email"], "consumer@example.com")
+        self.assertNotIn("password", response.data)
+
+    def test_consumer_cannot_retrieve_a_user(self):
+        self._authenticate(self.consumer)
+
+        response = self.client.get(f"/api/users/{self.admin.pk}/")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

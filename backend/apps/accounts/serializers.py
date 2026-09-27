@@ -25,8 +25,32 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 User = get_user_model()
 
+class PhoneValidationMixin:
+    """Shared phone normalisation and validation for write serializers (D23).
 
-class RegisterSerializer(serializers.ModelSerializer):
+    The canonical rule lives on the model (``User.normalize_phone``) so every
+    write path is covered; this mixin adds the user-facing check and error at the
+    API boundary. It is a mixin rather than two copies so the rule has a single
+    definition. ``max_length`` is generous because the *raw* input may contain
+    separators; the stored value is [digits only, validated to 7-15].
+    """
+
+    phone = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        max_length=20,
+    )
+
+    def validate_phone(self, value):
+        normalized = User.normalize_phone(value)
+        if normalized is None:
+            return None
+        if not normalized.isdigit() or not (7 <= len(normalized) <= 15):
+            raise serializers.ValidationError("Enter a valid phone number (7 to 15 digits).")
+        return normalized
+
+class RegisterSerializer(PhoneValidationMixin, serializers.ModelSerializer):
     """Create a self-registered Consumer (PROJECT.md §16, D11, D20).
 
     ``role`` is deliberately absent from ``Meta.fields``, so a client cannot
@@ -78,10 +102,8 @@ class RegisterSerializer(serializers.ModelSerializer):
                 {"password_confirm": "The two password fields did not match"}
             )
 
-        # An unsaved User is passed so ``UserAttributeSimilarityValidator`` can
-        # compare the password against the incoming email. It cannot check
-        # ``full_name`` yet: that field is not in the validator's default
-        # attribute list (open item 2b / B4).
+        # An unsaved User is passed so UserAttributeSimilarityValidator can
+        # compare the password against the incoming email and full name (D22).
         candidate = User(email=attrs["email"], full_name=attrs["full_name"])
         try:
             validate_password(attrs["password"], user=candidate)
@@ -110,6 +132,64 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ["id", "email", "full_name", "phone", "role", "created_at"]
         read_only_fields = fields
+
+class ProfileUpdateSerializer(PhoneValidationMixin, serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ["full_name", "phone"]
+
+    def validate_full_name(self, value):
+        # PATCH is partial, so an omitted field is fine; but an explicitly blank
+        # name is not (the model field is non-blank). CharField already rejects
+        # "" by default; this guards whitespace-only input such as "   ".
+        if not value.strip():
+            raise serializers.ValidationError("Full name cannot be blank.")
+        return value.strip()
+
+class PrivilegedUserCreateSerializer(PhoneValidationMixin, serializers.ModelSerializer):
+    PRIVILEGED_ROLES = [
+        (User.Role.MANAGER.value, User.Role.MANAGER.label),
+        (User.Role.ADMIN.value, User.Role.ADMIN.label),
+    ]
+
+    email = serializers.EmailField(
+        validators = [
+            UniqueValidator(
+                queryset=User.objects.all(),
+                lookup="iexact",
+                message="An account with this email address already exists.",
+            )
+        ]
+    )
+
+    role = serializers.ChoiceField(choices=PRIVILEGED_ROLES)
+
+    password = serializers.CharField(
+        write_only = True,
+        max_length = 128,
+        style={"input_type", "password"},
+    )
+
+    class Meta:
+        model = User
+        fields = ["id", "email", "full_name", "phone", "role", "password"]
+        read_only_fields = ["id"]
+
+    def validate(self, attrs):
+        # Same password policy as self-registration (D14), invoked at object
+        # level so UserAttributeSimilarityValidator receives the candidate.
+        candidate = User(email = attrs["email"], full_name=attrs["full_name"])
+        try:
+            validate_password(attrs["password"], user=candidate)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"password": exc.messages})
+        return attrs
+
+    def create(self, validated_data):
+        # The manager hashes the password and canonicalises the email/phone
+        # (D12, D13, D23). is_staff / is_superuser are intentionally not set:
+        # API authority (role) and Django-admin access (is_staff) are separate.
+        return User.objects.create_user(**validated_data) 
 
 
 class LoginSerializer(TokenObtainPairSerializer):

@@ -10,6 +10,8 @@ than here; this module holds only state and persistence. ``TODO(HUMAN)`` and
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.db import models
+import re
+
 
 
 class UserManager(BaseUserManager):
@@ -88,11 +90,12 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     email = models.EmailField(unique=True)
 
-    # Postgres permits multiple NULLs under a UNIQUE constraint, so any number
-    # of users may have no phone number while a *provided* phone stays unique.
-    # TODO(HUMAN): Decide phone normalisation/verification (PROJECT.md §35 lists
-    # "duplicate phone"). E.g. store E.164, or validate format before saving.
-    phone = models.CharField(max_length=15, unique=True, null=True, blank=True)
+     # Optional contact number (D23). Deliberately NOT unique: a globally unique,
+    # unverified number lets anyone claim a stranger's number and permanently
+    # block the real owner. Stored as digits only (see normalize_phone); may be
+    # blank/None, and two accounts may share a number.
+    phone = models.CharField(max_length=15, null=True, blank=True)
+    
 
     full_name = models.CharField(max_length=150)
 
@@ -105,10 +108,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     # - Role checks live in `apps/accounts/permissions.py` as DRF permission
     #   classes (IsConsumer / IsManager / IsAdmin), never in client-supplied data.
     #
-    # TODO(DECISION): Is `role` mutable after creation? Allowing an Administrator
-    # to change an existing role requires an endpoint, an audit trail, and a
-    # decision about demotion. Token invalidation is NOT part of that decision:
-    # D15 re-reads the user per request, so a demotion takes effect immediately.
+    # D24: `role` is mutable by an Administrator (endpoint pending); the last
+    # active Administrator can be neither demoted nor suspended. Role changes
+    # take effect on the next request because D15 re-reads the user, so no token
+    # invalidation is needed.
 
     role = models.CharField(
         max_length=20,
@@ -140,6 +143,21 @@ class User(AbstractBaseUser, PermissionsMixin):
     def __str__(self):
         return self.email
 
+    @staticmethod
+    def normalize_phone(value):
+        """Return ``value`` reduced to digits, or ``None`` if it is empty.
+
+        D23: ``phone`` is optional contact information stored digits-only, so
+        "+91 98765-43210" and "919876543210" cannot become two different values.
+        Only common separators are removed; anything else non-digit is left in
+        place so the caller can reject it rather than silently discarding input.
+        An empty result becomes ``None`` so "absent" has exactly one form.
+        """
+        if value is None:
+            return None
+        digits = re.sub(r"[\s()+\-.]", "", value)
+        return digits or None
+
     def save(self, *args, **kwargs):
         # ``email`` is the login identifier, so exactly one stored
         # representation exists (D13). The assignment matters: ``strip()`` and
@@ -149,4 +167,6 @@ class User(AbstractBaseUser, PermissionsMixin):
         # hardening item).
         if self.email:
             self.email = self.email.strip().lower()
+
+        self.phone = self.normalize_phone(self.phone)
         super().save(*args, **kwargs)
