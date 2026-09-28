@@ -5,8 +5,12 @@ consumers discover lots and book slots, managers operate lots and walk-ins, and
 administrators manage users and view platform reports.
 
 Currently at **Phase 2 (authentication and users)**. Phase 0 (repository setup)
-and Phase 1 (backend foundation) are complete; the custom user model and
-consumer self-registration are in place. The authoritative specification is
+and Phase 1 (backend foundation) are complete. Implemented so far: the custom
+email-based user model, consumer self-registration, the JWT authentication
+surface, consumer profile self-update, Administrator user management
+(list/create/suspend/role change) and role-based authorization. The one
+remaining Phase 2 feature is consumer **vehicle registration**, after which
+Phase 3 (the parking domain) begins. The authoritative specification is
 [`PROJECT.md`](PROJECT.md). For what is built and what comes next see
 [`docs/PROGRESS.md`](docs/PROGRESS.md); for the agreed architecture decisions see
 [`docs/DECISIONS.md`](docs/DECISIONS.md).
@@ -143,6 +147,16 @@ npm run build
 | POST   | `/api/auth/refresh/`  | Public      | Exchange refresh for access      |
 | POST   | `/api/auth/logout/`   | Bearer      | Invalidate the refresh token     |
 | GET    | `/api/auth/me/`       | Bearer      | Current user profile             |
+| PATCH  | `/api/auth/me/`       | Bearer      | Update own `full_name` / `phone` |
+| GET    | `/api/users/`         | Admin       | List/filter the user directory   |
+| POST   | `/api/users/`         | Admin       | Create a `MANAGER`/`ADMIN`       |
+| GET    | `/api/users/{id}/`    | Admin       | Retrieve one account             |
+| PATCH  | `/api/users/{id}/`    | Admin       | Change role / suspend-activate   |
+
+> Authorisation is enforced server-side on every request (D15, D18). `Admin`
+> above means the authenticated account's `role` must be `ADMIN`; a `403` is
+> returned otherwise and a `401` when unauthenticated. Self-registration can
+> only produce a `CONSUMER`; privileged accounts exist only via `POST /api/users/`.
 
 Authenticated requests use the standard header:
 

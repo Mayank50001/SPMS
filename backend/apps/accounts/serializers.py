@@ -165,9 +165,9 @@ class PrivilegedUserCreateSerializer(PhoneValidationMixin, serializers.ModelSeri
     role = serializers.ChoiceField(choices=PRIVILEGED_ROLES)
 
     password = serializers.CharField(
-        write_only = True,
-        max_length = 128,
-        style={"input_type", "password"},
+        write_only=True,
+        max_length=128,
+        style={"input_type": "password"},
     )
 
     class Meta:
@@ -189,7 +189,26 @@ class PrivilegedUserCreateSerializer(PhoneValidationMixin, serializers.ModelSeri
         # The manager hashes the password and canonicalises the email/phone
         # (D12, D13, D23). is_staff / is_superuser are intentionally not set:
         # API authority (role) and Django-admin access (is_staff) are separate.
-        return User.objects.create_user(**validated_data) 
+        return User.objects.create_user(**validated_data)
+
+
+class UserAccessUpdateSerializer(serializers.Serializer):
+    """Administrator changes to another account's role or active status (D24).
+
+    A plain ``Serializer``, not a ``ModelSerializer``: the write is performed by
+    ``services.update_user_access`` so the last-Administrator guard and its row
+    locking live in one place. This class validates the requested shape only.
+    """
+
+    role = serializers.ChoiceField(choices=User.Role.choices, required=False)
+    is_active = serializers.BooleanField(required=False)
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError(
+                "Provide at least one of the 'role' or 'is_active'."
+            )
+        return attrs
 
 
 class LoginSerializer(TokenObtainPairSerializer):

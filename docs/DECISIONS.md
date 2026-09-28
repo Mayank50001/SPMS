@@ -12,7 +12,8 @@ one-line rationale. Complements the spec in [`PROJECT.md`](../PROJECT.md).
   `djangorestframework-simplejwt`.
 - **Rationale:** Stateless, standard for DRF, avoids session coupling to the
   SPA frontend, and requires no extra infrastructure.
-- **Status:** Planned only. Not installed or configured in Phase 0/1.
+- **Status:** Implemented and verified. Configured in `config/settings.py`
+  (`SIMPLE_JWT`, `JWTAuthentication`); login/refresh/logout/`me` live (D15–D19).
 
 ## D2 — Slot status is LIVE state only; availability is DERIVED
 
@@ -86,10 +87,10 @@ one-line rationale. Complements the spec in [`PROJECT.md`](../PROJECT.md).
 
 - **Decision:** `apps.accounts.User` extends `AbstractBaseUser` +
   `PermissionsMixin`. `email` is the `USERNAME_FIELD` (unique login
-  identifier); `phone` is optional and unique; `full_name` is required;
-  `role` is a `TextChoices` enum (`CONSUMER`, `MANAGER`, `ADMIN`) defaulting
-  to the least-privileged `CONSUMER`; account suspension is modelled by
-  `is_active=False`. A custom `UserManager` provides `create_user` /
+  identifier); `phone` is optional and non-unique (see D23); `full_name` is
+  required; `role` is a `TextChoices` enum (`CONSUMER`, `MANAGER`, `ADMIN`)
+  defaulting to the least-privileged `CONSUMER`; account suspension is modelled
+  by `is_active=False`. A custom `UserManager` provides `create_user` /
   `create_superuser` (the latter forces `is_staff`, `is_superuser`,
   `role=ADMIN`). `AUTH_USER_MODEL = 'accounts.User'`.
 - **Rationale:** Email is the natural login identifier for an SPA (no separate
@@ -99,10 +100,10 @@ one-line rationale. Complements the spec in [`PROJECT.md`](../PROJECT.md).
   was reset (dropped and recreated) before the first accounts migration
   because `auth_user` had already been created by an earlier `migrate`.
 - **Status:** Model, manager, settings wiring, admin registration, consumer
-  self-registration (`POST /api/auth/register/`) and the full JWT surface
-  (login, refresh, logout, `me`) implemented and manually verified. Role and
-  authorization enforcement (`TODO(HUMAN)` at `models.py:84`), the `Vehicle`
-  model and Administrator-only account creation remain open.
+  self-registration, the full JWT surface, role-based authorization
+  (`permissions.py`), Administrator account creation and role
+  change/suspend (D24, D26, D27) are implemented and verified. Within Phase 2
+  only the `Vehicle` model + CRUD remains open.
 
 ## D12 — Password hashing is guaranteed by overriding `create()`, not by the field
 
@@ -238,10 +239,9 @@ one-line rationale. Complements the spec in [`PROJECT.md`](../PROJECT.md).
   the actor is always an Administrator, the privilege-escalation question
   ("may a Manager create an Administrator?") collapses to a single permission
   check rather than a role-transition matrix.
-- **Status:** Implemented for **creation** (`POST /api/users/`, D26). Administrators
-  may list and retrieve accounts and create `MANAGER`/`ADMIN` accounts; only an
-  Administrator can reach those endpoints. Changing an *existing* role and
-  suspension are the next increment (D24).
+- **Status:** Fully implemented. Creation (`POST /api/users/`, D26), listing and
+  retrieval, and changing an **existing** account's role or `is_active`
+  (D24/D27) are all live; only an Administrator can reach the surface.
 
 ## D21 — Email login canonicalises the identifier, then matches exactly
 
@@ -316,7 +316,8 @@ one-line rationale. Complements the spec in [`PROJECT.md`](../PROJECT.md).
 ## D24 — `role` is mutable by an Administrator; the last Administrator is protected
 
 - **Decision:** `role` is **not** frozen at creation. An Administrator may change
-  another account's role (the endpoint is not yet implemented). Authority is
+  another account's role or active status through `PATCH /api/users/{id}/`
+  (D27). Authority is
   **global** — there is one pool of Administrators, not region-scoped ones. The
   **last active Administrator** (an account with `role=ADMIN` and
   `is_active=True`) can neither be demoted nor suspended, so the platform can
@@ -340,10 +341,10 @@ one-line rationale. Complements the spec in [`PROJECT.md`](../PROJECT.md).
   concurrently could each observe "another admin exists" and both proceed, ending
   with zero — the same class of race as booking (D3). Role changes take effect on
   the next request with no token invalidation, because D15 re-reads the user.
-- **Status:** Decided. Privileged account **creation** is implemented
-  (`POST /api/users/`, D26). The role-change and suspend/activate endpoints that
-  carry this guard are the next increment; they are where the transactional row
-  lock described above must be applied.
+- **Status:** Implemented. `PATCH /api/users/{id}/` carries the guard, and the
+  single-ordered-lock transactional check described above lives in
+  `apps/accounts/services.py::update_user_access` (see D27). Verified by
+  `apps/accounts/tests.py::UserAccessUpdateTests`.
 
 ## D25 — Consumer profile self-update via `PATCH /api/auth/me/`
 
@@ -381,6 +382,36 @@ one-line rationale. Complements the spec in [`PROJECT.md`](../PROJECT.md).
 - **Consequence:** The Administrator sets the initial password and it is validated
   by the same `AUTH_PASSWORD_VALIDATORS` stack as registration (D14); there is no
   forced-change-on-first-login yet. The list endpoint is unpaginated (Phase 10
-  hardening). Role change and suspend/activate remain unimplemented (D24).
+  hardening). Role change and suspend/activate are implemented separately (D27).
 - **Status:** Implemented and verified
   (`apps/accounts/tests.py::AdminUserManagementTests`).
+
+## D27 — Role change / suspension endpoint `PATCH /api/users/{id}/`
+
+- **Decision:** The Administrator access-management surface is a `PATCH` on the
+  existing `UserDetailView`. It accepts `role` and/or `is_active`, both optional
+  but at least one required, and answers with the `UserSerializer` read shape.
+  `PUT` is disabled. The write is **not** performed in the view or serializer:
+  both delegate to `apps/accounts/services.py::update_user_access`, which applies
+  the D24 last-active-Administrator guard. A refusal returns
+  `409 {"error": "LAST_ADMINISTRATOR", "message": ...}`.
+- **Rationale:** Keeping the guard in a service function, rather than inline,
+  means a future caller (a bulk action, a management command, the admin) cannot
+  perform an unguarded role change by accident. A plain `serializers.Serializer`
+  — not a `ModelSerializer` — is enough because no field is written directly;
+  the serializer only validates the request shape, and a model serializer would
+  invite a default `update()` that bypasses the service. `409 Conflict` is used
+  because the request is well-formed and the caller is authorized: the refusal is
+  about the resulting system state, which `400` would misrepresent. Disabling
+  `PUT` mirrors D25 — a partial `PUT` must not be able to blank `role`/`is_active`.
+- **Consequence:** `update_user_access` locks, in a single
+  `select_for_update()` query ordered by primary key, every active Administrator
+  **plus** the target. Locking the whole decision set in one ordered statement
+  gives all callers the same lock order, so two mutual demotions cannot deadlock
+  and cannot both observe "another admin exists". The predicate
+  `stop_being_active_admin` compares current vs. new state, so a no-op `PATCH`
+  (e.g. setting an active Administrator to `role=ADMIN`) is allowed. A role
+  change or reactivation takes effect on the next request (D15). Audit logging
+  of these changes remains deferred.
+- **Status:** Implemented and verified
+  (`apps/accounts/tests.py::UserAccessUpdateTests`; 44 tests pass for the app).

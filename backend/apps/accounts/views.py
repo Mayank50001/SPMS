@@ -9,7 +9,16 @@ from django.db.models import Q
 from .models import User
 from .permissions import IsAdmin
 
-from .serializers import RegisterSerializer, UserSerializer, LoginSerializer, ProfileUpdateSerializer, PrivilegedUserCreateSerializer
+from .serializers import (
+    LoginSerializer,
+    PrivilegedUserCreateSerializer,
+    ProfileUpdateSerializer,
+    RegisterSerializer,
+    UserAccessUpdateSerializer,
+    UserSerializer,
+)
+from .services import LastAdministratorError, update_user_access
+
 
 class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
@@ -116,13 +125,44 @@ class UserListCreateView(generics.ListCreateAPIView):
 
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
 
-class UserDetailView(generics.RetrieveAPIView):
-    """Administrator-only retrieval of a single account.
+class UserDetailView(generics.RetrieveUpdateAPIView):
+    """Administrator-only retrieval and access management of one account (D24).
 
-    ``PATCH`` (role change and suspension, D24) is the next increment and is
-    deliberately not enabled yet.
+    ``GET``  -> ``UserSerializer`` (read shape)
+    ``PATCH`` -> role change and/or suspend-activate; both fields are optional
+                but at least one is required, and ``PUT`` is disabled so a
+                partial payload cannot blank the account.
+
+    The write is delegated to ``services.update_user_access`` so the
+    last-Administrator guard and its row locking are applied on every path.
+    A refusal (``LastAdministratorError``) becomes ``409`` with a stable
+    ``error`` code (PROJECT.md §33) instead of a bare validation error.
     """
 
     permission_classes = [IsAdmin]
     queryset = User.objects.all()
-    serializer_class = UserSerializer
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def get_serializer_class(self):
+        if self.request.method == "PATCH":
+            return UserAccessUpdateSerializer
+        return UserSerializer
+
+    def update(self, request, *args, **kwargs):
+        target = self.get_object()
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            updated = update_user_access(
+                target_id=target.pk,
+                role=serializer.validated_data.get("role"),
+                is_active=serializer.validated_data.get("is_active"),
+            )
+        except LastAdministratorError as exc:
+            return Response(
+                {"error": "LAST_ADMINISTRATOR", "message": str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        return Response(UserSerializer(updated).data)

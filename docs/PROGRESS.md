@@ -7,7 +7,8 @@ Companion to [`DECISIONS.md`](DECISIONS.md) (agreed architecture decisions) and
 is built, what is next, and which decisions are still open. Update at the end of
 every milestone.
 
-Last updated: 2026-09-27 · Current phase: **2 — Authentication and users**
+Last updated: 2026-09-29 · Current phase: **2 — Authentication and users**
+(next: the `Vehicle` model — the last Phase 2 feature)
 
 ---
 
@@ -17,7 +18,7 @@ Last updated: 2026-09-27 · Current phase: **2 — Authentication and users**
 |-------|-------|--------|
 | 0 | Repository setup | ✅ Done |
 | 1 | Backend foundation (config, PostgreSQL, health) | ✅ Done |
-| 2 | **Authentication and users** | 🔵 In progress — auth, profile, privileged accounts done; vehicles + role-change remainder |
+| 2 | **Authentication and users** | 🔵 In progress — auth, profile, privileged accounts, role change/suspend done; `Vehicle` remains |
 | 3 | Parking domain (lots, slots, pricing) | ⚪ Not started |
 | 4 | Booking | ⚪ Not started |
 | 5 | Payment | ⚪ Not started |
@@ -96,11 +97,33 @@ Last updated: 2026-09-27 · Current phase: **2 — Authentication and users**
 | GET | `/api/users/` | Admin | user directory; filters `role`, `is_active`, `search` |
 | POST | `/api/users/` | Admin | create a `MANAGER` or `ADMIN` account (D20, D26) |
 | GET | `/api/users/{id}/` | Admin | retrieve one account |
+| PATCH | `/api/users/{id}/` | Admin | change `role` and/or `is_active` (D24, D27) |
 
 - Verified by `apps/accounts/tests.py::{PhoneFieldTests, ProfileUpdateTests,
   AdminUserManagementTests}`. A Manager or Consumer gets `403` on the admin
   surface; anonymous gets `401`.
-- Not yet implemented: role change and suspend/activate (D24).
+
+### Role change and suspension (D24, D27)
+
+- `PATCH /api/users/{id}/` is Administrator-only. It accepts `role` and/or
+  `is_active`; both are optional, at least one is required, and `PUT` is
+  disabled (D27). Response is always the `UserSerializer` read shape.
+- The write is delegated to `apps/accounts/services.py::update_user_access`,
+  not performed in the serializer or view, so the last-active-Administrator
+  guard (D24) cannot be bypassed by a second caller.
+- The guard locks every row the decision depends on — the currently active
+  Administrators plus the target — in one `select_for_update()` statement
+  ordered by primary key, inside `transaction.atomic()`. This closes the
+  concurrent mutual-demotion race (the same check-then-act class as D3).
+- A refused change returns `409` with `{"error": "LAST_ADMINISTRATOR", ...}`
+  (PROJECT.md §33 error shape) rather than a generic validation error.
+- `role` takes effect on the next request, and suspension blocks the next
+  request immediately, because `JWTAuthentication` re-reads the user (D15).
+- Verified by `apps/accounts/tests.py::UserAccessUpdateTests`: demotion,
+  suspend/reactivate, self-demotion with a second admin present, the
+  last-Administrator guard on both demotion and suspension, immediate `401`
+  after suspension of a live token, `403` for non-admins, `400` for an invalid
+  role or an empty payload, and `405` for `PUT`.
 
 ---
 
@@ -111,8 +134,8 @@ confined to `apps/accounts/`; none changes the architecture.
 
 > **Status (2026-09-27):** B1–B5 resolved (B5 documented rather than refactored;
 > see below); B6 resolved. Resolutions are recorded against each item. Regression
-> tests added in `apps/accounts/tests.py`; `manage.py test apps.accounts` passes
-> (33 tests).
+> tests added in `apps/accounts/tests.py`; `manage.py test apps.accounts` passed
+> 33 tests at that point (44 after the role-change increment).
 
 ### B1 — `role` is writable (breaks D11 and D20) 🔴 — RESOLVED (verified 2026-09-27)
 
@@ -224,23 +247,31 @@ does not justify hand-maintaining field constraints today.
 
 | Item | Notes |
 |------|-------|
-| Role change + suspend/activate | Administrator-only `PATCH /api/users/{id}/` implementing D24's last-active-Administrator guard. Must use `transaction.atomic()` + `select_for_update()` (two admins demoting each other concurrently) |
-| `Vehicle` model + CRUD | Consumer vehicle registration, scoped to the owner (§16, Invariant 2) |
+| `Vehicle` model + CRUD | **Next increment.** Consumer vehicle registration, scoped to the owner (§16, Invariant 2). Decision points are listed below and are the human's to own (§9) |
 | Forced password change | Privileged accounts keep the Administrator-set initial password until changed (D26); needs a `must_change_password` flag + change-password endpoint |
 | List pagination | `/api/users/` returns an unpaginated list (D26); revisit at Phase 10 |
 | Throttling | `AnonRateThrottle` on login and registration (§45). **Deliberately scheduled after vehicles** (decided 2026-09-25) |
 | Refresh-serializer error shape | `TokenRefreshView` uses simplejwt's default serializer, so a bad/expired refresh token returns `detail`, not the `{"refresh": [...]}` shape `LogoutView` uses. Cosmetic, decided 2026-09-25 |
 | Bare `/api/` route | `config/urls.py` mounts `apps.accounts.urls` at `api/` directly. Deliberate; a namespaced prefix can wait until parking routes land |
 
-Done since the last update: phone as non-unique, digits-only contact info (D23,
-migration `0002_alter_user_phone`); consumer profile self-update via
-`PATCH /api/auth/me/` (D25); Administrator user management — list, retrieve and
-create `MANAGER`/`ADMIN` accounts at `/api/users/` (D26). Regression tests added
-in `apps/accounts/tests.py` (phone normalisation; profile ownership; the
-Administrator authorization matrix). `manage.py test apps.accounts` → 33 tests,
-all pass. **Pending data check** after the phone migration:
+Done since the last update: role change and suspend/activate via
+`PATCH /api/users/{id}/` with the transactional last-Administrator guard (D24,
+D27) — the increment that completes the accounts *user-management* story and
+closes the last open item under "Phase 2 — authentication and users" apart from
+`Vehicle`. Regression tests added in `apps/accounts/tests.py`
+(`UserAccessUpdateTests`). `manage.py test apps.accounts` → 44 tests, all pass.
+
+Previously done: phone as non-unique, digits-only contact info (D23, migration
+`0002_alter_user_phone`); consumer profile self-update via `PATCH /api/auth/me/`
+(D25); Administrator user management — list, retrieve and create
+`MANAGER`/`ADMIN` accounts at `/api/users/` (D26). **Pending data check** after
+the phone migration:
 `SELECT id, phone FROM accounts_user WHERE phone IS NOT NULL AND phone !~ '^[0-9]+$';`
 (existing rows are not retro-normalised).
+
+> **Status of the working tree:** the role-change increment is present but not
+> yet committed. Commit it as `feat(accounts): add role change and suspension`
+> before starting `Vehicle`, so the next increment has a clean base.
 
 ---
 
@@ -263,15 +294,44 @@ on it is written.
    (`HasRole` base + `IsConsumer` / `IsManager` / `IsAdmin`), verified by
    `apps/accounts/tests.py` through DRF's real view machinery.
 4. **`Booking.user` nullability** — D8, planned for Phase 4.
+5. **`Vehicle` model + ownership rules** — the last Phase 2 feature (§16 lists
+   "Consumer vehicle registration" under Authentication). The model shape,
+   plate normalisation/uniqueness, whether a vehicle is required to book, and
+   how the owner is scoped are all §9 decisions, so they are listed here rather
+   than assumed. See "Phase 2 — next increment: `Vehicle`" below.
 
 Resolved since the last update:
 
+- ~~Role change / suspend-activate~~ → implemented (D24, D27). Administrator-only
+  `PATCH /api/users/{id}/`, last-active-Administrator guard under a single
+  ordered row lock.
 - ~~Suspension scope~~ → D15. `JWTAuthentication` re-reads the user on every
   request, so `is_active=False` blocks all authenticated requests immediately;
   no revocation list needed.
 - ~~Refresh-token blacklisting~~ → D17. Enabled, with rotation.
 - ~~Email case-sensitivity on login (B3b)~~ → D21. Storage and lookup both
   canonicalise the identifier, then match exactly.
+
+## Phase 2 — next increment: `Vehicle`
+
+Decisions to settle **before** code is written (PROJECT.md §9). The agent
+proposes; the human decides.
+
+| # | Decision | Options | Recommendation |
+|---|----------|---------|----------------|
+| V1 | Vehicle fields | minimal (`registration_number`, `make`, `model`, `color`) vs. richer (year, type) | Minimal now; add columns when a screen needs them |
+| V2 | Registration number canonicalisation | store as typed / upper-case + strip separators / validate format only | Upper-case and strip spaces/hyphens; store one representation (mirrors D13's email rule) |
+| V3 | Uniqueness of `registration_number` | globally unique / unique per owner / not unique | Globally unique — a plate identifies one physical vehicle across the platform |
+| V4 | Ownership relation | `Vehicle.owner` FK to `User` (non-null) | Non-null; only Consumers may own vehicles |
+| V5 | Who may write | Consumer owns own vehicles; Manager/Admin read-only or none | Consumer CRUD scoped to `request.user`; staff read-only |
+| V6 | Deletion vs. deactivation | hard delete / soft `is_active` | Decide with Phase 4: a vehicle referenced by a booking must not vanish. Likely soft-delete or `PROTECT` |
+| V7 | Vehicle required to book | required / optional | Defer to Phase 4; do not force a field now that booking would inherit |
+| V8 | Default/last used | `is_default` flag / implicit most-recent | Defer until a booking screen needs a preselected vehicle |
+
+Endpoint shape (to confirm): `GET/POST /api/vehicles/`,
+`GET/PATCH/DELETE /api/vehicles/{id}/`, scoped to the owner, no id in the body.
+This follows the ownership-as-queryset pattern used by `MeView` (D25) so
+Invariant 2 is structural rather than a permission check that can be forgotten.
 
 ## Deferred features
 
@@ -293,9 +353,8 @@ entry.
   region-aware demotion guard — and a Manager whose lots span several regions
   makes it more involved still. Revisit once the core system is complete.
 - **Audit logging.** Recording who changed a user's role or suspended an account
-  (`AuditLog`, PROJECT.md §15). Deferred alongside the role-change endpoint.
-- **Role change endpoint.** Unblocked by D24 but not yet implemented; the
-  last-active-Administrator guard needs transactional row locking (see D24).
+  (`AuditLog`, PROJECT.md §15). Still deferred; the role-change endpoint now
+  exists, so this is a matter of writing the audit records it should produce.
 
 ---
 
@@ -307,12 +366,18 @@ entry.
   current feature*.
 - **Agent role** (PROJECT.md §8 Rule 2): the agent supplies complete runnable
   code including business logic, plus the decisions it embeds; the human reads,
-  approves each decision, types it in and owns it. The phase lists in §36 that
-  read "human writes X" are superseded by §8 — they mean the human owns the
-  decision, not that they author the code. `TODO(HUMAN)` markers in code mean
-  "a decision is pending here".
+  approves each decision and owns the result. Everywhere PROJECT.md says "human
+  writes X" (§36's phase lists, §21's "the human developer must design"), **§8 wins**:
+  it means the human owns the *decision*, not that they author the code. The agent
+  may therefore write backend logic, but it must name each consequential decision
+  and its trade-offs rather than burying it in boilerplate (§9, §10). `TODO(HUMAN)`
+  markers in code mean "a decision is pending here".
+- **Frontend** (PROJECT.md §11): frontend implementation is delegated to the
+  agent and may be written substantially or completely, but only against real
+  backend APIs (never invented ones). No frontend feature starts before its
+  backend contract is settled (§23).
 - **Verification** is manual: `manage.py check`, `manage.py shell`, and `curl`
-  against the dev server. Automated tests (§34) are Phase 10.
+  against the dev server. `curl` may not be used if frontend is ready to showcase. Automated tests (§34) are Phase 10.
 - **Git**: small, scoped commits following §43's `feat(domain): ...` style.
 
 ---

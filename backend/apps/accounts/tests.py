@@ -531,3 +531,148 @@ class AdminUserManagementTests(TestCase):
         response = self.client.get(f"/api/users/{self.admin.pk}/")
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+class UserAccessUpdateTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create_user(
+            email="admin@example.com",
+            password="correct-horse-battery-staple",
+            full_name="Admin",
+            role=User.Role.ADMIN,
+        )
+        cls.manager = User.objects.create_user(
+            email="manager@example.com",
+            password="correct-horse-battery-staple",
+            full_name="Manager",
+            role=User.Role.MANAGER,
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="correct-horse-battery-staple",
+            full_name="Consumer",
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _authenticate(self, user):
+        token = RefreshToken.for_user(user).access_token
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    def _patch(self, user_id, **payload):
+        return self.client.patch(f"/api/users/{user_id}/", payload, format="json")
+
+    def _make_second_admin(self):
+        return User.objects.create_user(
+            email="admin2@example.com",
+            password="correct-horse-battery-staple",
+            full_name="Admin Two",
+            role=User.Role.ADMIN,
+        )
+
+    def test_admin_can_change_a_consumer_to_manager(self):
+        self._authenticate(self.admin)
+
+        response = self._patch(self.consumer.pk, role="MANAGER")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotIn("password", response.data)
+        self.assertIn("created_at", response.data)
+        self.consumer.refresh_from_db()
+        self.assertEqual(self.consumer.role, User.Role.MANAGER)
+
+    def test_admin_can_suspend_and_reactivate_an_account(self):
+        self._authenticate(self.admin)
+
+        suspended = self._patch(self.consumer.pk, is_active=False)
+        self.assertEqual(suspended.status_code, status.HTTP_200_OK)
+        self.consumer.refresh_from_db()
+        self.assertFalse(self.consumer.is_active)
+
+        restored = self._patch(self.consumer.pk, is_active=True)
+        self.assertEqual(restored.status_code, status.HTTP_200_OK)
+        self.consumer.refresh_from_db()
+        self.assertTrue(self.consumer.is_active)
+
+    def test_cannot_demote_the_last_active_administrator(self):
+        self._authenticate(self.admin)
+
+        response = self._patch(self.admin.pk, role="MANAGER")
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["error"], "LAST_ADMINISTRATOR")
+        self.admin.refresh_from_db()
+        self.assertEqual(self.admin.role, User.Role.ADMIN)
+
+    def test_cannot_suspend_the_last_active_administrator(self):
+        self._authenticate(self.admin)
+
+        response = self._patch(self.admin.pk, is_active=False)
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.admin.refresh_from_db()
+        self.assertTrue(self.admin.is_active)
+
+    def test_admin_can_demote_themselves_when_another_admin_remains(self):
+        second = self._make_second_admin()
+        self._authenticate(second)
+
+        response = self._patch(self.admin.pk, role="CONSUMER")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.admin.refresh_from_db()
+        self.assertEqual(self.admin.role, User.Role.CONSUMER)
+
+    def test_suspension_takes_effect_on_the_next_request(self):
+        manager_token = RefreshToken.for_user(self.manager).access_token
+        self._authenticate(self.admin)
+        self._patch(self.manager.pk, is_active=False)
+
+        fresh = APIClient()
+        fresh.credentials(HTTP_AUTHORIZATION=f"Bearer {manager_token}")
+        response = fresh.get("/api/auth/me/")
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_non_admin_cannot_change_access(self):
+        for actor in (self.manager, self.consumer):
+            with self.subTest(actor=actor.role):
+                self._authenticate(actor)
+                response = self._patch(self.consumer.pk, role="MANAGER")
+                self.assertEqual(
+                    response.status_code, status.HTTP_403_FORBIDDEN
+                )
+
+    def test_invalid_role_is_rejected(self):
+        self._authenticate(self.admin)
+
+        response = self._patch(self.consumer.pk, role="SUPERUSER")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("role", response.data)
+
+    def test_empty_payload_is_rejected(self):
+        self._authenticate(self.admin)
+
+        response = self.client.patch(
+            f"/api/users/{self.consumer.pk}/", {}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_anonymous_cannot_change_access(self):
+        response = self._patch(self.consumer.pk, role="MANAGER")
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_put_is_not_allowed(self):
+        self._authenticate(self.admin)
+
+        response = self.client.put(
+            f"/api/users/{self.consumer.pk}/",
+            {"role": "MANAGER"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
