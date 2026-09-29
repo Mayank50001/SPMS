@@ -1,9 +1,10 @@
 """Tests for the accounts domain.
 
 Automated testing is incremental rather than deferred to Phase 10 (PROJECT.md
-§34 puts authorization rules explicitly in unit-test scope). The role permission
-classes have no consumer endpoint yet, so a unit test is the only way to verify
-them at all.
+§34 puts authorization rules explicitly in unit-test scope). Earlier the role
+permission classes had no consumer endpoint to run through, so the permission
+tests had to inject them into a throwaway view; the vehicle API now exercises
+``IsConsumer`` for real as well.
 
 These tests deliberately route through DRF's real view machinery instead of
 calling ``has_permission()`` directly. The behaviour worth testing -- DRF
@@ -18,7 +19,7 @@ from rest_framework.test import APIClient, APIRequestFactory
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import User
+from .models import User, Vehicle
 from .permissions import IsAdmin, IsConsumer, IsManager
 from .serializers import RegisterSerializer
 
@@ -676,3 +677,252 @@ class UserAccessUpdateTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+
+class VehicleModelTests(TestCase):
+    """Unit tests for the canonical plate format (V2)."""
+
+    def test_segments_round_trip_through_the_canonical_form(self):
+        number = Vehicle.build_registration_number(
+            state_code="ka", rto_code="01", series="ab", unique_number="1234"
+        )
+
+        self.assertEqual(number, "KA01AB1234")
+
+        vehicle = Vehicle(registration_number=number)
+        self.assertEqual(vehicle.state_code, "KA")
+        self.assertEqual(vehicle.rto_code, "01")
+        self.assertEqual(vehicle.series, "AB")
+        self.assertEqual(vehicle.unique_number, "1234")
+
+
+class VehicleApiTests(TestCase):
+    """Consumer vehicle CRUD, ownership scoping and plate validation."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.consumer = User.objects.create_user(
+            email="owner@example.com",
+            password="correct-horse-battery-staple",
+            full_name="Owner",
+        )
+        cls.other = User.objects.create_user(
+            email="other@example.com",
+            password="correct-horse-battery-staple",
+            full_name="Other",
+        )
+        cls.manager = User.objects.create_user(
+            email="vehicle-manager@example.com",
+            password="correct-horse-battery-staple",
+            full_name="Manager",
+            role=User.Role.MANAGER,
+        )
+        cls.admin = User.objects.create_user(
+            email="vehicle-admin@example.com",
+            password="correct-horse-battery-staple",
+            full_name="Admin",
+            role=User.Role.ADMIN,
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+        self._authenticate(self.consumer)
+
+    def _authenticate(self, user):
+        token = RefreshToken.for_user(user).access_token
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    def _payload(self, **overrides):
+        data = {
+            "state_code": "KA",
+            "rto_code": "01",
+            "series": "AB",
+            "unique_number": "1234",
+            "make": "Maruti",
+            "model": "Swift",
+            "color": "White",
+        }
+        data.update(overrides)
+        return data
+
+    def test_consumer_can_register_a_vehicle(self):
+        response = self.client.post("/api/vehicles/", self._payload(), format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["registration_number"], "KA01AB1234")
+        # The read shape echoes the four segments back for the UI.
+        self.assertEqual(response.data["state_code"], "KA")
+        self.assertEqual(response.data["unique_number"], "1234")
+        self.assertEqual(response.data["make"], "Maruti")
+
+        vehicle = Vehicle.objects.get()
+        self.assertEqual(vehicle.owner, self.consumer)
+
+    def test_segments_are_case_insensitive_in_but_stored_upper_case(self):
+        response = self.client.post(
+            "/api/vehicles/",
+            self._payload(state_code="ka", series="ab"),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["registration_number"], "KA01AB1234")
+
+    def test_all_four_segments_are_required(self):
+        response = self.client.post(
+            "/api/vehicles/", {"make": "Maruti"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        for field in ("state_code", "rto_code", "series", "unique_number"):
+            self.assertIn(field, response.data)
+
+    def test_unknown_state_code_is_rejected(self):
+        response = self.client.post(
+            "/api/vehicles/", self._payload(state_code="ZZ"), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("state_code", response.data)
+
+    def test_rto_code_must_be_two_digits(self):
+        response = self.client.post(
+            "/api/vehicles/", self._payload(rto_code="1"), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("rto_code", response.data)
+
+    def test_series_must_be_two_letters(self):
+        response = self.client.post(
+            "/api/vehicles/", self._payload(series="12"), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("series", response.data)
+
+    def test_unique_number_must_be_four_digits(self):
+        response = self.client.post(
+            "/api/vehicles/", self._payload(unique_number="123"), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("unique_number", response.data)
+
+    def test_plate_is_globally_unique_across_owners(self):
+        Vehicle.objects.create(owner=self.other, registration_number="KA01AB1234")
+
+        response = self.client.post("/api/vehicles/", self._payload(), format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("registration_number", response.data)
+
+    def test_list_returns_only_the_callers_own_vehicles(self):
+        mine = Vehicle.objects.create(
+            owner=self.consumer, registration_number="KA01AB1234"
+        )
+        Vehicle.objects.create(owner=self.other, registration_number="MH12XY9999")
+
+        response = self.client.get("/api/vehicles/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["id"], mine.pk)
+
+    def test_cannot_retrieve_another_consumers_vehicle(self):
+        theirs = Vehicle.objects.create(
+            owner=self.other, registration_number="MH12XY9999"
+        )
+
+        response = self.client.get(f"/api/vehicles/{theirs.pk}/")
+
+        # 404, not 403: the scoped queryset must not reveal that it exists.
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_patch_metadata_without_touching_the_plate(self):
+        mine = Vehicle.objects.create(
+            owner=self.consumer, registration_number="KA01AB1234"
+        )
+
+        response = self.client.patch(
+            f"/api/vehicles/{mine.pk}/", {"color": "Black"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["color"], "Black")
+        self.assertEqual(response.data["registration_number"], "KA01AB1234")
+
+    def test_patch_with_a_partial_segment_set_is_rejected(self):
+        mine = Vehicle.objects.create(
+            owner=self.consumer, registration_number="KA01AB1234"
+        )
+
+        response = self.client.patch(
+            f"/api/vehicles/{mine.pk}/", {"state_code": "MH"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_patch_with_all_segments_updates_the_plate(self):
+        mine = Vehicle.objects.create(
+            owner=self.consumer, registration_number="KA01AB1234"
+        )
+
+        response = self.client.patch(
+            f"/api/vehicles/{mine.pk}/",
+            {
+                "state_code": "MH",
+                "rto_code": "12",
+                "series": "XY",
+                "unique_number": "9999",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mine.refresh_from_db()
+        self.assertEqual(mine.registration_number, "MH12XY9999")
+
+    def test_patch_plate_onto_an_existing_plate_is_rejected(self):
+        mine = Vehicle.objects.create(
+            owner=self.consumer, registration_number="KA01AB1234"
+        )
+        Vehicle.objects.create(owner=self.other, registration_number="MH12XY9999")
+
+        response = self.client.patch(
+            f"/api/vehicles/{mine.pk}/",
+            {
+                "state_code": "MH",
+                "rto_code": "12",
+                "series": "XY",
+                "unique_number": "9999",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("registration_number", response.data)
+
+    def test_consumer_can_delete_their_own_vehicle(self):
+        mine = Vehicle.objects.create(
+            owner=self.consumer, registration_number="KA01AB1234"
+        )
+
+        response = self.client.delete(f"/api/vehicles/{mine.pk}/")
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Vehicle.objects.filter(pk=mine.pk).exists())
+
+    def test_staff_cannot_reach_the_vehicle_surface(self):
+        for actor in (self.manager, self.admin):
+            with self.subTest(actor=actor.role):
+                self._authenticate(actor)
+                response = self.client.get("/api/vehicles/")
+                self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_anonymous_gets_401(self):
+        self.client.credentials()
+
+        response = self.client.get("/api/vehicles/")
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)

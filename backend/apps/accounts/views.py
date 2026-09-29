@@ -6,8 +6,8 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 from django.db.models import Q
-from .models import User
-from .permissions import IsAdmin
+from .models import User, Vehicle
+from .permissions import IsAdmin, IsConsumer
 
 from .serializers import (
     LoginSerializer,
@@ -16,6 +16,8 @@ from .serializers import (
     RegisterSerializer,
     UserAccessUpdateSerializer,
     UserSerializer,
+    VehicleSerializer,
+    VehicleWriteSerializer,
 )
 from .services import LastAdministratorError, update_user_access
 
@@ -166,3 +168,66 @@ class UserDetailView(generics.RetrieveUpdateAPIView):
             )
 
         return Response(UserSerializer(updated).data)
+
+
+class VehicleListCreateView(generics.ListCreateAPIView):
+    """Consumer-only vehicle garage (PROJECT.md §3.1, §16; Invariant 2).
+
+    ``GET``  /api/vehicles/  -> list the caller's own vehicles
+    ``POST`` /api/vehicles/  -> register a vehicle for the caller
+
+    The queryset is scoped to ``request.user`` and the owner is set from
+    ``request.user``, never from the body. A consumer therefore cannot read or
+    create against another account's garage; asking for someone else's vehicle
+    yields a ``404`` (not a ``403``), so the endpoint does not leak which
+    vehicles exist. This is the D25 ownership pattern applied to a collection.
+    """
+
+    permission_classes = [IsConsumer]
+
+    def get_queryset(self):
+        return Vehicle.objects.filter(owner=self.request.user)
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return VehicleWriteSerializer
+        return VehicleSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        vehicle = serializer.save(owner=request.user)
+
+        return Response(VehicleSerializer(vehicle).data, status=status.HTTP_201_CREATED)
+
+
+class VehicleDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Read, edit or remove one of the caller's own vehicles.
+
+    Scoped exactly like ``VehicleListCreateView``; the object lookup alone
+    enforces ownership. ``PUT`` is available because the write serializer can
+    replace every editable field, but ``PATCH`` is the expected verb for the
+    common "change the colour" case.
+    """
+
+    permission_classes = [IsConsumer]
+    http_method_names = ["get", "put", "patch", "delete", "head", "options"]
+
+    def get_queryset(self):
+        return Vehicle.objects.filter(owner=self.request.user)
+
+    def get_serializer_class(self):
+        if self.request.method in ("PUT", "PATCH"):
+            return VehicleWriteSerializer
+        return VehicleSerializer
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        vehicle = serializer.save()
+
+        # Answer with the read shape (canonical plate + segments) even though the
+        # write shape was submitted, so a resource has one response shape.
+        return Response(VehicleSerializer(vehicle).data)

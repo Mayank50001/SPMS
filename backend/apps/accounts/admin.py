@@ -7,7 +7,7 @@ Django admin. No SPMS business rules live here.
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 
-from .models import User
+from .models import User, Vehicle
 
 
 @admin.register(User)
@@ -58,3 +58,17 @@ class UserAdmin(BaseUserAdmin):
     )
 
     filter_horizontal = ("groups", "user_permissions")
+
+
+@admin.register(Vehicle)
+class VehicleAdmin(admin.ModelAdmin):
+    """Admin for consumer vehicles.
+
+    Read-only on ``registration_number`` because it is derived from segments by
+    the API (V2); editing it here would bypass the format/uniqueness checks.
+    """
+
+    list_display = ("registration_number", "owner", "make", "model", "color")
+    list_filter = ("make", "color")
+    search_fields = ("registration_number", "owner__email")
+    readonly_fields = ("registration_number", "created_at", "updated_at")

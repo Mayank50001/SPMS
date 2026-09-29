@@ -4,13 +4,13 @@ An academic mini-project: a software-based parking management platform that lets
 consumers discover lots and book slots, managers operate lots and walk-ins, and
 administrators manage users and view platform reports.
 
-Currently at **Phase 2 (authentication and users)**. Phase 0 (repository setup)
-and Phase 1 (backend foundation) are complete. Implemented so far: the custom
+**Phase 2 (authentication and users) is complete.** Phase 0 (repository setup)
+and Phase 1 (backend foundation) are also done. Implemented: the custom
 email-based user model, consumer self-registration, the JWT authentication
 surface, consumer profile self-update, Administrator user management
-(list/create/suspend/role change) and role-based authorization. The one
-remaining Phase 2 feature is consumer **vehicle registration**, after which
-Phase 3 (the parking domain) begins. The authoritative specification is
+(list/create/suspend/role change), role-based authorization, and consumer
+**vehicle registration** with the Indian `SSRRLLNNNN` plate format. The next
+phase is Phase 3 (the parking domain). The authoritative specification is
 [`PROJECT.md`](PROJECT.md). For what is built and what comes next see
 [`docs/PROGRESS.md`](docs/PROGRESS.md); for the agreed architecture decisions see
 [`docs/DECISIONS.md`](docs/DECISIONS.md).
@@ -152,11 +152,56 @@ npm run build
 | POST   | `/api/users/`         | Admin       | Create a `MANAGER`/`ADMIN`       |
 | GET    | `/api/users/{id}/`    | Admin       | Retrieve one account             |
 | PATCH  | `/api/users/{id}/`    | Admin       | Change role / suspend-activate   |
+| GET    | `/api/vehicles/`      | Consumer    | List the caller's own vehicles   |
+| POST   | `/api/vehicles/`      | Consumer    | Register a vehicle               |
+| GET    | `/api/vehicles/{id}/` | Consumer    | Retrieve one own vehicle         |
+| PUT/PATCH | `/api/vehicles/{id}/` | Consumer | Edit an own vehicle              |
+| DELETE | `/api/vehicles/{id}/` | Consumer    | Remove an own vehicle            |
 
 > Authorisation is enforced server-side on every request (D15, D18). `Admin`
 > above means the authenticated account's `role` must be `ADMIN`; a `403` is
 > returned otherwise and a `401` when unauthenticated. Self-registration can
 > only produce a `CONSUMER`; privileged accounts exist only via `POST /api/users/`.
+> Vehicles are consumer-only and scoped to the caller — another account's
+> vehicle returns `404`, not `403`.
+
+### Vehicles
+
+A vehicle's registration number is the Indian `SSRRLLNNNN` form (e.g.
+`KA01AB1234`). The client does **not** type the combined string; it sends the
+four segments and the backend validates and joins them (D28):
+
+```text
+POST /api/vehicles/
+```
+
+```json
+{
+  "state_code": "KA",
+  "rto_code": "01",
+  "series": "AB",
+  "unique_number": "1234",
+  "make": "Maruti",
+  "model": "Swift",
+  "color": "White"
+}
+```
+
+Response `201` — the canonical plate plus the echoed segments:
+
+```json
+{
+  "id": 1,
+  "registration_number": "KA01AB1234",
+  "state_code": "KA",
+  "rto_code": "01",
+  "series": "AB",
+  "unique_number": "1234",
+  "make": "Maruti",
+  "model": "Swift",
+  "color": "White"
+}
+```
 
 Authenticated requests use the standard header:
 

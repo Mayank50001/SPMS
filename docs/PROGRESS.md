@@ -7,8 +7,8 @@ Companion to [`DECISIONS.md`](DECISIONS.md) (agreed architecture decisions) and
 is built, what is next, and which decisions are still open. Update at the end of
 every milestone.
 
-Last updated: 2026-09-29 · Current phase: **2 — Authentication and users**
-(next: the `Vehicle` model — the last Phase 2 feature)
+Last updated: 2026-09-29 · Phase **2 — Authentication and users**: ✅ complete
+(next: Phase **3 — Parking domain**)
 
 ---
 
@@ -18,7 +18,7 @@ Last updated: 2026-09-29 · Current phase: **2 — Authentication and users**
 |-------|-------|--------|
 | 0 | Repository setup | ✅ Done |
 | 1 | Backend foundation (config, PostgreSQL, health) | ✅ Done |
-| 2 | **Authentication and users** | 🔵 In progress — auth, profile, privileged accounts, role change/suspend done; `Vehicle` remains |
+| 2 | **Authentication and users** | ✅ Done — auth, profiles, privileged accounts, role change/suspend, vehicles (D28); hardening items deferred to Phase 10 |
 | 3 | Parking domain (lots, slots, pricing) | ⚪ Not started |
 | 4 | Booking | ⚪ Not started |
 | 5 | Payment | ⚪ Not started |
@@ -124,6 +124,39 @@ Last updated: 2026-09-29 · Current phase: **2 — Authentication and users**
   last-Administrator guard on both demotion and suspension, immediate `401`
   after suspension of a live token, `403` for non-admins, `400` for an invalid
   role or an empty payload, and `405` for `PUT`.
+
+### Consumer vehicles (D28)
+
+The last Phase 2 feature. A `Vehicle` is the *identity* of a consumer's car; it
+holds no occupancy state — occupancy is `slot + active booking` (D2).
+
+- `apps/accounts/models.py` — `Vehicle` with a non-null `owner` FK, a globally
+  unique canonical `registration_number`, and optional `make` / `model` /
+  `color`. `INDIAN_STATE_CODES` back the state-code validation. Read-only
+  properties derive the four plate segments from the canonical value.
+- `apps/accounts/migrations/0003_vehicle.py` — applied.
+- Registration number is the Indian `SSRRLLNNNN` form (e.g. `KA01AB1234`). The
+  client never types the combined string: the API takes `state_code`,
+  `rto_code`, `series`, `unique_number` and the backend joins them.
+
+| Method | Endpoint | Auth | Notes |
+|---|---|---|---|
+| GET | `/api/vehicles/` | Consumer | list the caller's own vehicles |
+| POST | `/api/vehicles/` | Consumer | register a vehicle (segments + metadata) |
+| GET | `/api/vehicles/{id}/` | Consumer | retrieve one own vehicle |
+| PUT/PATCH | `/api/vehicles/{id}/` | Consumer | edit (segments all-or-nothing) |
+| DELETE | `/api/vehicles/{id}/` | Consumer | remove an own vehicle |
+
+- Ownership is structural: the queryset is `filter(owner=request.user)` and the
+  owner is set from `request.user`, never the request body. Another account's
+  vehicle returns `404`, not `403` (Invariant 2).
+- Verified by `apps/accounts/tests.py::{VehicleModelTests, VehicleApiTests}`:
+  segment validation (state code, `2` digits, `2` letters, `4` digits), case
+  normalisation, global uniqueness across owners, owner-only list/retrieve/edit/
+  delete, partial-segment rejection, and `403` for staff / `401` anonymous.
+- Deferred by agreement (D28): V6 delete semantics with bookings (Phase 4), V7
+  walk-in free-text plates (Phase 4/6), V8 default vehicle (Phase 9), and shared
+  family ownership.
 
 ---
 
@@ -243,23 +276,30 @@ does not justify hand-maintaining field constraints today.
 
 ---
 
-## Phase 2 — remaining
+## Phase 2 — deferred hardening
+
+Phase 2's PROJECT.md §36 scope is **complete**. The items below are hardening,
+not missing features; each records when it should be picked up.
 
 | Item | Notes |
 |------|-------|
-| `Vehicle` model + CRUD | **Next increment.** Consumer vehicle registration, scoped to the owner (§16, Invariant 2). Decision points are listed below and are the human's to own (§9) |
 | Forced password change | Privileged accounts keep the Administrator-set initial password until changed (D26); needs a `must_change_password` flag + change-password endpoint |
-| List pagination | `/api/users/` returns an unpaginated list (D26); revisit at Phase 10 |
-| Throttling | `AnonRateThrottle` on login and registration (§45). **Deliberately scheduled after vehicles** (decided 2026-09-25) |
+| List pagination | `/api/users/` and `/api/vehicles/` return unpaginated lists (D26, D28); revisit at Phase 10 |
+| Throttling | `AnonRateThrottle` on login and registration (§45). Scheduled after the domain phases |
 | Refresh-serializer error shape | `TokenRefreshView` uses simplejwt's default serializer, so a bad/expired refresh token returns `detail`, not the `{"refresh": [...]}` shape `LogoutView` uses. Cosmetic, decided 2026-09-25 |
 | Bare `/api/` route | `config/urls.py` mounts `apps.accounts.urls` at `api/` directly. Deliberate; a namespaced prefix can wait until parking routes land |
+| Vehicle delete semantics (V6) | Hard delete today; revisit with `PROTECT`/soft-delete once bookings reference vehicles (Phase 4) |
 
-Done since the last update: role change and suspend/activate via
+Done since the last update: consumer `Vehicle` model and owner-scoped CRUD
+(`GET/POST /api/vehicles/`, `GET/PUT/PATCH/DELETE /api/vehicles/{id}/`) with the
+segment-based Indian `SSRRLLNNNN` registration format, global uniqueness and
+structural ownership scoping (D28). Regression tests added in
+`apps/accounts/tests.py` (`VehicleModelTests`, `VehicleApiTests`).
+`manage.py test apps.accounts` → 62 tests, all pass.
+
+Also landed this round: role change and suspend/activate via
 `PATCH /api/users/{id}/` with the transactional last-Administrator guard (D24,
-D27) — the increment that completes the accounts *user-management* story and
-closes the last open item under "Phase 2 — authentication and users" apart from
-`Vehicle`. Regression tests added in `apps/accounts/tests.py`
-(`UserAccessUpdateTests`). `manage.py test apps.accounts` → 44 tests, all pass.
+D27, `UserAccessUpdateTests`).
 
 Previously done: phone as non-unique, digits-only contact info (D23, migration
 `0002_alter_user_phone`); consumer profile self-update via `PATCH /api/auth/me/`
@@ -269,9 +309,10 @@ the phone migration:
 `SELECT id, phone FROM accounts_user WHERE phone IS NOT NULL AND phone !~ '^[0-9]+$';`
 (existing rows are not retro-normalised).
 
-> **Status of the working tree:** the role-change increment is present but not
-> yet committed. Commit it as `feat(accounts): add role change and suspension`
-> before starting `Vehicle`, so the next increment has a clean base.
+> **Status of the working tree:** the role-change increment is committed
+> (`3f0114b`). The vehicle increment and the doc updates in this round are still
+> unstaged. Suggested commit before starting Phase 3:
+> `feat(accounts): add consumer vehicle registration`.
 
 ---
 
@@ -294,11 +335,10 @@ on it is written.
    (`HasRole` base + `IsConsumer` / `IsManager` / `IsAdmin`), verified by
    `apps/accounts/tests.py` through DRF's real view machinery.
 4. **`Booking.user` nullability** — D8, planned for Phase 4.
-5. **`Vehicle` model + ownership rules** — the last Phase 2 feature (§16 lists
-   "Consumer vehicle registration" under Authentication). The model shape,
-   plate normalisation/uniqueness, whether a vehicle is required to book, and
-   how the owner is scoped are all §9 decisions, so they are listed here rather
-   than assumed. See "Phase 2 — next increment: `Vehicle`" below.
+5. ~~**`Vehicle` model + ownership rules**~~ → resolved (D28). Segment-based
+   Indian plate (`SSRRLLNNNN`), globally unique, single owner, consumer-scoped
+   CRUD. Shared/family ownership, walk-in plates and default vehicle deferred
+   to later phases as recorded in D28.
 
 Resolved since the last update:
 
@@ -312,26 +352,22 @@ Resolved since the last update:
 - ~~Email case-sensitivity on login (B3b)~~ → D21. Storage and lookup both
   canonicalise the identifier, then match exactly.
 
-## Phase 2 — next increment: `Vehicle`
+## Next — Phase 3: Parking domain
 
-Decisions to settle **before** code is written (PROJECT.md §9). The agent
-proposes; the human decides.
+`Vehicle` closed Phase 2, so the next increment is Phase 3 (PROJECT.md §36):
+`ParkingLot`, `ParkingSlot`, slot types, pricing and `ManagerLotAssignment`,
+followed by manager authorization and lot-assignment rules.
 
-| # | Decision | Options | Recommendation |
-|---|----------|---------|----------------|
-| V1 | Vehicle fields | minimal (`registration_number`, `make`, `model`, `color`) vs. richer (year, type) | Minimal now; add columns when a screen needs them |
-| V2 | Registration number canonicalisation | store as typed / upper-case + strip separators / validate format only | Upper-case and strip spaces/hyphens; store one representation (mirrors D13's email rule) |
-| V3 | Uniqueness of `registration_number` | globally unique / unique per owner / not unique | Globally unique — a plate identifies one physical vehicle across the platform |
-| V4 | Ownership relation | `Vehicle.owner` FK to `User` (non-null) | Non-null; only Consumers may own vehicles |
-| V5 | Who may write | Consumer owns own vehicles; Manager/Admin read-only or none | Consumer CRUD scoped to `request.user`; staff read-only |
-| V6 | Deletion vs. deactivation | hard delete / soft `is_active` | Decide with Phase 4: a vehicle referenced by a booking must not vanish. Likely soft-delete or `PROTECT` |
-| V7 | Vehicle required to book | required / optional | Defer to Phase 4; do not force a field now that booking would inherit |
-| V8 | Default/last used | `is_default` flag / implicit most-recent | Defer until a booking screen needs a preselected vehicle |
+Decisions to surface before that code is written (§9), not yet decided:
 
-Endpoint shape (to confirm): `GET/POST /api/vehicles/`,
-`GET/PATCH/DELETE /api/vehicles/{id}/`, scoped to the owner, no id in the body.
-This follows the ownership-as-queryset pattern used by `MeView` (D25) so
-Invariant 2 is structural rather than a permission check that can be forgotten.
+- lot/slot identity and the slot-numbering scheme,
+- slot types (choices vs. a table),
+- how pricing is stored (per lot / per slot type / per slot) and the
+  administrator-defined maximum that Invariant 4 checks,
+- `ManagerLotAssignment` shape and how Invariant 3 is enforced.
+
+The `Vehicle → Booking → Slot` chain is ready for Phase 4 to build on; V6/V7 from
+the vehicle brief carry into that phase (see D28).
 
 ## Deferred features
 

@@ -101,9 +101,9 @@ one-line rationale. Complements the spec in [`PROJECT.md`](../PROJECT.md).
   because `auth_user` had already been created by an earlier `migrate`.
 - **Status:** Model, manager, settings wiring, admin registration, consumer
   self-registration, the full JWT surface, role-based authorization
-  (`permissions.py`), Administrator account creation and role
-  change/suspend (D24, D26, D27) are implemented and verified. Within Phase 2
-  only the `Vehicle` model + CRUD remains open.
+  (`permissions.py`), Administrator account creation, role change/suspend
+  (D24, D26, D27) and consumer vehicles (D28) are implemented and verified. The
+  PROJECT.md §36 Phase 2 scope is complete.
 
 ## D12 — Password hashing is guaranteed by overriding `create()`, not by the field
 
@@ -414,4 +414,64 @@ one-line rationale. Complements the spec in [`PROJECT.md`](../PROJECT.md).
   change or reactivation takes effect on the next request (D15). Audit logging
   of these changes remains deferred.
 - **Status:** Implemented and verified
-  (`apps/accounts/tests.py::UserAccessUpdateTests`; 44 tests pass for the app).
+  (`apps/accounts/tests.py::UserAccessUpdateTests`; the app suite passes, 62
+  tests after D28).
+
+## D28 — `Vehicle`: consumer vehicle registration (Phase 2 close-out)
+
+- **Decision:** `apps.accounts.Vehicle` is a Consumer-owned record with a single
+  `owner` FK (`User`, `related_name="vehicles"`, `on_delete=CASCADE`), a globally
+  unique `registration_number`, and optional `make` / `model` / `color`
+  (V1 = minimal fields). The plate follows the **Indian `SSRRLLNNNN` format** and
+  is **not** entered as free text: the API accepts the four segments separately
+  (`state_code`, `rto_code`, `series`, `unique_number`), and the backend joins
+  them into the canonical upper-case form (V2). `registration_number` is
+  globally unique (V3). Access is Consumer-only and scoped to the caller
+  (V5).
+- **Rationale (V2 — segments, not free text):** Indian plates are positional, and
+  free-text entry produces the same plate in many spellings (`KA 01 AB 1234`,
+  `ka-01-ab-1234`), which breaks both uniqueness and the manager's gate check.
+  Validating four typed segments is stricter and clearer than repairing a
+  string, and it lets each part carry the right rule (state = a real code,
+  `rto` = 2 digits, `series` = 2 letters, `unique_number` = 4 digits). Letters
+  are upper-cased on the way in, so `ka`/`ab` and `KA`/`AB` are the same plate;
+  the canonical value is the only stored representation (mirrors D13's email
+  rule). `state_code` is validated against the official RTO state/UT list
+  (`INDIAN_STATE_CODES`, legacy codes kept), so a typo cannot mint a plate no
+  gate can match.
+- **Rationale (V3 — global uniqueness):** a registration number identifies one
+  physical vehicle; if two accounts could hold it, the manager's verification
+  would be worthless. Uniqueness is enforced by a DB `UNIQUE` constraint, with a
+  serializer pre-check so a duplicate is a clean `400`, not a `500`.
+- **Rationale (V4 — one owner for now):** a vehicle shared within a family is a
+  real use case, and the model is documented as such; the implementation keeps a
+  single `owner` because a shared model needs a `VehicleOwnership` join and its
+  own permission rules. Sharing is future work, not silently assumed.
+- **Rationale (V5 — fake vehicles accepted):** no ownership verification is
+  attempted. As with fake social accounts, a fake vehicle is inert: a booking
+  cannot exist without a payment (Phase 5), so nobody gains capacity or access by
+  inventing one. Requiring documents would add real-world infrastructure for no
+  security benefit in this project. Ownership scoping, however, is enforced:
+  the queryset is `filter(owner=request.user)` and the owner is set from
+  `request.user`, never the body, so Invariant 2 is structural.
+- **Consequence:** The read serializer returns the canonical plate **and** its
+  derived segments (model properties, not stored twice) so the client can render
+  the same split input it collected. A partial segment set on update is rejected
+  (a retained segment plus an omitted one is ambiguous); metadata-only edits are
+  allowed. Asking for another account's vehicle returns `404`, not `403`, so the
+  endpoint does not reveal which vehicles exist. `DELETE` currently hard-deletes.
+- **Deferred (agreed):**
+  - **V6 — delete semantics.** A vehicle referenced by a booking must not
+    silently vanish. `on_delete=CASCADE` is fine today (no bookings exist);
+    Phase 4 revisits with `PROTECT`/soft-delete and a clear conflict error.
+  - **V7 — walk-in vehicles.** Walk-in bookings have no consumer account (D8), so
+    their plate will be a **free-text string on the booking**, not a `Vehicle`.
+    Out of scope for Phase 2; decided with the walk-in flow in Phase 4/6.
+  - **V8 — default vehicle.** No `is_default` flag; a booking screen can
+    pre-select the most recent vehicle when Phase 9 needs it.
+  - **Shared/family ownership** (V4) — needs a `VehicleOwnership` join.
+- **Status:** Implemented and verified. Model + migration `0003_vehicle`; API
+  `GET/POST /api/vehicles/` and `GET/PUT/PATCH/DELETE /api/vehicles/{id}/`
+  (`VehicleSerializer` read / `VehicleWriteSerializer` write, both in
+  `apps/accounts`). Tests: `VehicleModelTests`, `VehicleApiTests`; 62 tests pass
+  for the app.

@@ -170,3 +170,155 @@ class User(AbstractBaseUser, PermissionsMixin):
 
         self.phone = self.normalize_phone(self.phone)
         super().save(*args, **kwargs)
+
+
+#: Official two-letter RTO state/UT codes used in an Indian registration number.
+#: Validated by the write serializer so a typo cannot create a plate the gate
+#: check can never match. Legacy codes (``OR``, ``UA``) are kept because older
+#: plates still carry them; ``TS``/``TG`` and ``UK``/``UT`` are both accepted
+#: because the re-coded states have plates under each.
+INDIAN_STATE_CODES = frozenset(
+    {
+        "AN",  # Andaman and Nicobar Islands
+        "AP",  # Andhra Pradesh
+        "AR",  # Arunachal Pradesh
+        "AS",  # Assam
+        "BR",  # Bihar
+        "CG",  # Chhattisgarh
+        "CH",  # Chandigarh
+        "DD",  # Dadra and Nagar Haveli and Daman and Diu
+        "DL",  # Delhi
+        "GA",  # Goa
+        "GJ",  # Gujarat
+        "HP",  # Himachal Pradesh
+        "HR",  # Haryana
+        "JH",  # Jharkhand
+        "JK",  # Jammu and Kashmir
+        "KA",  # Karnataka
+        "KL",  # Kerala
+        "LA",  # Ladakh
+        "LD",  # Lakshadweep
+        "MH",  # Maharashtra
+        "ML",  # Meghalaya
+        "MN",  # Manipur
+        "MP",  # Madhya Pradesh
+        "MZ",  # Mizoram
+        "NL",  # Nagaland
+        "OD",  # Odisha
+        "OR",  # Odisha (legacy)
+        "PB",  # Punjab
+        "PY",  # Puducherry
+        "RJ",  # Rajasthan
+        "SK",  # Sikkim
+        "TG",  # Telangana (new code)
+        "TN",  # Tamil Nadu
+        "TR",  # Tripura
+        "TS",  # Telangana (current code)
+        "UA",  # Uttarakhand (legacy)
+        "UK",  # Uttarakhand (current code)
+        "UP",  # Uttar Pradesh
+        "UT",  # Uttarakhand (current code, alternate)
+        "WB",  # West Bengal
+    }
+)
+
+
+class Vehicle(models.Model):
+    """A Consumer's registered vehicle (PROJECT.md §3.1, §16).
+
+    The vehicle is the *identity* of the car; it carries no occupancy state.
+    Occupancy is ``slot + active booking`` (D2), and a booking points at the
+    vehicle so a manager can see which plate is in which slot. Making a vehicle
+    stateful would duplicate the booking, so it is deliberately a plain record.
+
+    Relation to accounts
+    --------------------
+    One Consumer owns many vehicles (one-to-many), and each vehicle has exactly
+    one owner. A vehicle shared by a family (father, son, ...) is a real use
+    case, but the implementation keeps a single ``owner``; shared ownership
+    would need a ``VehicleOwnership`` join and is deliberately out of scope
+    (recorded in DECISIONS.md D28).
+
+    Registration number
+    -------------------
+    Stored in one canonical form, ``SSRRLLNNNN`` (e.g. ``KA01AB1234``), so the
+    same plate cannot exist twice under different spellings — the same
+    single-representation rule D13 applies to email. Callers do not type the
+    combined string: the API accepts the four segments separately and
+    ``build_registration_number`` joins them.
+    """
+
+    #: ``SS`` (2 letters) + ``RR`` (2 digits) + ``LL`` (2 letters) + ``NNNN``
+    #: (4 digits) = 10 characters. The fixed positions are what let the read
+    #: serializer split the canonical value back into segments without storing
+    #: them twice.
+    REGISTRATION_NUMBER_LENGTH = 10
+
+    SEGMENT_LENGTHS = {
+        "state_code": 2,
+        "rto_code": 2,
+        "series": 2,
+        "unique_number": 4,
+    }
+
+    # V4: one-to-one-for-now ownership. CASCADE because a vehicle has no meaning
+    # without its owner; Phase 4 revisits this once bookings reference vehicles
+    # (V6 — a vehicle referenced by a booking must not silently vanish).
+    owner = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="vehicles",
+    )
+
+    # V3: globally unique, canonical form only. The DB unique constraint is the
+    # backstop; the serializer checks it first so the client gets a clean 400.
+    registration_number = models.CharField(
+        max_length=REGISTRATION_NUMBER_LENGTH,
+        unique=True,
+        help_text="Canonical SSRRLLNNNN form, e.g. KA01AB1234.",
+    )
+
+    # V1: minimal descriptive fields; all optional because the plate is the only
+    # thing the system actually needs.
+    make = models.CharField(max_length=50, blank=True)
+    model = models.CharField(max_length=50, blank=True)
+    color = models.CharField(max_length=30, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["id"]
+        verbose_name = "vehicle"
+        verbose_name_plural = "vehicles"
+
+    def __str__(self):
+        return self.registration_number
+
+    @staticmethod
+    def build_registration_number(*, state_code, rto_code, series, unique_number):
+        """Join the four entered segments into the canonical stored form (V2).
+
+        Letters are upper-cased; the segments are assumed already validated for
+        length and character class by the serializer.
+        """
+        return f"{state_code}{rto_code}{series}{unique_number}".upper()
+
+    # The canonical value is the single stored representation; these read-only
+    # properties derive the segments for API responses so the client can show
+    # the same four boxes it collected on input.
+    @property
+    def state_code(self):
+        return self.registration_number[:2]
+
+    @property
+    def rto_code(self):
+        return self.registration_number[2:4]
+
+    @property
+    def series(self):
+        return self.registration_number[4:6]
+
+    @property
+    def unique_number(self):
+        return self.registration_number[6:10]

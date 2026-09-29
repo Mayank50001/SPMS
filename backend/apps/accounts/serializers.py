@@ -23,6 +23,8 @@ from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
+from .models import INDIAN_STATE_CODES, Vehicle
+
 User = get_user_model()
 
 class PhoneValidationMixin:
@@ -233,3 +235,139 @@ class LoginSerializer(TokenObtainPairSerializer):
         data = super().validate(attrs)
         data["user"] = UserSerializer(self.user).data
         return data
+
+
+class VehicleSerializer(serializers.ModelSerializer):
+    """Read representation of a vehicle (V1/V2).
+
+    Returns both the canonical ``registration_number`` and its four segments,
+    so a client can render the split boxes it collected without re-parsing the
+    plate. The segments are model properties, i.e. derived — never stored twice.
+    """
+
+    state_code = serializers.CharField(read_only=True)
+    rto_code = serializers.CharField(read_only=True)
+    series = serializers.CharField(read_only=True)
+    unique_number = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = Vehicle
+        fields = [
+            "id",
+            "registration_number",
+            "state_code",
+            "rto_code",
+            "series",
+            "unique_number",
+            "make",
+            "model",
+            "color",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class VehicleWriteSerializer(serializers.ModelSerializer):
+    """Create/update a vehicle from separately entered plate segments (V2).
+
+    The client sends ``state_code``, ``rto_code``, ``series`` and
+    ``unique_number`` as four fields; the canonical ``registration_number`` is
+    built (and validated for global uniqueness) here, never accepted as input.
+    That removes the "was it KA 01 AB 1234 or KA01AB1234?" ambiguity at the
+    boundary rather than trying to repair free text.
+
+    Segments are all-or-nothing: on update the client may omit all four (to
+    change only ``make``/``color``) but may not send a partial set, because a
+    retained segment plus an omitted one has no unambiguous meaning.
+    """
+
+    SEGMENT_FIELDS = ("state_code", "rto_code", "series", "unique_number")
+
+    state_code = serializers.RegexField(r"^[A-Za-z]{2}$", max_length=2)
+    rto_code = serializers.RegexField(r"^\d{2}$", max_length=2)
+    series = serializers.RegexField(r"^[A-Za-z]{2}$", max_length=2)
+    unique_number = serializers.RegexField(r"^\d{4}$", max_length=4)
+
+    class Meta:
+        model = Vehicle
+        fields = [
+            "id",
+            "registration_number",
+            "state_code",
+            "rto_code",
+            "series",
+            "unique_number",
+            "make",
+            "model",
+            "color",
+        ]
+        read_only_fields = ["id", "registration_number"]
+
+    def validate_state_code(self, value):
+        code = value.upper()
+        if code not in INDIAN_STATE_CODES:
+            raise serializers.ValidationError(
+                "Enter a valid Indian state/UT registration code (e.g. KA, MH, DL)."
+            )
+        return code
+
+    def validate_series(self, value):
+        return value.upper()
+
+    def validate(self, attrs):
+        provided = [field for field in self.SEGMENT_FIELDS if field in attrs]
+
+        if self.instance is None:
+            missing = {
+                field: ["This field is required."]
+                for field in self.SEGMENT_FIELDS
+                if field not in attrs
+            }
+            if missing:
+                raise serializers.ValidationError(missing)
+            canonical = Vehicle.build_registration_number(
+                **{field: attrs[field] for field in self.SEGMENT_FIELDS}
+            )
+        elif provided and len(provided) != len(self.SEGMENT_FIELDS):
+            raise serializers.ValidationError(
+                "Provide all four registration segments together, or none."
+            )
+        elif provided:
+            canonical = Vehicle.build_registration_number(
+                **{field: attrs[field] for field in self.SEGMENT_FIELDS}
+            )
+        else:
+            canonical = self.instance.registration_number
+
+        # V3: check before the DB unique constraint so a duplicate is a clean
+        # 400 rather than a 500 from an IntegrityError. The constraint remains
+        # the real guard against a concurrent insert.
+        duplicates = Vehicle.objects.filter(registration_number=canonical)
+        if self.instance is not None:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+        if duplicates.exists():
+            raise serializers.ValidationError(
+                {
+                    "registration_number": (
+                        "A vehicle with this registration number already exists."
+                    )
+                }
+            )
+
+        attrs["registration_number"] = canonical
+        return attrs
+
+    def create(self, validated_data):
+        # The segment fields are input-only; the model stores the canonical
+        # plate. Dropping them here keeps ``Vehicle.objects.create`` to real
+        # columns.
+        for field in self.SEGMENT_FIELDS:
+            validated_data.pop(field, None)
+        return Vehicle.objects.create(**validated_data)
+
+    def update(self, instance, validated_data):
+        for field in self.SEGMENT_FIELDS:
+            validated_data.pop(field, None)
+        return super().update(instance, validated_data)
+
