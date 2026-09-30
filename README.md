@@ -11,9 +11,9 @@ surface, consumer profile self-update, Administrator user management
 (list/create/suspend/role change), role-based authorization, and consumer
 **vehicle registration** with the Indian `SSRRLLNNNN` plate format. The next
 phase is Phase 3 (the parking domain). The authoritative specification is
-[`PROJECT.md`](PROJECT.md). For what is built and what comes next see
-[`docs/PROGRESS.md`](docs/PROGRESS.md); for the agreed architecture decisions see
-[`docs/DECISIONS.md`](docs/DECISIONS.md).
+[`PROJECT.md`](PROJECT.md). Documentation is now split per phase — start at
+[`docs/README.md`](docs/README.md), which is the navigation entry point, the
+phase tracker and the reading protocol.
 
 ---
 
@@ -37,9 +37,13 @@ ParkingManagementSystem/
 ├── README.md               # this file
 ├── requirements.txt        # Python dependencies (pinned)
 ├── .gitignore              # ignores .env, db.sqlite3, venvs, caches
-├── docs/
-│   ├── DECISIONS.md        # decision log (agreed architecture decisions)
-│   └── PROGRESS.md         # phase tracker + current working state
+├── docs/                   # per-phase docs (start at docs/README.md)
+│   ├── README.md           # navigation, phase tracker, reading protocol
+│   ├── decisions-index.md  # D-number -> the file holding the full entry
+│   ├── deferred-features.md
+│   ├── foundation/         # phases 0-1 + cross-cutting decisions (D1-D10)
+│   ├── phase-2-authentication/
+│   └── phase-3-parking/
 ├── backend/
 │   ├── manage.py
 │   ├── .env                # local secrets (git-ignored)
