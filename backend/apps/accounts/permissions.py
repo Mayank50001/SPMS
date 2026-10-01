@@ -92,3 +92,16 @@ class IsAdmin(HasRole):
 
     allowed_roles = (User.Role.ADMIN,)
     message = "This endpoint is available to administrators only."
+
+class IsAdminOrManager(HasRole):
+    """Allow Administrators and Parking Managers (role check only).
+
+    Used by the slot write endpoints. It answers the *role* question only; the
+    object-level question -- "is this manager assigned to that lot?" -- cannot be
+    answered by a permission class, so the view scopes its lot queryset instead
+    (PROJECT.md §20, Invariant 3). An unassigned lot therefore resolves to a
+    404, not a 403, exactly as D37 requires.
+    """
+    
+    allowed_roles = (User.Role.ADMIN, User.Role.MANAGER)
+    message = "This endpoint is available to administrators and parking managers only."

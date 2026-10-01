@@ -114,3 +114,91 @@ class ParkingLot(models.Model):
         if self.city_id is not None and self.number is not None:
             self.code = f"{self.city.code}-{self.number:03d}"
         super().save(*args, **kwargs)
+
+class ParkingSlot(models.Model):
+    """A numbered, typed bay inside a :class:`ParkingLot` (D31, D32, D33).
+
+    The slot stores only **physical/operational** state. ``RESERVED`` and
+    ``HELD`` are *derived from bookings* in Phase 4/5 and must never appear
+    here (D33, revising D2): storing them would collapse physical occupancy,
+    booking reservation and temporary hold -- the three concepts PROJECT.md
+    §18 forbids merging.
+
+    ``status`` therefore holds ``AVAILABLE`` / ``OCCUPIED`` /
+    ``OUT_OF_SERVICE`` only. ``OCCUPIED`` is written by Phase 6 occupancy
+    actions; this phase's API exposes ``AVAILABLE`` / ``OUT_OF_SERVICE`` so a
+    slot can be withdrawn without deleting it (D38).
+    """
+
+    class SlotType(models.TextChoices):
+        """Fixed domain types (D32). Not a table; adding one is a migration."""
+
+        REGULAR = "REGULAR", "Regular"
+        COMPACT = "COMPACT", "Compact"
+        LARGE = "LARGE", "Large"
+        TWO_WHEELER = "TWO_WHEELER", "Two-wheeler"
+        EV = "EV", "Electric vehicle"
+
+    class Status(models.TextChoices):
+        """Stored physical/operational state only (D33)."""
+
+        AVAILABLE = "AVAILABLE", "Available"
+        OCCUPIED = "OCCUPIED", "Occupied"
+        OUT_OF_SERVICE = "OUT_OF_SERVICE", "Out of service"
+
+    #: CASCADE (3.2 decision 1): a slot has no meaning without its lot. D38
+    #: already forbids lot deletion through the API, so this only governs direct
+    #: DB/admin deletion. Mirrors Vehicle -> owner (V4).
+    lot = models.ForeignKey(
+        ParkingLot,
+        on_delete=models.CASCADE,
+        related_name="slots",
+    )
+
+    #: Manager-supplied identifier within the lot (D31), e.g. ``A-01``. Stored
+    #: canonically (strip + upper, like the city code D29-S1) so ``a-01`` and
+    #: ``A-01`` cannot become two different bays.
+    number = models.CharField(max_length=20)
+
+    #: Optional floor label (3.2 decision 2). Char so ``G``, ``1``, ``B1`` read
+    #: naturally.
+    floor = models.CharField(max_length=10, blank=True)
+
+    slot_type = models.CharField(
+        max_length=20,
+        choices=SlotType.choices,
+        default=SlotType.REGULAR,
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.AVAILABLE,
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["id"]
+        verbose_name = "parking slot"
+        verbose_name_plural = "parking slots"
+        constraints = [
+            # D31: the DB constraint is the real guard; the serializer pre-checks
+            # so a duplicate is a clean 400 rather than a 500.
+            models.UniqueConstraint(
+                fields=["lot", "number"],
+                name="unique_slot_number_per_lot",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.lot.code} - {self.number}"
+
+    def save(self, *args, **kwargs):
+        # Single stored representation for the slot identifier (3.2 decision 6),
+        # the same rule as email (D13), the plate (D28) and the city code
+        # (D29-S1). ``.update()`` bypasses this; nothing does that today.
+        if self.number:
+            self.number = self.number.strip().upper()
+        super().save(*args, **kwargs)

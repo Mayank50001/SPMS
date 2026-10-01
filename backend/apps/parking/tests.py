@@ -14,7 +14,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 
-from .models import City, ParkingLot
+from .models import City, ParkingLot, ParkingSlot
 
 
 class CityModelTests(TestCase):
@@ -247,3 +247,234 @@ class ParkingApiTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("code", response.data)
+
+class ParkingSlotModelTests(TestCase):
+    """Model rules for slots (increment 3.2)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        cls.city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=cls.city, number=1, name="MG Road", address_line="MG Road 1"
+        )
+        cls.other_lot = ParkingLot.objects.create(
+            city=cls.city, number=2, name="Other", address_line="Other 2"
+        )
+
+    def test_defaults(self):
+        slot = ParkingSlot.objects.create(lot=self.lot, number="A-01")
+        self.assertEqual(slot.slot_type, ParkingSlot.SlotType.REGULAR)
+        self.assertEqual(slot.status, ParkingSlot.Status.AVAILABLE)
+        self.assertEqual(slot.floor, "")
+
+    def test_number_is_canonicalised(self):
+        slot = ParkingSlot.objects.create(lot=self.lot, number="  a-01 ")
+        self.assertEqual(slot.number, "A-01")
+
+    def test_number_is_unique_within_a_lot(self):
+        ParkingSlot.objects.create(lot=self.lot, number="A-01")
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ParkingSlot.objects.create(lot=self.lot, number="A-01")
+
+    def test_same_number_in_different_lots_is_allowed(self):
+        ParkingSlot.objects.create(lot=self.lot, number="A-01")
+        ParkingSlot.objects.create(lot=self.other_lot, number="A-01")
+        self.assertEqual(ParkingSlot.objects.count(), 2)
+
+    def test_deleting_a_lot_cascades_to_its_slots(self):
+        ParkingSlot.objects.create(lot=self.lot, number="A-01")
+        self.lot.delete()
+        self.assertEqual(ParkingSlot.objects.count(), 0)
+
+    def test_str_includes_lot_code_and_number(self):
+        slot = ParkingSlot.objects.create(lot=self.lot, number="A-01")
+        self.assertEqual(str(slot), "BLR-001 - A-01")
+
+class ParkingSlotApiTests(TestCase):
+    """Slot API surface, lot scoping and Invariant 3 (increment 3.2)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        cls.city = City.objects.create(code="BLR", name="Bengaluru")
+
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.manager = User.objects.create_user(
+            email="manager@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Manager",
+            role=User.Role.MANAGER,
+        )
+        cls.other_manager = User.objects.create_user(
+            email="other@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Other",
+            role=User.Role.MANAGER,
+        )
+        cls.admin = User.objects.create_user(
+            email="admin@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Admin",
+            role=User.Role.ADMIN,
+        )
+
+        cls.lot = ParkingLot.objects.create(
+            city=cls.city, number=1, name="MG Road", address_line="MG Road 1",
+            manager=cls.manager,
+        )
+        cls.inactive_lot = ParkingLot.objects.create(
+            city=cls.city, number=2, name="Closed", address_line="Closed 2",
+            manager=cls.manager, is_active=False,
+        )
+        cls.other_lot = ParkingLot.objects.create(
+            city=cls.city, number=3, name="Other", address_line="Other 3",
+            manager=cls.other_manager,
+        )
+        cls.slot = ParkingSlot.objects.create(lot=cls.lot, number="A-01")
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _login(self, user):
+        self.client.force_authenticate(user=user)
+
+    def _slots_url(self, lot):
+        return f"/api/parking-lots/{lot.id}/slots/"
+
+    def _slot_url(self, lot, slot):
+        return f"/api/parking-lots/{lot.id}/slots/{slot.id}/"
+
+    def test_anonymous_can_list_slots_of_an_active_lot(self):
+        response = self.client.get(self._slots_url(self.lot))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([s["number"] for s in response.data], ["A-01"])
+
+    def test_anonymous_gets_404_for_slots_of_an_inactive_lot(self):
+        response = self.client.get(self._slots_url(self.inactive_lot))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_manager_can_read_slots_of_an_assigned_inactive_lot(self):
+        self._login(self.manager)
+        response = self.client.get(self._slots_url(self.inactive_lot))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_listing_returns_only_that_lots_slots(self):
+        ParkingSlot.objects.create(lot=self.other_lot, number="B-01")
+        response = self.client.get(self._slots_url(self.lot))
+        self.assertEqual([s["number"] for s in response.data], ["A-01"])
+
+    # --- writes: Admin or the lot's Manager -----------------------------
+
+    def test_anonymous_cannot_create_slot(self):
+        response = self.client.post(self._slots_url(self.lot), {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_consumer_cannot_create_slot(self):
+        self._login(self.consumer)
+        response = self.client.post(self._slots_url(self.lot), {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_unassigned_manager_gets_404(self):
+        self._login(self.other_manager)
+        payload = {"number": "Z-09", "slot_type": "REGULAR"}
+        response = self.client.post(self._slots_url(self.lot), payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_assigned_manager_can_create_slot(self):
+        self._login(self.manager)
+        payload = {"number": "A-02", "floor": "G", "slot_type": "EV"}
+        response = self.client.post(self._slots_url(self.lot), payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["number"], "A-02")
+        self.assertEqual(response.data["slot_type"], "EV")
+        self.assertEqual(response.data["status"], "AVAILABLE")
+        self.assertEqual(response.data["lot_code"], "BLR-001")
+
+    def test_admin_can_create_slot_and_defaults_apply(self):
+        self._login(self.admin)
+        response = self.client.post(
+            self._slots_url(self.lot), {"number": "A-03"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["slot_type"], "REGULAR")
+        self.assertEqual(response.data["status"], "AVAILABLE")
+
+    def test_duplicate_number_in_lot_is_rejected(self):
+        self._login(self.admin)
+        # Lower-case "a-01" proves canonicalisation feeds the duplicate check.
+        response = self.client.post(
+            self._slots_url(self.lot), {"number": "a-01"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("number", response.data)
+
+    def test_same_number_in_another_lot_is_allowed(self):
+        self._login(self.admin)
+        response = self.client.post(
+            self._slots_url(self.other_lot), {"number": "A-01"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_invalid_slot_type_is_rejected(self):
+        self._login(self.admin)
+        response = self.client.post(
+            self._slots_url(self.lot),
+            {"number": "A-04", "slot_type": "SPACESHIP"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("slot_type", response.data)
+
+    def test_blank_number_is_rejected(self):
+        self._login(self.admin)
+        response = self.client.post(
+            self._slots_url(self.lot), {"number": "   "}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("number", response.data)
+
+    # --- status changes -------------------------------------------------
+
+    def test_manager_can_withdraw_and_restore_a_slot(self):
+        self._login(self.manager)
+        url = self._slot_url(self.lot, self.slot)
+
+        response = self.client.patch(url, {"status": "OUT_OF_SERVICE"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.slot.refresh_from_db()
+        self.assertEqual(self.slot.status, "OUT_OF_SERVICE")
+
+        response = self.client.patch(url, {"status": "AVAILABLE"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_occupied_status_is_not_settable_through_the_slot_api(self):
+        self._login(self.manager)
+        response = self.client.patch(
+            self._slot_url(self.lot, self.slot),
+            {"status": "OCCUPIED"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("status", response.data)
+
+    # --- lifecycle ------------------------------------------------------
+
+    def test_delete_and_put_are_not_allowed(self):
+        self._login(self.admin)
+        url = self._slot_url(self.lot, self.slot)
+        self.assertEqual(
+            self.client.delete(url).status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+        self.assertEqual(
+            self.client.put(url, {}, format="json").status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+        
+        

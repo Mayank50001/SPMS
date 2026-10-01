@@ -18,7 +18,7 @@ context — what each phase built (**PROGRESS**) and the decisions made or pendi
 | 0 | Repository setup | ✅ Done | [`foundation/PROGRESS.md`](foundation/PROGRESS.md) |
 | 1 | Backend foundation (config, PostgreSQL, health) | ✅ Done | [`foundation/PROGRESS.md`](foundation/PROGRESS.md) |
 | 2 | Authentication and users | ✅ Done | [`phase-2-authentication/`](phase-2-authentication/) |
-| 3 | **Parking domain (lots, slots, pricing, assignments)** | 🟡 In progress — 3.1 done | [`phase-3-parking/`](phase-3-parking/) |
+| 3 | **Parking domain (lots, slots, pricing, assignments)** | 🟡 In progress — 3.2 done | [`phase-3-parking/`](phase-3-parking/) |
 | 4 | Booking | ⚪ Not started | — |
 | 5 | Payment | ⚪ Not started | — |
 | 6 | Occupancy simulation | ⚪ Not started | — |

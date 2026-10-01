@@ -11,24 +11,71 @@ like a consumer.
 """
 
 from django.db.models import Q
+from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.permissions import SAFE_METHODS, AllowAny
 from rest_framework.response import Response
 
 from apps.accounts.models import User
-from apps.accounts.permissions import IsAdmin
+from apps.accounts.permissions import IsAdmin, IsAdminOrManager
 
-from .models import City, ParkingLot
+from .models import City, ParkingLot, ParkingSlot
 from .serializers import (
     CitySerializer,
     ParkingLotSerializer,
     ParkingLotWriteSerializer,
+    ParkingSlotSerializer,
+    ParkingSlotWriteSerializer
 )
 
 def _is_admin(request):
     """True when the caller is an authenticated Administrator."""
     user = request.user
     return user.is_authenticated and user.role == User.Role.ADMIN
+
+class LotScopedMixin:
+    """Shared lot lookup for the nested slot views (D37, Invariant 3).
+
+    The URL always names a lot, so "may this caller address that lot?" is
+    answered once here:
+
+    * Admin -- any lot.
+    * Safe methods -- the public active catalogue; a Manager additionally sees
+      their own lots even when inactive (D38), so a manager can inspect a
+      deactivated assigned lot.
+    * Writes -- only the lot's assigned Manager. An unassigned manager gets an
+      empty queryset, i.e. a **404**, never a leak (D37/D28).
+
+    Object-level enforcement is *scoping the queryset*, exactly as the
+    permissions module documents: a role class cannot answer "is this manager
+    the lot's manager?".
+    """
+
+    def _visible_lot_queryset(self):
+        queryset = ParkingLot.objects.all()
+        user = self.request.user
+
+        if user.is_authenticated and user.role == User.Role.ADMIN:
+            return queryset
+
+        if self.request.method in SAFE_METHODS:
+            if user.is_authenticated and user.role == User.Role.MANAGER:
+                return queryset.filter(Q(is_active =True) | Q(manager=user))
+            return queryset.filter(is_active=True)
+
+        return queryset.filter(manager=user)
+
+    def get_lot(self):
+        if not hasattr(self, "_lot"):
+            self._lot = get_object_or_404(
+                self._visible_lot_queryset(), pk=self.kwargs["lot_pk"]
+            )
+        return self._lot
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["lot"] = self.get_lot()
+        return context
 
 class CityListCreateView(generics.ListCreateAPIView):
     """List cities (public) or add a city (Administrator only)."""
@@ -109,3 +156,69 @@ class ParkingLotDetailView(generics.RetrieveUpdateAPIView):
         serializer.is_valid(raise_exception=True)
         lot = serializer.save()
         return Response(ParkingLotSerializer(lot).data)
+
+class ParkingSlotListCreateView(LotScopedMixin, generics.ListCreateAPIView):
+    """List slots of a lot (public) or add one (Admin / the lot's Manager).
+
+    ``GET  /api/parking-lots/{lot_pk}/slots/``
+    ``POST /api/parking-lots/{lot_pk}/slots/``
+
+    Reads are public like the lot catalogue (D37); the listing returns each
+    slot's stored ``status`` only -- the time-window availability query is
+    Phase 4.
+    """
+
+    def get_permissions(self):
+        if self.request.method in SAFE_METHODS:
+            return [AllowAny()]
+        return [IsAdminOrManager()]
+
+    def get_queryset(self):
+        return ParkingSlot.objects.filter(lot=self.get_lot()).select_related("lot")
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return ParkingSlotWriteSerializer
+        return ParkingSlotSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        slot = serializer.save(lot=self.get_lot())
+        return Response(
+            ParkingSlotSerializer(slot).data, status=status.HTTP_201_CREATED
+        )
+
+
+class ParkingSlotDetailView(LotScopedMixin, generics.RetrieveUpdateAPIView):
+    """Read one slot (public) or edit it (Admin / the lot's Manager).
+
+    ``GET   /api/parking-lots/{lot_pk}/slots/{pk}/``
+    ``PATCH /api/parking-lots/{lot_pk}/slots/{pk}/``
+
+    ``PUT`` is disabled so a partial payload cannot blank fields; ``DELETE`` is
+    disabled because lifecycle is a flag (D38) -- withdrawing a slot is
+    ``status=OUT_OF_SERVICE``.
+    """
+
+    http_method_names = ["get", "patch", "head", "options"]
+    def get_permissions(self):
+        if self.request.method in SAFE_METHODS:
+            return [AllowAny()]
+        return [IsAdminOrManager()]
+
+    def get_queryset(self):
+        return ParkingSlot.objects.filter(lot=self.get_lot()).select_related("lot")
+
+    def get_serializer_class(self):
+        if self.request.method == "PATCH":
+            return ParkingSlotWriteSerializer
+        return ParkingSlotSerializer
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        slot = serializer.save()
+        return Response(ParkingSlotSerializer(slot).data)

@@ -14,7 +14,7 @@ never from ``models.py`` or ``apps.py``.
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from .models import City, ParkingLot
+from .models import City, ParkingLot, ParkingSlot
 
 User = get_user_model()
 
@@ -132,4 +132,82 @@ class ParkingLotWriteSerializer(serializers.ModelSerializer):
                 )
 
         return attrs
+
+class ParkingSlotSerializer(serializers.ModelSerializer):
+    """Read representation of a slot (D31, D32, D33).
+
+    ``lot`` is the owning lot's id; ``lot_code`` is derived for display so a
+    client does not have to join to render "BLR-001 / A-01".
+    """
+
+    lot_code = serializers.CharField(source="lot.code", read_only=True)
+
+    class Meta:
+        model = ParkingSlot
+        fields = [
+            "id",
+            "lot",
+            "lot_code",
+            "number",
+            "floor",
+            "slot_type",
+            "status",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+class ParkingSlotWriteSerializer(serializers.ModelSerializer):
+    """Create/update a slot from the body, with the lot taken from the URL.
+
+    ``lot`` is deliberately not a field: it comes from the nested route and is
+    passed to ``save(lot=...)`` by the view, so a client cannot create a slot in
+    a lot it never addressed (Invariant 3).
+
+    ``status`` is restricted to the two states a Phase 3 caller may set (3.2
+    decision 7, D38). ``OCCUPIED`` is written by Phase 6 occupancy actions, not
+    here, so sending it is a clean 400 (PROJECT.md §28 boundary).
+    """
+
+    SUPERVISED_STATUSES = [
+        (ParkingSlot.Status.AVAILABLE.value, ParkingSlot.Status.AVAILABLE.label),
+        (
+            ParkingSlot.Status.OUT_OF_SERVICE.value, ParkingSlot.Status.OUT_OF_SERVICE.label
+        ),
+    ]
+
+    status = serializers.ChoiceField(choices=SUPERVISED_STATUSES, required=False)
+
+    class Meta:
+        model = ParkingSlot
+        fields = ["id", "number", "floor", "slot_type", "status"]
+        read_only_fields = ["id"]
+
+    def validate_number(self, value):
+        # Canonicalise here as well as in the model so the duplicate pre-check
+        # below compares the same form the DB will store (3.2 decision 6).
+        value = value.strip().upper()
+        if not value:
+            raise serializers.ValidationError("Slot number cannot be blank.")
+        return value
+
+    def validate(self, attrs):
+        lot = self.context.get("lot")
+        number = attrs.get("number")
+        if number is None and self.instance is not None:
+            number = self.instance.number
+
+        # Pre-check (lot, number) so a duplicate is a clean 400; the DB
+        # UniqueConstraint stays the guard against a concurrent insert.
+        if lot is not None and number:
+            duplicates = ParkingSlot.objects.filter(lot=lot, number=number)
+            if self.instance is not None:
+                duplicates = duplicates.exclude(pk=self.instance.pk)
+            if duplicates.exists():
+                raise serializers.ValidationError(
+                    {"number": "This slot number is already used in this lot."}
+                )
+        return attrs
+
+
         

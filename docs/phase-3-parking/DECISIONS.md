@@ -4,7 +4,9 @@ Status as of **2026-10-01**:
 
 - **Accepted:** D29 (incl. S1 and S2 below), D30, D31, D32, D33 (revises D2),
   D34, D35, D36, D37, D38.
-- **Open:** none. Increment 3.1 is unblocked.
+- **Open:** none. Increment 3.2 is complete; its decisions are recorded in the
+  "Increment 3.2 implementation decisions" section at the end of this file.
+  Increment 3.3 (`Tariff` / `BusinessRule`) is the next increment.
 
 > A "Decision" below is the human's, not the agent's. Rationale/Consequence
 > record why, so the choice can be defended later.
@@ -241,5 +243,34 @@ Names follow PROJECT.md §22 ("starting points, not immutable").
 **Status:** Accepted (2026-10-01). The developer delegated the style/permission
 choice with the instruction to do "what's best according to a real world parking
 system and user convenience"; the public-read decision above follows that.
-Increment 3.1 implements the city and lot catalogue endpoints; slot endpoints
-arrive with the slot increment.
+Increment 3.1 implements the city and lot catalogue endpoints; increment 3.2
+implements the nested slot endpoints (permissions and scoping as described
+above).
+
+---
+
+## Increment 3.2 implementation decisions (accepted 2026-10-01)
+
+These settle the questions D31/D32 left open and the ordering question for the
+`ParkingSlot` increment. They refine D29–D38; they do not replace them.
+
+- **D31 — slot `lot` FK deletion behaviour** — `ParkingSlot.lot` uses
+  `on_delete=CASCADE`. A slot has no meaning without its lot, and D38 already
+  forbids lot deletion through the API, so this only governs direct DB/admin
+  deletion. Mirrors the `Vehicle → owner` precedent (V4).
+- **D31 — `floor` type** — optional `CharField(max_length=10, blank=True)`, so
+  `G`, `1`, `B1`, `Basement-2` all read naturally.
+- **D32 — final `slot_type` enum** — `REGULAR`, `COMPACT`, `LARGE`,
+  `TWO_WHEELER`, `EV`. `ACCESSIBLE` is deliberately not added (no SRS
+  requirement; adding a type later is a migration, D32).
+- **D37 — manager slot writes** — enforced now, not deferred to 3.4: a slot
+  write requires an Administrator **or** the lot's assigned Manager.
+  Object-level enforcement is done by scoping the lot queryset, so an
+  unassigned/unowned lot is a **`404`, never a leak** (consistent with D37/D28).
+- **D34 — ordering** — slots are built in 3.2 **without** the "creating a slot of
+  an unpriced type is rejected" check; that check lands in 3.3 together with
+  `Tariff`, the data it needs. Recorded as a deliberate temporary gap.
+- **D38 — slot status writes** — a Phase 3 caller (Admin or the lot's Manager)
+  may set only `AVAILABLE` / `OUT_OF_SERVICE` through the slot API. `OCCUPIED`
+  is written by Phase 6 occupancy actions, not by this increment (PROJECT.md §28
+  boundary). The model still stores all three values (D33).
