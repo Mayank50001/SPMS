@@ -5,9 +5,9 @@ browse lots before signing in -- a deliberate, documented opt-out of the
 deny-by-default posture (D18) for read-only, non-PII data. Every write requires
 an Administrator.
 
-Only ``is_active=True`` lots are visible to non-Administrators. Manager-scoped
-lot views land with the manager increment; today a Manager browses active lots
-like a consumer.
+Only ``is_active=True`` lots are visible to anonymous visitors and Consumers. A
+Manager's catalogue is scoped to their assigned lots, including deactivated ones
+(D37, D38; increment 3.4).
 """
 
 from django.db.models import Q
@@ -40,6 +40,39 @@ def _is_admin(request):
     """True when the caller is an authenticated Administrator."""
     user = request.user
     return user.is_authenticated and user.role == User.Role.ADMIN
+
+def _visible_lot_catalogue(request):
+    """Lots a caller sees in the catalogue *listing* (D37, 3.4 decision 1a).
+
+    Admin -> every lot. Manager -> only the lots assigned to them, active or
+    deactivated (D38). Everyone else (anonymous, Consumer) -> active lots only,
+    so the public catalogue is unchanged.
+    """
+    queryset = ParkingLot.objects.select_related("city", "manager")
+    user = request.user
+
+    if _is_admin(request):
+        return queryset
+    if user.is_authenticated and user.role == User.Role.MANAGER:
+        return queryset.filter(manager=user)
+    return queryset.filter(is_active=True)
+
+def _addressable_lot(request):
+    """Lots a caller may fetch by id (D37, 3.4 decision 2).
+
+    A single lot follows the same public rule as the nested slot/tariff views:
+    a Manager may address an *active* lot (it is public anyway) **or** one
+    assigned to them even when deactivated (D38), so nobody is ever shown less
+    than an anonymous visitor can already see.
+    """
+    queryset = ParkingLot.objects.select_related("city", "manager")
+    user = request.user
+
+    if _is_admin(request):
+        return queryset
+    if user.is_authenticated and user.role == User.Role.MANAGER:
+        return queryset.filter(Q(is_active=True) | Q(manager=user))
+    return queryset.filter(is_active=True)
 
 class LotScopedMixin:
     """Shared lot lookup for the nested slot views (D37, Invariant 3).
@@ -105,9 +138,7 @@ class ParkingLotListCreateView(generics.ListCreateAPIView):
         return [IsAdmin()]
 
     def get_queryset(self):
-        queryset = ParkingLot.objects.select_related("city", "manager")
-        if not _is_admin(self.request):
-            queryset = queryset.filter(is_active=True)
+        queryset = _visible_lot_catalogue(self.request)
 
         city_code = self.request.query_params.get("city")
         if city_code:
@@ -147,10 +178,7 @@ class ParkingLotDetailView(generics.RetrieveUpdateAPIView):
         return [IsAdmin()]
 
     def get_queryset(self):
-        queryset = ParkingLot.objects.select_related("city", "manager")
-        if not _is_admin(self.request):
-            queryset = queryset.filter(is_active=True)
-        return queryset
+        return _addressable_lot(self.request)
 
     def get_serializer_class(self):
         if self.request.method == "PATCH":
@@ -312,7 +340,7 @@ class TariffDetailView(LotScopedMixin, generics.RetrieveUpdateAPIView):
             )
         except MaxRateExceededError as exc:
             return Response(
-                {"error" : "RATE_ABOVE_MAX"},
+                {"error" : "RATE_ABOVE_MAXIMUM", "hourly_rate": [str(exc)]},
                 status=status.HTTP_409_CONFLICT
             )
         return Response(TariffSerializer(tariff).data)

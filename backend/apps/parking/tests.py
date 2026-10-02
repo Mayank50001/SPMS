@@ -799,4 +799,192 @@ class TariffApiTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
         self.assertEqual(response.data["error"], "MAX_RATE_BELOW_TARIFF")
         
-        
+class ManagerScopedLotReadTests(TestCase):
+    """Manager-scoped lot catalogue reads (increment 3.4; D37, D38)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        cls.city = City.objects.create(code="BLR", name="Bengaluru")
+
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com", password="Tr0ub4dor&3", full_name="Consumer"
+        )
+        cls.manager = User.objects.create_user(
+            email="manager@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Manager",
+            role=User.Role.MANAGER,
+        )
+        cls.other_manager = User.objects.create_user(
+            email="other@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Other",
+            role=User.Role.MANAGER,
+        )
+        cls.spare_manager = User.objects.create_user(
+            email="spare@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Spare",
+            role=User.Role.MANAGER,
+        )
+        cls.admin = User.objects.create_user(
+            email="admin@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Admin",
+            role=User.Role.ADMIN,
+        )
+
+        cls.assigned = ParkingLot.objects.create(
+            city=cls.city,
+            number=1,
+            name="MG Road",
+            address_line="MG Road 1",
+            manager=cls.manager,
+        )
+        cls.assigned_closed = ParkingLot.objects.create(
+            city=cls.city,
+            number=2,
+            name="MG Road Depot",
+            address_line="Depot 2",
+            manager=cls.manager,
+            is_active=False,
+        )
+        cls.unassigned_active = ParkingLot.objects.create(
+            city=cls.city, number=3, name="Central", address_line="Central 3"
+        )
+        cls.other_managers = ParkingLot.objects.create(
+            city=cls.city,
+            number=4,
+            name="Rival",
+            address_line="Rival 4",
+            manager=cls.other_manager,
+        )
+        cls.other_managers_closed = ParkingLot.objects.create(
+            city=cls.city,
+            number=5,
+            name="Rival Closed",
+            address_line="Rival 5",
+            manager=cls.other_manager,
+            is_active=False,
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _login(self, user):
+        self.client.force_authenticate(user=user)
+
+    def _list_ids(self):
+        response = self.client.get("/api/parking-lots/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return {lot["id"] for lot in response.data}
+
+    # --- manager listing: assigned-only (3.4 decision 1a) ---------------
+
+    def test_manager_list_returns_only_assigned_lots(self):
+        self._login(self.manager)
+        self.assertEqual(
+            self._list_ids(), {self.assigned.id, self.assigned_closed.id}
+        )
+
+    def test_manager_list_includes_a_deactivated_assigned_lot(self):
+        self._login(self.manager)
+        self.assertIn(self.assigned_closed.id, self._list_ids())
+
+    def test_manager_list_excludes_unassigned_active_lots(self):
+        self._login(self.manager)
+        self.assertNotIn(self.unassigned_active.id, self._list_ids())
+
+    def test_manager_list_excludes_another_managers_lots(self):
+        self._login(self.manager)
+        ids = self._list_ids()
+        self.assertNotIn(self.other_managers.id, ids)
+        self.assertNotIn(self.other_managers_closed.id, ids)
+
+    def test_manager_with_no_lots_sees_an_empty_list(self):
+        self._login(self.spare_manager)
+        self.assertEqual(self._list_ids(), set())
+
+    # --- manager listing: filters still apply (3.4 decision 3) ----------
+
+    def test_manager_search_filters_within_assigned_lots(self):
+        self._login(self.manager)
+        response = self.client.get("/api/parking-lots/?search=Depot")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [lot["id"] for lot in response.data], [self.assigned_closed.id]
+        )
+
+    def test_manager_city_filter_still_applies(self):
+        self._login(self.manager)
+        response = self.client.get("/api/parking-lots/?city=BLR")
+        self.assertEqual(
+            {lot["id"] for lot in response.data},
+            {self.assigned.id, self.assigned_closed.id},
+        )
+
+    # --- detail: active-or-assigned (3.4 decision 2) --------------------
+
+    def test_manager_can_read_a_deactivated_assigned_lot(self):
+        self._login(self.manager)
+        response = self.client.get(
+            f"/api/parking-lots/{self.assigned_closed.id}/"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_manager_can_read_an_unassigned_active_lot(self):
+        self._login(self.manager)
+        response = self.client.get(
+            f"/api/parking-lots/{self.unassigned_active.id}/"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_manager_can_read_another_managers_active_lot(self):
+        # The detail endpoint remains public; active lots are readable by anyone.
+        self._login(self.manager)
+        response = self.client.get(f"/api/parking-lots/{self.other_managers.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_manager_gets_404_for_another_managers_deactivated_lot(self):
+        self._login(self.manager)
+        response = self.client.get(
+            f"/api/parking-lots/{self.other_managers_closed.id}/"
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    # --- everyone else is unchanged (3.4 decision 4) ---------------------
+
+    def test_anonymous_list_is_active_only(self):
+        self.assertEqual(
+            self._list_ids(),
+            {
+                self.assigned.id,
+                self.unassigned_active.id,
+                self.other_managers.id,
+            },
+        )
+
+    def test_consumer_list_is_active_only(self):
+        self._login(self.consumer)
+        self.assertEqual(
+            self._list_ids(),
+            {
+                self.assigned.id,
+                self.unassigned_active.id,
+                self.other_managers.id,
+            },
+        )
+
+    def test_admin_list_includes_every_lot(self):
+        self._login(self.admin)
+        self.assertEqual(
+            self._list_ids(),
+            {
+                self.assigned.id,
+                self.assigned_closed.id,
+                self.unassigned_active.id,
+                self.other_managers.id,
+                self.other_managers_closed.id,
+            },
+        )

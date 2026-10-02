@@ -49,7 +49,7 @@ Full entries: [`phase-2-authentication/DECISIONS.md`](phase-2-authentication/DEC
 
 ## Phase 3 — Parking domain
 Full entries: [`phase-3-parking/DECISIONS.md`](phase-3-parking/DECISIONS.md)
-(Increments 3.2 and 3.3 also record implementation decisions refining
+(Increments 3.2, 3.3 and 3.4 also record implementation decisions refining
 D31/D32/D34/D35/D37/D38 at the end of that file.)
 
 | ID | Title | Status |

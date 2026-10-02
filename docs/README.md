@@ -18,7 +18,7 @@ context — what each phase built (**PROGRESS**) and the decisions made or pendi
 | 0 | Repository setup | ✅ Done | [`foundation/PROGRESS.md`](foundation/PROGRESS.md) |
 | 1 | Backend foundation (config, PostgreSQL, health) | ✅ Done | [`foundation/PROGRESS.md`](foundation/PROGRESS.md) |
 | 2 | Authentication and users | ✅ Done | [`phase-2-authentication/`](phase-2-authentication/) |
-| 3 | **Parking domain (lots, slots, pricing, assignments)** | 🟡 In progress — 3.3 done | [`phase-3-parking/`](phase-3-parking/) |
+| 3 | **Parking domain (lots, slots, pricing, assignments)** | ✅ Done (3.1–3.4) | [`phase-3-parking/`](phase-3-parking/) |
 | 4 | Booking | ⚪ Not started | — |
 | 5 | Payment | ⚪ Not started | — |
 | 6 | Occupancy simulation | ⚪ Not started | — |
@@ -44,7 +44,7 @@ docs/
 │   └── DECISIONS.md                # D11-D28
 └── phase-3-parking/
     ├── PROGRESS.md
-    └── DECISIONS.md                # D29-D38 (accepted; D33 revises D2) + 3.2/3.3 refinements
+    └── DECISIONS.md                # D29-D38 (accepted; D33 revises D2) + 3.2-3.4 refinements
 ```
 
 Each phase owns one `PROGRESS.md` (state) and one `DECISIONS.md` (decisions that

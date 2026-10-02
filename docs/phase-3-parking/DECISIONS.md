@@ -4,9 +4,10 @@ Status as of **2026-10-03**:
 
 - **Accepted:** D29 (incl. S1 and S2 below), D30, D31, D32, D33 (revises D2),
   D34, D35, D36, D37, D38.
-- **Open:** none. Increment 3.3 is complete; its decisions are recorded in the
-  "Increment 3.3 implementation decisions" section at the end of this file.
-  The next increment (3.4) is manager-scoped lot catalogue reads.
+- **Open:** none. **Phase 3 is closed** — its PROJECT.md §36 scope is delivered
+  by increments 3.1–3.4, whose decisions are recorded in the increment sections
+  at the end of this file. The former increment 3.5 is retired; its optional
+  ideas are folded into later phases (see `PROGRESS.md`).
 
 > A "Decision" below is the human's, not the agent's. Rationale/Consequence
 > record why, so the choice can be defended later.
@@ -292,9 +293,12 @@ singleton. They refine D34/D35/D37; they do not replace them.
   `{"error": "MAX_RATE_BELOW_TARIFF", "message": ...}` (PROJECT.md §33; the
   accounts `LAST_ADMINISTRATOR` precedent). The cap is left unchanged, so
   Invariant 4 holds at rest.
-- **D35 — tariff above the cap** — refused with `400 {"hourly_rate": [...]}`
-  (the submitted value is out of range, so the error is field-shaped). The check
-  itself still lives in `services.set_tariff`, not the serializer.
+- **D35 — tariff above the cap** — refused with `409` and the stable code
+  `RATE_ABOVE_MAXIMUM`, with the field detail alongside it
+  (`{"error": "RATE_ABOVE_MAXIMUM", "hourly_rate": [...]}`). The developer chose
+  the conflict-shaped response (matching the lowered-cap case) rather than a
+  field-only `400`. The check itself still lives in `services.set_tariff`, not
+  the serializer.
 - **D34 — unpriced slot types (Q3)** — creating a slot whose `(lot, slot_type)`
   has no tariff is refused with `400 {"slot_type": [...]}`; changing an existing
   slot *to* an unpriced type is refused the same way. Only the type being set is
@@ -320,3 +324,32 @@ singleton. They refine D34/D35/D37; they do not replace them.
 - **D35 — default cap** — a first-created singleton defaults to
   `max_hourly_rate = 100.00` INR, created lazily by `BusinessRule.load()` (no
   data migration). The Administrator edits it via `PATCH /api/business-rules/`.
+
+---
+
+## Increment 3.4 implementation decisions (accepted 2026-10-03)
+
+These settle the manager-scoped lot-read questions left by D37's table. They
+refine D37/D38; they do not replace them.
+
+- **D37 — manager list (Q1, decision 1a)** — a Manager's
+  `GET /api/parking-lots/` returns **only the lots assigned to them**, including
+  deactivated assigned lots (D38). Anonymous visitors and Consumers keep the
+  active-only catalogue. Accepted consequence: a logged-in Manager sees fewer
+  lots than an anonymous visitor; the manager endpoint is an operator "my lots"
+  view, so this is intended.
+- **D37 — single-lot read (Q2)** — `GET /api/parking-lots/{id}/` is
+  **active or assigned** (`Q(is_active=True) | Q(manager=user)`), matching the
+  nested slot/tariff views (`LotScopedMixin`). Because the read is public, this
+  guarantees a Manager is never shown less than an anonymous visitor, and lets a
+  Manager open a deactivated assigned lot at lot level.
+- **D37 — filters (Q3)** — `?city=` and `?search=` continue to apply, narrowing
+  the caller's already-scoped set. They never widen it.
+- **D37 — Administrator (Q4)** — an Administrator still sees every lot (active
+  and inactive, all managers); unchanged.
+- **Deliberate asymmetry** — the list (assigned-only) and the detail
+  (active-or-assigned) intentionally differ for a Manager; the detail is a public
+  endpoint and cannot be more restrictive than anonymous access.
+- Enforcement lives in two module helpers in `apps/parking/views.py`
+  (`_visible_lot_catalogue`, `_addressable_lot`), reusing `_is_admin`. No model,
+  serializer or URL change; assignment already exists (D36).

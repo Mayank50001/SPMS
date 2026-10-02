@@ -4,15 +4,17 @@ An academic mini-project: a software-based parking management platform that lets
 consumers discover lots and book slots, managers operate lots and walk-ins, and
 administrators manage users and view platform reports.
 
-**Phase 3 (the parking domain) is in progress — increment 3.3 is complete.**
+**Phase 3 (the parking domain) is complete (3.1–3.4).**
 Phases 0 (repository setup), 1 (backend foundation) and 2 (authentication and
 users) are done. Implemented so far: the custom email-based user model, consumer
 self-registration, the JWT authentication surface, consumer profile self-update,
 Administrator user management, role-based authorization, consumer **vehicle
 registration**, and the parking domain — the `City`/`ParkingLot` catalogue, the
-`ParkingSlot` model and API, and per-`(lot, slot_type)` **tariffs** capped by the
-Administrator's **`BusinessRule` maximum rate** (Invariant 4). The next increment
-is manager-scoped lot reads. The authoritative specification is
+`ParkingSlot` model and API, per-`(lot, slot_type)` **tariffs** capped by the
+Administrator's **`BusinessRule` maximum rate** (Invariant 4), and
+**manager-scoped lot reads** (Invariant 3). Phase 3's §36 scope is fully
+delivered; its optional consumer refinements are folded into later phases, so
+**Phase 4 (booking) is next**. The authoritative specification is
 [`PROJECT.md`](PROJECT.md). Documentation is split per phase — start at
 [`docs/README.md`](docs/README.md), the navigation entry point, phase tracker and
 reading protocol.
@@ -185,7 +187,9 @@ npm run build
 > returned otherwise and a `401` when unauthenticated. Self-registration can
 > only produce a `CONSUMER`; privileged accounts exist only via `POST /api/users/`.
 > Vehicles are consumer-only and scoped to the caller — another account's
-> vehicle returns `404`, not `403`. Parking reads are public (D37); parking
+> vehicle returns `404`, not `403`. Parking reads are public (D37); a logged-in
+> Manager's `GET /api/parking-lots/` returns their assigned lots (including
+> deactivated ones), while the single-lot read is active-or-assigned. Parking
 > writes are Administrator-only, except slots and tariffs which also accept the
 > lot's assigned Manager (Invariant 3) — an unassigned lot returns `404`, never
 > `403`. `BusinessRule` is a singleton at `/api/business-rules/`; lowering its

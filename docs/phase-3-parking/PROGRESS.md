@@ -1,27 +1,29 @@
-# Progress — Phase 3 (Parking domain) 🟡 IN PROGRESS
+# Progress — Phase 3 (Parking domain) ✅ COMPLETE
 
 > **Scope (PROJECT.md §36):** `ParkingLot`, `ParkingSlot`, slot types, pricing and
 > manager assignment, plus the manager-authorization and lot-assignment rules.
 > Decisions are in [`DECISIONS.md`](DECISIONS.md) (D29–D38, all **accepted**,
-> plus the increment-3.2 and increment-3.3 refinements at the end of that file).
+> plus the increment-3.2, 3.3 and 3.4 refinements at the end of that file).
 > Working conventions and the reading protocol: [`../README.md`](../README.md).
 
-Last updated: 2026-10-03 · **Increment 3.3 complete.** Next: **increment 3.4 —
-manager-scoped lot reads** (see "Next" below).
+Last updated: 2026-10-03 · **Phase 3 closed — §36 scope delivered (3.1–3.4),
+89 tests green.** The former increment 3.5 is retired: its optional ideas are
+folded into later phases (see "Optional follow-ups" below). Phase 4 (Booking) is
+the next phase.
 
 ---
 
 ## Start here (fresh session)
 
-Reading order — do not read anything else unless a task needs it:
+Phase 3 is closed; read this file only for parking context. The reading order is:
 
 1. [`../README.md`](../README.md) — conventions + reading protocol.
-2. This file — state, what 3.3 built, and the next brief.
+2. This file — what the parking domain built and the optional follow-ups.
 3. [`DECISIONS.md`](DECISIONS.md) — D29–D38 (the parking decisions).
 4. Only if a task touches it: the "Dependencies on earlier phases" table below.
 
-Then: answer the "Decisions to confirm at the start of 3.4" list, and build
-increment 3.4 only.
+Then: start **Phase 4 (Booking)** in a new session — surface its decisions first,
+write no code until they are chosen. Nothing in Phase 3 is left open.
 
 ---
 
@@ -30,10 +32,12 @@ increment 3.4 only.
 All parking decisions are **accepted** (full entries in `DECISIONS.md`):
 D29 (+ S1, S2), D30, D31, D32, D33 (**revises D2**), D34, D35, D36, D37, D38,
 plus the **Increment 3.2 implementation decisions** (FK cascade, `floor` type,
-final `slot_type` enum, manager slot writes, D34 ordering, status-write scope)
-and the **Increment 3.3 implementation decisions** (singleton fixed PK, cap-change
+final `slot_type` enum, manager slot writes, D34 ordering, status-write scope),
+the **Increment 3.3 implementation decisions** (singleton fixed PK, cap-change
 `409`, unpriced-type rejection, rate floor, lock-based concurrency, public reads,
-URL shapes, default cap) recorded at the end of `DECISIONS.md`.
+URL shapes, default cap) and the **Increment 3.4 implementation decisions**
+(assigned-only manager list, active-or-assigned detail, filters, admin unchanged)
+recorded at the end of `DECISIONS.md`.
 
 ---
 
@@ -107,10 +111,9 @@ parking test meets the same seed data.
 
 ### Known, deliberate gaps from 3.1
 
-- **Manager-scoped lot views are not built.** A Manager currently browses active
-  lots like a consumer; D37 says a Manager should see assigned lots. Slot
-  reads/writes already honour manager assignment (3.2); the manager-scoped lot
-  *list* remains for 3.4/3.5.
+- **Manager-scoped lot views were not built in 3.1.** A Manager once browsed
+  active lots like a consumer; D37's assigned-lot scoping for the lot catalogue
+  landed in 3.4 (slot/tariff scoping earlier).
 - **No pagination** (Phase 10 hardening), consistent with accounts.
 - **`City` has no update endpoint** — codes are immutable by design (D29-S1).
 
@@ -187,10 +190,9 @@ slot API).
   (recorded in `DECISIONS.md`, increment 3.2 decisions; resolved by 3.3).
 - **`OCCUPIED` is not settable through the slot API** — Phase 6 occupancy
   actions own that write (PROJECT.md §28 boundary).
-- **Manager-scoped `GET /api/parking-lots/` is still not built.** A Manager
-  browses the active lot list like a consumer; lot-level scoping for reads
-  arrives with a later lot-catalogue refinement (3.4/3.5). Slot reads already
-  honour manager assignment.
+- **Manager-scoped `GET /api/parking-lots/` was still not built in 3.2.** A
+  Manager browsed the active lot list like a consumer; lot-level read scoping
+  landed in 3.4. Slot reads already honoured manager assignment.
 - **No pagination** (Phase 10), consistent with the rest.
 
 ---
@@ -276,44 +278,85 @@ creating a slot of an unpriced type.
 
 ---
 
-## Next — increment 3.4: manager-scoped lot reads
+## Increment 3.4 — manager-scoped lot reads ✅
 
-### Goal
+### What it delivers
 
-Finish the Invariant 3 surface that slots (3.2) and tariffs (3.3) already honour.
-D37 says a Manager should see their **assigned lots**, but the lot catalogue list
-still returns every active lot to a Manager, exactly as it does to a consumer.
-That is the last exposed surface where a Manager's view is not scoped to
-assignment.
+The lot catalogue read is now role-aware, completing the Invariant 3 surface that
+slots (3.2) and tariffs (3.3) already enforced on writes. A Manager's
+`GET /api/parking-lots/` returns their assigned lots (including deactivated
+ones); the single-lot read is "active or assigned"; Consumers, anonymous
+visitors and Administrators are unchanged.
 
-### Decisions to confirm at the start of 3.4 (small — surface, don't assume)
+### Files
 
-1. **What a Manager's `GET /api/parking-lots/` returns.** Options: (a) assigned
-   lots only, including inactive assigned lots (D38 lets a Manager inspect a
-   deactivated assigned lot, and the slot views already do this); (b) assigned
-   lots plus all active lots (so a Manager can still browse); (c) unchanged.
-   Recommend **(a)** — it is what D37's table states and what Invariant 3 means.
-2. **Whether a Manager's `GET /api/parking-lots/{id}/` follows the same rule.**
-   Today a non-Admin sees only `is_active=True`, so a Manager cannot read an
-   inactive assigned lot at lot level, even though the slot views allow it.
-   Recommend making the detail rule match the list: **active or assigned**.
-3. **Whether `?search=` / `?city=` filters still apply to a Manager's list.**
-   Recommend yes — filtering the assigned set is harmless and useful.
-4. **Whether Administrator behaviour changes.** Recommend no — an Administrator
-   keeps seeing all lots.
+| File | State |
+|------|-------|
+| `apps/parking/views.py` | `_visible_lot_catalogue`, `_addressable_lot` helpers; used by `ParkingLotListCreateView` / `ParkingLotDetailView` |
+| `apps/parking/tests.py` | `ManagerScopedLotReadTests` |
 
-### Files 3.4 will likely touch
+Suggested commit (PROJECT.md §43):
+`feat(parking): scope the lot catalogue reads to the manager`
 
-| File | Change |
-|------|--------|
-| `apps/parking/views.py` | manager-aware scoping in `ParkingLotListCreateView.get_queryset` / `ParkingLotDetailView.get_queryset` (a small shared helper near `_is_admin`) |
-| `apps/parking/tests.py` | Manager-scoped lot-read tests |
-| `docs/phase-3-parking/*` | this file + `DECISIONS.md` |
+### Decisions realized in the code
 
-No model or migration change is expected: assignment already exists (D36).
+- **D37 / 3.4 decision 1a** — a Manager's list is assigned-only
+  (`manager=user`), including inactive assigned lots (D38).
+- **3.4 decision 2** — the single-lot read is
+  `Q(is_active=True) | Q(manager=user)`, matching `LotScopedMixin`; because the
+  read is public, a Manager is never shown less than an anonymous visitor.
+- **3.4 decisions 3/4** — `?city=` / `?search=` filter the already-scoped set;
+  an Administrator still sees every lot.
+- **Deliberate asymmetry** — the list (assigned-only) and the detail
+  (active-or-assigned) differ for a Manager; the detail is public and cannot be
+  more restrictive than anonymous access.
 
-Increment 3.5 (consumer lot search / slot listing refinements) remains after
-this; it may be re-scoped or dropped once 3.4 lands.
+### Endpoints affected
+
+| Method | Endpoint | Change |
+|--------|----------|--------|
+| GET | `/api/parking-lots/` | Manager → assigned lots (incl. inactive); others unchanged |
+| GET | `/api/parking-lots/{id}/` | Manager → active or assigned; others unchanged |
+
+### Verification
+
+```bash
+cd backend
+../env/bin/python manage.py check
+../env/bin/python manage.py test apps.parking
+```
+
+Expected: no check issues; **89 tests OK** (75 from 3.3 + 14 from 3.4).
+
+### Known, deliberate gaps from 3.4
+
+- **No pagination** (Phase 10), consistent with the rest.
+- **A Manager's list omits unassigned active lots** — by design (1a); a Manager
+  can still read any active lot by id, because the detail read is public.
+
+---
+
+## Optional follow-ups (Phase 3 closed)
+
+Phase 3's PROJECT.md §36 scope — `City` / `ParkingLot`, `ParkingSlot`, slot types,
+pricing, manager assignment, and the manager-authorization rules (Invariants 3
+and 4) — is fully delivered by increments 3.1–3.4. **Nothing below is a missing
+requirement, and increment 3.5 as a parking increment is retired.** The items
+were considered and are deliberately deferred; each names the phase that should
+own it, so Phase 3 carries no open work.
+
+| Idea | Deliberately deferred | Suggested landing phase |
+|------|-----------------------|-------------------------|
+| Lot availability summary (count of `AVAILABLE` slots per lot, optionally per type) | would duplicate the booking-aware availability query before Phase 4 defines it | **Phase 4** (with the time-window availability query), or **Phase 9** if only the UI needs it |
+| Public lot filters by slot type / availability | depends on availability semantics | **Phase 4** (availability), or **Phase 9** (frontend-driven filters) |
+| Pagination for the parking lists | Phase 10 hardening item across all list endpoints | **Phase 10** |
+
+Rationale: the booking phase is where availability is actually defined, so
+building a parking-side approximation now would mean designing it twice
+(PROJECT.md §47 — no premature complexity; §38 — don't jump milestones).
+
+**Next session:** open Phase 4 (Booking). It is the most important backend phase
+(PROJECT.md §36) and its own decisions come first.
 
 ---
 
@@ -324,19 +367,19 @@ this; it may be re-scoped or dropped once 3.4 lands.
 | 3.1 | `City` + `ParkingLot` catalogue | ✅ Done |
 | 3.2 | `ParkingSlot` model + API + tests | ✅ Done |
 | 3.3 | `Tariff` per `(lot, slot_type)` + Invariant 4 (max rate) + `BusinessRule` singleton | ✅ Done |
-| 3.4 | Manager-scoped lot catalogue reads (Invariant 3, remaining surface) | ▶ Next |
-| 3.5 | Consumer lot search / slot listing refinements | ⚪ |
+| 3.4 | Manager-scoped lot catalogue reads (Invariant 3, remaining surface) | ✅ Done |
+| ~~3.5~~ | ~~Consumer lot/slot refinements~~ — **retired**; ideas folded into Phase 4 / 9 / 10 | ⚪ — see "Optional follow-ups" |
 
-Not a commitment: PROJECT.md §38 forbids jumping milestones; each row starts
-only after the previous is verified.
+**Phase 3 is closed:** all of its PROJECT.md §36 scope is done and verified
+(89 tests green). No further parking increment is required.
 
 > **Note:** D36 replaced the `ManagerLotAssignment` join table with a single
 > `manager` FK on the lot, so there is no separate "assignment model" increment.
 > Assignment is a `PATCH /api/parking-lots/{id}/` (Admin), already available.
 > Invariant 3 enforcement is object-level ("is this manager the lot's manager?").
-> **3.2 enforced it for slot writes** (and reads) and **3.3 extended it to
-> tariffs** through the shared `LotScopedMixin`. The remaining exposed surface is
-> the manager-scoped lot *catalogue* reads, which is increment 3.4.
+> **3.2 enforced it for slot writes** (and reads), **3.3 extended it to tariffs**,
+> and **3.4 scoped the lot catalogue reads** — so Invariant 3 is now honoured on
+> every parking surface.
 
 ---
 
