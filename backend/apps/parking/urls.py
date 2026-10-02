@@ -6,6 +6,9 @@ from .views import (
     ParkingLotListCreateView,
     ParkingSlotDetailView,
     ParkingSlotListCreateView,
+    TariffListCreateView,
+    TariffDetailView,
+    BusinessRuleView,
 )
 
 urlpatterns = [
@@ -18,4 +21,7 @@ urlpatterns = [
     ),
     path("parking-lots/<int:lot_pk>/slots/", ParkingSlotListCreateView.as_view(), name="parking-slot-list"),
     path("parking-lots/<int:lot_pk>/slots/<int:pk>/", ParkingSlotDetailView.as_view(), name="parking-slot-detail"),
+    path("parking-lots/<int:lot_pk>/tariffs/", TariffListCreateView.as_view(), name="tariff-list",),
+    path("parking-lots/<int:lot_pk>/tariffs/<int:pk>/", TariffDetailView.as_view(),name="tariff-detail"),
+    path("business-rules/", BusinessRuleView.as_view(), name="business-rule",),
 ]

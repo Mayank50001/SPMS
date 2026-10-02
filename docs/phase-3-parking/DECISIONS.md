@@ -1,12 +1,12 @@
 # Phase 3 decisions — Parking domain
 
-Status as of **2026-10-01**:
+Status as of **2026-10-03**:
 
 - **Accepted:** D29 (incl. S1 and S2 below), D30, D31, D32, D33 (revises D2),
   D34, D35, D36, D37, D38.
-- **Open:** none. Increment 3.2 is complete; its decisions are recorded in the
-  "Increment 3.2 implementation decisions" section at the end of this file.
-  Increment 3.3 (`Tariff` / `BusinessRule`) is the next increment.
+- **Open:** none. Increment 3.3 is complete; its decisions are recorded in the
+  "Increment 3.3 implementation decisions" section at the end of this file.
+  The next increment (3.4) is manager-scoped lot catalogue reads.
 
 > A "Decision" below is the human's, not the agent's. Rationale/Consequence
 > record why, so the choice can be defended later.
@@ -274,3 +274,49 @@ These settle the questions D31/D32 left open and the ordering question for the
   may set only `AVAILABLE` / `OUT_OF_SERVICE` through the slot API. `OCCUPIED`
   is written by Phase 6 occupancy actions, not by this increment (PROJECT.md §28
   boundary). The model still stores all three values (D33).
+
+---
+
+## Increment 3.3 implementation decisions (accepted 2026-10-03)
+
+These settle the questions D34/D35 left open and record the API and business
+choices made while building `Tariff`, Invariant 4 and the `BusinessRule`
+singleton. They refine D34/D35/D37; they do not replace them.
+
+- **D35 — singleton strategy (Q1)** — fixed PK. `BusinessRule.save()` pins
+  `pk=1`; `BusinessRule.load()` `get_or_create`s the row. One row, no ambiguity,
+  no seed migration. Rejected: a refuse-a-second-row `save()` guard — more code
+  for a case the API cannot reach.
+- **D35 — lowering the cap (Q2)** — lowering `max_hourly_rate` below an existing
+  tariff is refused with `409` and
+  `{"error": "MAX_RATE_BELOW_TARIFF", "message": ...}` (PROJECT.md §33; the
+  accounts `LAST_ADMINISTRATOR` precedent). The cap is left unchanged, so
+  Invariant 4 holds at rest.
+- **D35 — tariff above the cap** — refused with `400 {"hourly_rate": [...]}`
+  (the submitted value is out of range, so the error is field-shaped). The check
+  itself still lives in `services.set_tariff`, not the serializer.
+- **D34 — unpriced slot types (Q3)** — creating a slot whose `(lot, slot_type)`
+  has no tariff is refused with `400 {"slot_type": [...]}`; changing an existing
+  slot *to* an unpriced type is refused the same way. Only the type being set is
+  checked, so an existing slot can still have its number/floor/status edited.
+  Enforced in `ParkingSlotWriteSerializer.validate()`; Phase 4 re-checks at
+  booking time. No grandfathering was needed — the database held no stale slots.
+- **D34 / Q4 — rate floor** — `hourly_rate` and `max_hourly_rate` must be
+  `> 0`, enforced by `MinValueValidator(Decimal("0.01"))` at the serializer and
+  model plus a `CheckConstraint` at the database.
+- **D35 — concurrency** — `services.set_tariff` and
+  `services.set_max_hourly_rate` both run in `transaction.atomic` and lock the
+  `BusinessRule` row with `select_for_update` first, so a tariff write and a cap
+  change serialise and Invariant 4 cannot be broken by a race (the D27
+  `update_user_access` pattern).
+- **D34 / Invariant 3 — tariff writes** — Admin or the lot's Manager, via the
+  shared `LotScopedMixin` + `IsAdminOrManager`; an unassigned lot is a `404`.
+  Invariant 3 now covers tariffs as well as slots.
+- **D37 — reads (Q5/Q6)** — tariff reads and `GET /api/business-rules/` are
+  public (non-PII; a consumer needs prices to choose, a Manager needs the cap to
+  price within it). Writes are Admin/Manager. URLs are nested
+  `/api/parking-lots/{lot_pk}/tariffs/` (+ `/{pk}/`) and flat
+  `/api/business-rules/`. No `PUT`/`DELETE`.
+- **D35 — default cap** — a first-created singleton defaults to
+  `max_hourly_rate = 100.00` INR, created lazily by `BusinessRule.load()` (no
+  data migration). The Administrator edits it via `PATCH /api/business-rules/`.

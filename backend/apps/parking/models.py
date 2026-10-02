@@ -8,6 +8,8 @@ decision IDs (PROJECT.md §9) that the code embeds.
 
 from django.core.validators import MinValueValidator
 from django.db import models
+from decimal import Decimal
+
 
 class City(models.Model):
     """A parking city and its short code (D29-S1).
@@ -202,3 +204,101 @@ class ParkingSlot(models.Model):
         if self.number:
             self.number = self.number.strip().upper()
         super().save(*args, **kwargs)
+
+class Tariff(models.Model):
+    """The hourly price of one slot type in one lot (D34).
+
+    Pricing is keyed on ``(lot, slot_type)``: the same bay size may cost
+    different amounts in different lots, and one lot may price its regular and
+    EV bays differently. The hour is the billing unit -- PROJECT.md §19 defines
+    overstay as a multiple of the "applicable hourly rate", so a ``daily_rate``
+    is deliberately not stored (D34).
+    """
+
+    lot = models.ForeignKey(
+        ParkingLot,
+        on_delete=models.CASCADE,
+        related_name="tariffs",
+    )
+
+    slot_type = models.CharField(
+        max_length = 20,
+        choices=ParkingSlot.SlotType.choices,
+    )
+
+    # Money is ``Decimal``, never ``float`` (D34): binary floats cannot
+    # represent 0.10 exactly, so sums drift. ``max_digits=8`` allows up to
+    # 999,999.99 INR per hour, far above any real rate.
+    hourly_rate = models.DecimalField(
+        max_digits=  8,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))]
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["id"]
+        verbose_name = "tariff"
+        verbose_name_plural = "tariffs"
+        constraints = [
+            models.UniqueConstraint(
+                fields = ["lot", "slot_type"],
+                name = "unique_tariff_per_lot_slot_type"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(hourly_rate__gt =0),
+                name="tariff_hourly_rate_positive",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.lot.code} - {self.slot_type}: {self.hourly_rate}"
+
+class BusinessRule(models.Model):
+    """The single row of platform-wide rules (D35).
+
+    Only the field Phase 3 needs is modelled: ``max_hourly_rate``, the
+    Administrator-defined ceiling for Invariant 4. PROJECT.md §41 forbids
+    speculative fields, so the other §19 rules (hold minutes, cancellation
+    cutoff, overstay multiplier) arrive with their own phases.
+
+    Singleton strategy (Q1): the row is pinned to ``pk=1`` in ``save()`` and read
+    through ``load()``, which creates it on first use. There is never ambiguity
+    about which row is "the" rule, and no seed migration is needed.
+    """
+
+    max_hourly_rate = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=Decimal("100.00"),
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "business rule"
+        verbose_name_plural = "business rules"
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(max_hourly_rate__gt=0),
+                name="business_rule_max_hourly_rate_positive",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Business rules (max hourly rate: {self.max_hourly_rate})"
+
+    def save(self, *args, **kwargs):
+        # Q1: fixed-PK singleton. Every save writes row 1, so a second row can
+        # never be created through the model or the Django admin.
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls):
+        """Return the singleton, creating it with defaults on first use."""
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj

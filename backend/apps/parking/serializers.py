@@ -14,7 +14,7 @@ never from ``models.py`` or ``apps.py``.
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from .models import City, ParkingLot, ParkingSlot
+from .models import City, ParkingLot, ParkingSlot, BusinessRule, Tariff
 
 User = get_user_model()
 
@@ -207,7 +207,111 @@ class ParkingSlotWriteSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"number": "This slot number is already used in this lot."}
                 )
+
+        # D34 (3.3): a slot of a type with no tariff in this lot could never be
+        # booked, so it is rejected here. The check runs only when the type is
+        # actually being set -- on create, or when PATCH explicitly changes
+        # ``slot_type`` -- so an existing slot can still have its number, floor
+        # or status edited.
+        if lot is not None and (self.instance is None or "slot_type" in attrs):
+            slot_type = attrs.get("slot_type") or (
+                self.instance.slot_type if self.instance is not None else ParkingSlot.SlotType.REGULAR
+            )
+            if not Tariff.objects.filter(lot=lot, slot_type=slot_type).exists():
+                raise serializers.ValidationError(
+                    {
+                        "slot_type" : (
+                            "No tariff is configured for this slot type in this lot."
+                        )
+                    }
+                )
         return attrs
 
+class TariffSerializer(serializers.ModelSerializer):
+    """Read representation of a tariff (D34)."""
 
-        
+    lot_code = serializers.CharField(source="lot.code", read_only=True)
+    slot_type_label = serializers.CharField(
+        source="get_slot_type_display", read_only=True
+    )
+
+    class Meta:
+        model = Tariff
+        fields = [
+            "id",
+            "lot",
+            "lot_code",
+            "slot_type",
+            "slot_type_label",
+            "hourly_rate",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+class TariffWriteSerializer(serializers.ModelSerializer):
+    """Create/update a tariff; the lot comes from the nested URL (Invariant 3).
+
+    ``lot`` is deliberately not a field: it is taken from the route and passed
+    to the service by the view, so a client cannot price a lot it never
+    addressed. The Invariant 4 cap check is *not* here -- it lives in
+    ``services.set_tariff`` so no caller can bypass it (D35).
+    """
+    class Meta:
+        model = Tariff
+        fields = ["id", "slot_type", "hourly_rate"]
+        read_only_fields = ["id"]
+
+    def validate_hourly_rate(self , value):
+        # Q4: strictly positive. The model validator says the same; repeating it
+        # here yields a field-shaped 400 instead of a 500 from the DB check.
+        if value <= 0:
+            raise serializers.ValidationError("Hourly rate must be greater than zero.")
+        return value
+
+    def validate(self, attrs):
+        lot = self.context.get("lot")
+        slot_type = attrs.get(
+            "slot_type", self.instance.slot_type if self.instance is not None else None,
+        )
+
+        if lot is not None and slot_type:
+            duplicates = Tariff.objects.filter(lot=lot, slot_type=slot_type)
+            if self.instance is not None:
+                duplicates = duplicates.exclude(pk=self.instance.pk)
+            if duplicates.exists():
+                raise serializers.ValidationError(
+                    {
+                        "slot_type": (
+                            "A tariff for this slot type already exists in this lot."
+                        )
+                    }
+                )
+        return attrs
+
+class BusinessRuleSerializer(serializers.ModelSerializer):
+    """Read representation of the business-rule singleton (D35)."""
+
+    class Meta:
+        model = BusinessRule
+        fields = ["id", "max_hourly_rate", "updated_at"]
+        read_only_fields = fields
+
+class BusinessRuleUpdateSerializer(serializers.ModelSerializer):
+    """Write shape for the singleton: only ``max_hourly_rate`` is editable.
+
+    The Invariant 4 "cannot lower below an existing tariff" guard is not here;
+    it lives in ``services.set_max_hourly_rate`` (D35).
+    """
+
+    class Meta:
+        model = BusinessRule
+        fields = ["max_hourly_rate"]
+
+    def validate_max_hourly_rate(self, value):
+        if value <= 0:
+            raise serializers.ValidationError(
+                "The maximum hourly rate must be greater than zero."
+            )
+        return value
+    

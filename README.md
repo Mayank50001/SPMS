@@ -4,16 +4,18 @@ An academic mini-project: a software-based parking management platform that lets
 consumers discover lots and book slots, managers operate lots and walk-ins, and
 administrators manage users and view platform reports.
 
-**Phase 2 (authentication and users) is complete.** Phase 0 (repository setup)
-and Phase 1 (backend foundation) are also done. Implemented: the custom
-email-based user model, consumer self-registration, the JWT authentication
-surface, consumer profile self-update, Administrator user management
-(list/create/suspend/role change), role-based authorization, and consumer
-**vehicle registration** with the Indian `SSRRLLNNNN` plate format. The next
-phase is Phase 3 (the parking domain). The authoritative specification is
-[`PROJECT.md`](PROJECT.md). Documentation is now split per phase — start at
-[`docs/README.md`](docs/README.md), which is the navigation entry point, the
-phase tracker and the reading protocol.
+**Phase 3 (the parking domain) is in progress — increment 3.3 is complete.**
+Phases 0 (repository setup), 1 (backend foundation) and 2 (authentication and
+users) are done. Implemented so far: the custom email-based user model, consumer
+self-registration, the JWT authentication surface, consumer profile self-update,
+Administrator user management, role-based authorization, consumer **vehicle
+registration**, and the parking domain — the `City`/`ParkingLot` catalogue, the
+`ParkingSlot` model and API, and per-`(lot, slot_type)` **tariffs** capped by the
+Administrator's **`BusinessRule` maximum rate** (Invariant 4). The next increment
+is manager-scoped lot reads. The authoritative specification is
+[`PROJECT.md`](PROJECT.md). Documentation is split per phase — start at
+[`docs/README.md`](docs/README.md), the navigation entry point, phase tracker and
+reading protocol.
 
 ---
 
@@ -161,13 +163,33 @@ npm run build
 | GET    | `/api/vehicles/{id}/` | Consumer    | Retrieve one own vehicle         |
 | PUT/PATCH | `/api/vehicles/{id}/` | Consumer | Edit an own vehicle              |
 | DELETE | `/api/vehicles/{id}/` | Consumer    | Remove an own vehicle            |
+| GET    | `/api/cities/`        | Public      | List the city vocabulary         |
+| POST   | `/api/cities/`        | Admin       | Add a city                       |
+| GET    | `/api/parking-lots/`  | Public      | List active lots (`?city=`, `?search=`) |
+| POST   | `/api/parking-lots/`  | Admin       | Create a lot                     |
+| GET    | `/api/parking-lots/{id}/` | Public   | Retrieve one active lot          |
+| PATCH  | `/api/parking-lots/{id}/` | Admin    | Edit a lot / assign its manager  |
+| GET    | `/api/parking-lots/{lot}/slots/` | Public | List a lot's slots        |
+| POST   | `/api/parking-lots/{lot}/slots/` | Admin/Manager | Add a slot         |
+| GET    | `/api/parking-lots/{lot}/slots/{id}/` | Public | Retrieve a slot     |
+| PATCH  | `/api/parking-lots/{lot}/slots/{id}/` | Admin/Manager | Edit a slot |
+| GET    | `/api/parking-lots/{lot}/tariffs/` | Public | List a lot's tariffs    |
+| POST   | `/api/parking-lots/{lot}/tariffs/` | Admin/Manager | Add a tariff     |
+| GET    | `/api/parking-lots/{lot}/tariffs/{id}/` | Public | Retrieve a tariff |
+| PATCH  | `/api/parking-lots/{lot}/tariffs/{id}/` | Admin/Manager | Edit a tariff |
+| GET    | `/api/business-rules/` | Public     | The max-hourly-rate singleton    |
+| PATCH  | `/api/business-rules/` | Admin      | Change the max hourly rate       |
 
 > Authorisation is enforced server-side on every request (D15, D18). `Admin`
 > above means the authenticated account's `role` must be `ADMIN`; a `403` is
 > returned otherwise and a `401` when unauthenticated. Self-registration can
 > only produce a `CONSUMER`; privileged accounts exist only via `POST /api/users/`.
 > Vehicles are consumer-only and scoped to the caller — another account's
-> vehicle returns `404`, not `403`.
+> vehicle returns `404`, not `403`. Parking reads are public (D37); parking
+> writes are Administrator-only, except slots and tariffs which also accept the
+> lot's assigned Manager (Invariant 3) — an unassigned lot returns `404`, never
+> `403`. `BusinessRule` is a singleton at `/api/business-rules/`; lowering its
+> cap below an existing tariff is a `409` `MAX_RATE_BELOW_TARIFF`.
 
 ### Vehicles
 
@@ -262,3 +284,52 @@ Response `201` — note the email is returned lower-cased (D13):
 
 `role` is never accepted from the client; self-registration always produces a
 `CONSUMER` (D11).
+
+### Parking domain (Phase 3)
+
+The parking catalogue is public to read. Endpoints are nested under a lot for
+slots and tariffs; `BusinessRule` is a flat singleton. Every rate is in INR per
+hour and `Decimal`-backed.
+
+Tariffs price one slot type within one lot (`D34`), and the backend rejects any
+rate above the Administrator's `max_hourly_rate` (`D35`, Invariant 4):
+
+```text
+POST /api/parking-lots/1/tariffs/       (Admin, or lot 1's Manager)
+```
+
+```json
+{ "slot_type": "EV", "hourly_rate": "30.00" }
+```
+
+Response `201`:
+
+```json
+{
+  "id": 1,
+  "lot": 1,
+  "lot_code": "BLR-001",
+  "slot_type": "EV",
+  "slot_type_label": "Electric vehicle",
+  "hourly_rate": "30.00",
+  "created_at": "2026-10-03T10:15:00Z",
+  "updated_at": "2026-10-03T10:15:00Z"
+}
+```
+
+The cap is read and set at the singleton:
+
+```text
+GET   /api/business-rules/                -> { "id": 1, "max_hourly_rate": "100.00", ... }
+PATCH /api/business-rules/                (Admin only)
+{ "max_hourly_rate": "50.00" }
+```
+
+If an existing tariff already charges more than the proposed maximum, lowering
+the cap is refused so the invariant never breaks at rest:
+
+```json
+{ "error": "MAX_RATE_BELOW_TARIFF", "message": "The maximum cannot be lowered below an existing tariff." }
+```
+
+The hour is the billing unit; `daily_rate` is deliberately deferred (`D34`).

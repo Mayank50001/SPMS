@@ -3,11 +3,11 @@
 > **Scope (PROJECT.md §36):** `ParkingLot`, `ParkingSlot`, slot types, pricing and
 > manager assignment, plus the manager-authorization and lot-assignment rules.
 > Decisions are in [`DECISIONS.md`](DECISIONS.md) (D29–D38, all **accepted**,
-> plus the increment-3.2 refinements at the end of that file).
+> plus the increment-3.2 and increment-3.3 refinements at the end of that file).
 > Working conventions and the reading protocol: [`../README.md`](../README.md).
 
-Last updated: 2026-10-01 · **Increment 3.2 complete.** Next: **increment 3.3 —
-`Tariff`, Invariant 4 and the `BusinessRule` singleton** (see "Next" below).
+Last updated: 2026-10-03 · **Increment 3.3 complete.** Next: **increment 3.4 —
+manager-scoped lot reads** (see "Next" below).
 
 ---
 
@@ -16,12 +16,12 @@ Last updated: 2026-10-01 · **Increment 3.2 complete.** Next: **increment 3.3 �
 Reading order — do not read anything else unless a task needs it:
 
 1. [`../README.md`](../README.md) — conventions + reading protocol.
-2. This file — state, what 3.2 built, and the 3.3 brief.
+2. This file — state, what 3.3 built, and the next brief.
 3. [`DECISIONS.md`](DECISIONS.md) — D29–D38 (the parking decisions).
 4. Only if a task touches it: the "Dependencies on earlier phases" table below.
 
-Then: answer the "Decisions to confirm at the start of 3.3" list, and build
-increment 3.3 only.
+Then: answer the "Decisions to confirm at the start of 3.4" list, and build
+increment 3.4 only.
 
 ---
 
@@ -29,9 +29,11 @@ increment 3.3 only.
 
 All parking decisions are **accepted** (full entries in `DECISIONS.md`):
 D29 (+ S1, S2), D30, D31, D32, D33 (**revises D2**), D34, D35, D36, D37, D38,
-plus the **Increment 3.2 implementation decisions** recorded at the end of
-`DECISIONS.md` (FK cascade, `floor` type, final `slot_type` enum, manager slot
-writes, D34 ordering, status-write scope).
+plus the **Increment 3.2 implementation decisions** (FK cascade, `floor` type,
+final `slot_type` enum, manager slot writes, D34 ordering, status-write scope)
+and the **Increment 3.3 implementation decisions** (singleton fixed PK, cap-change
+`409`, unpriced-type rejection, rate floor, lock-based concurrency, public reads,
+URL shapes, default cap) recorded at the end of `DECISIONS.md`.
 
 ---
 
@@ -181,8 +183,8 @@ slot API).
 ### Known, deliberate gaps from 3.2
 
 - **No D34 "unpriced type" check yet.** Creating a slot of a type with no
-  `Tariff` is currently allowed; the rejection lands in 3.3 with `Tariff`
-  (recorded in `DECISIONS.md`, increment 3.2 decisions).
+  `Tariff` was allowed in 3.2; the rejection landed in 3.3 with `Tariff`
+  (recorded in `DECISIONS.md`, increment 3.2 decisions; resolved by 3.3).
 - **`OCCUPIED` is not settable through the slot API** — Phase 6 occupancy
   actions own that write (PROJECT.md §28 boundary).
 - **Manager-scoped `GET /api/parking-lots/` is still not built.** A Manager
@@ -193,83 +195,125 @@ slot API).
 
 ---
 
-## Next — increment 3.3: `Tariff`, Invariant 4, `BusinessRule`
+## Increment 3.3 — `Tariff`, Invariant 4, `BusinessRule` ✅
+
+### What it delivers
+
+Pricing for a lot per slot type, plus the Administrator-defined ceiling that no
+price may exceed. The **Invariant 4** check is born here and lives in
+`apps/parking/services.py` (D35) — not the serializer — so no write path can
+bypass it. This increment also lands the D34 check deferred from 3.2: a slot of
+a type the lot has not priced cannot be created (and is not bookable in Phase 4).
+
+### Files
+
+| File | State |
+|------|-------|
+| `apps/parking/models.py` | `Tariff`, `BusinessRule` (+ constraints; `Decimal` import) |
+| `apps/parking/services.py` | **created** — `set_tariff`, `set_max_hourly_rate`, the two errors |
+| `apps/parking/serializers.py` | `TariffSerializer`, `TariffWriteSerializer`, `BusinessRuleSerializer`, `BusinessRuleUpdateSerializer`; D34 check in `ParkingSlotWriteSerializer.validate()` |
+| `apps/parking/views.py` | `TariffListCreateView`, `TariffDetailView`, `BusinessRuleView` |
+| `apps/parking/urls.py` | nested tariff routes + `/api/business-rules/` |
+| `apps/parking/admin.py` | registers `Tariff`, `BusinessRule` |
+| `apps/parking/migrations/0004_*.py` | generated |
+| `apps/parking/tests.py` | `TariffModelTests`, `Invariant4ServiceTests`, `TariffApiTests`; existing slot API tests seed tariffs (decision 3A) |
+
+Suggested commit (PROJECT.md §43):
+`feat(parking): add tariff pricing and the max-rate business rule`
+
+### Decisions realized in the code
+
+- **D34** — `Tariff` per `(lot, slot_type)`, one `hourly_rate`
+  (`DecimalField(max_digits=8, decimal_places=2)`, INR),
+  `UniqueConstraint(lot, slot_type)`. The hour is the billing unit.
+- **D35 / Invariant 4** — `BusinessRule.max_hourly_rate` caps every
+  `hourly_rate`; the check is in `services.set_tariff`, inside
+  `transaction.atomic`, after locking the `BusinessRule` row with
+  `select_for_update`. Lowering the cap below an existing tariff is refused
+  (`set_max_hourly_rate`), so the invariant cannot break at rest.
+- **D35 singleton** — fixed PK: `BusinessRule.save()` pins `pk=1`;
+  `BusinessRule.load()` `get_or_create`s the row. No seed migration.
+- **D34 unpriced type (3.3 decision)** — creating a slot of an unpriced type is
+  a `400`; changing a slot to one is the same. Only the type being set is
+  checked, so other edits to an existing slot still work.
+- **Q4 rate floor** — `hourly_rate` / `max_hourly_rate` must be `> 0`
+  (`MinValueValidator` + `CheckConstraint`).
+- **D37 / Invariant 3** — tariff writes are Admin or the lot's Manager via the
+  shared `LotScopedMixin` + `IsAdminOrManager`; an unassigned lot is a `404`.
+- **D37 reads** — tariffs and `GET /api/business-rules/` are public; writes are
+  Admin/Manager. No `PUT`/`DELETE`.
+
+### Endpoints added
+
+| Method | Endpoint | Access |
+|--------|----------|--------|
+| GET | `/api/parking-lots/{lot_pk}/tariffs/` | public (active lot) |
+| POST | `/api/parking-lots/{lot_pk}/tariffs/` | Admin or the lot's Manager |
+| GET | `/api/parking-lots/{lot_pk}/tariffs/{pk}/` | public (active lot) |
+| PATCH | `/api/parking-lots/{lot_pk}/tariffs/{pk}/` | Admin or the lot's Manager |
+| GET | `/api/business-rules/` | public |
+| PATCH | `/api/business-rules/` | Admin |
+
+### Verification
+
+```bash
+cd backend
+../env/bin/python manage.py check
+../env/bin/python manage.py test apps.parking
+```
+
+Expected: no check issues; **~75 tests OK** (46 from 3.1/3.2 + 29 from 3.3).
+Existing slot API tests gained tariff rows because the D34 check now rejects
+creating a slot of an unpriced type.
+
+### Known, deliberate gaps from 3.3
+
+- **No `daily_rate`** — deliberately deferred (D34); the hour is the only unit.
+- **`OCCUPIED` is still not settable through the slot API** — Phase 6 occupancy
+  actions own that write (PROJECT.md §28 boundary).
+- **Manager-scoped `GET /api/parking-lots/` is still not built** — see Next.
+- **No pagination** (Phase 10), consistent with the rest.
+
+---
+
+## Next — increment 3.4: manager-scoped lot reads
 
 ### Goal
 
-Price a lot per slot type and cap it. A `Tariff` row per `(lot, slot_type)`
-carrying an `hourly_rate` in INR; a `BusinessRule` singleton carrying the
-Administrator-defined `max_hourly_rate`; and the Invariant 4 rule
-`hourly_rate <= max_hourly_rate` enforced in `apps/parking/services.py`
-(D35 — not in the serializer, so no caller can bypass it). This increment also
-adds the deferred D34 check: a slot whose `(lot, slot_type)` has no tariff is
-not bookable, and creating such a slot is rejected.
+Finish the Invariant 3 surface that slots (3.2) and tariffs (3.3) already honour.
+D37 says a Manager should see their **assigned lots**, but the lot catalogue list
+still returns every active lot to a Manager, exactly as it does to a consumer.
+That is the last exposed surface where a Manager's view is not scoped to
+assignment.
 
-### Decisions already made (do not re-litigate)
+### Decisions to confirm at the start of 3.4 (small — surface, don't assume)
 
-- **D34** — `Tariff` per `(lot, slot_type)`; one `hourly_rate`,
-  `DecimalField(max_digits=8, decimal_places=2)`, INR; `UniqueConstraint(lot,
-  slot_type)`. Hour is the billing unit; `daily_rate` deliberately deferred.
-- **D35** — `BusinessRule` singleton with `max_hourly_rate`; the
-  `hourly_rate <= max_hourly_rate` check lives in `apps/parking/services.py`;
-  lowering the maximum while any existing tariff exceeds it is **rejected**, so
-  the invariant never breaks at rest. Only the field this phase needs — the
-  other §19 fields arrive in their own phases.
-- **Invariant 3** — tariff writes are Admin or the lot's Manager, using the same
-  `LotScopedMixin` + `IsAdminOrManager` mechanism as slots.
-- **D37** — style: `generics.*` + hand-written `urls.py`; reads public where the
-  data is non-PII.
+1. **What a Manager's `GET /api/parking-lots/` returns.** Options: (a) assigned
+   lots only, including inactive assigned lots (D38 lets a Manager inspect a
+   deactivated assigned lot, and the slot views already do this); (b) assigned
+   lots plus all active lots (so a Manager can still browse); (c) unchanged.
+   Recommend **(a)** — it is what D37's table states and what Invariant 3 means.
+2. **Whether a Manager's `GET /api/parking-lots/{id}/` follows the same rule.**
+   Today a non-Admin sees only `is_active=True`, so a Manager cannot read an
+   inactive assigned lot at lot level, even though the slot views allow it.
+   Recommend making the detail rule match the list: **active or assigned**.
+3. **Whether `?search=` / `?city=` filters still apply to a Manager's list.**
+   Recommend yes — filtering the assigned set is harmless and useful.
+4. **Whether Administrator behaviour changes.** Recommend no — an Administrator
+   keeps seeing all lots.
 
-### Decisions to confirm at the start of 3.3 (small — surface, don't assume)
-
-1. **`BusinessRule` singleton strategy** (D35 left this open): a **fixed-PK
-   row** (`pk=1`, created/fetched by a `load()` classmethod) vs a
-   **refuse-a-second-row** `save()` guard. Fixed PK is simpler and makes "the
-   rule" unambiguous; recommend fixed PK.
-2. **Rejecting a lowered maximum**: `400` (validation-shaped) vs `409` with a
-   stable `error` code like `LAST_ADMINISTRATOR` (accounts precedent). A
-   conflict is arguably a `409`; recommend `409` with
-   `{"error": "MAX_RATE_BELOW_TARIFF", ...}` (PROJECT.md §33).
-3. **Where the D34 check applies.** Existing 3.2 slots of unpriced types may
-   already exist. Options: (a) enforce only on **new** slot creation and on
-   booking (grandfather existing rows); (b) also expose an "unpriced slot" flag
-   in the read shape so Managers can find them; (c) treat it purely as a
-   Phase 4 booking-time rule and not reject slot creation at all. Recommend
-   **(a)** now, with (b) noted for later if needed — it matches D34's wording
-   without retroactively breaking saved data.
-4. **Is `hourly_rate = 0` allowed?** Recommend **no**: require `> 0` (a
-   free-but-priced bay is a modelling smell; use `OUT_OF_SERVICE` for
-   withdrawal). Confirm the `MinValueValidator`.
-5. **Tariff reads**: public like the lot catalogue (a consumer needs to see
-   prices to choose) vs authenticated-only. Recommend **public read**, writes
-   Admin/Manager — consistent with D37.
-6. **Tariff endpoints**: nested `/api/parking-lots/{lot_pk}/tariffs/`
-   (+ `/{pk}/`) and a flat `/api/business-rules/` singleton. Confirm names.
-
-### Files 3.3 will touch
+### Files 3.4 will likely touch
 
 | File | Change |
 |------|--------|
-| `apps/parking/models.py` | add `Tariff`, `BusinessRule` |
-| `apps/parking/migrations/0004_*.py` | generated (PROJECT.md §42) |
-| `apps/parking/services.py` | **created** — the Invariant 4 check + singleton access |
-| `apps/parking/serializers.py` | `Tariff` and `BusinessRule` read/write serializers |
-| `apps/parking/views.py` | tariff views (nested) + business-rule view (singleton) |
-| `apps/parking/urls.py` | tariff + business-rule routes |
-| `apps/parking/admin.py` | register `Tariff`, `BusinessRule` |
-| `apps/parking/tests.py` | model + service + API tests |
+| `apps/parking/views.py` | manager-aware scoping in `ParkingLotListCreateView.get_queryset` / `ParkingLotDetailView.get_queryset` (a small shared helper near `_is_admin`) |
+| `apps/parking/tests.py` | Manager-scoped lot-read tests |
+| `docs/phase-3-parking/*` | this file + `DECISIONS.md` |
 
-### Patterns to reuse (from 3.1 / 3.2 / accounts)
+No model or migration change is expected: assignment already exists (D36).
 
-- `LotScopedMixin` + `IsAdminOrManager` for the nested tariff views (Invariant 3
-  for free, with `404` scoping).
-- Read/write serializer split; POST/PATCH return the read shape.
-- Pre-check uniqueness `(lot, slot_type)` in the serializer for a clean `400`;
-  keep the DB `UniqueConstraint` as the concurrent backstop.
-- Business logic beyond validation goes in `apps/parking/services.py` — the
-  Invariant 4 check and the D35 "cannot lower the cap below an existing tariff"
-  guard both belong there, ideally inside one `transaction.atomic` with
-  `select_for_update` (the `update_user_access` pattern, D27).
+Increment 3.5 (consumer lot search / slot listing refinements) remains after
+this; it may be re-scoped or dropped once 3.4 lands.
 
 ---
 
@@ -279,8 +323,8 @@ not bookable, and creating such a slot is rejected.
 |---|-----------|--------|
 | 3.1 | `City` + `ParkingLot` catalogue | ✅ Done |
 | 3.2 | `ParkingSlot` model + API + tests | ✅ Done |
-| 3.3 | `Tariff` per `(lot, slot_type)` + Invariant 4 (max rate) + `BusinessRule` singleton | ▶ Next |
-| 3.4 | Manager-to-lot authorization across slot/tariff writes (Invariant 3) | ⚪ — **partly absorbed into 3.2/3.3** |
+| 3.3 | `Tariff` per `(lot, slot_type)` + Invariant 4 (max rate) + `BusinessRule` singleton | ✅ Done |
+| 3.4 | Manager-scoped lot catalogue reads (Invariant 3, remaining surface) | ▶ Next |
 | 3.5 | Consumer lot search / slot listing refinements | ⚪ |
 
 Not a commitment: PROJECT.md §38 forbids jumping milestones; each row starts
@@ -290,10 +334,9 @@ only after the previous is verified.
 > `manager` FK on the lot, so there is no separate "assignment model" increment.
 > Assignment is a `PATCH /api/parking-lots/{id}/` (Admin), already available.
 > Invariant 3 enforcement is object-level ("is this manager the lot's manager?").
-> **3.2 already enforced it for slot writes** (and reads), and **3.3 extends it
-> to tariffs** through the shared `LotScopedMixin`; the remaining exposed
-> surface is the manager-scoped `GET /api/parking-lots/` list, so increment 3.4
-> is largely absorbed and may be re-scoped or dropped when 3.3 lands.
+> **3.2 enforced it for slot writes** (and reads) and **3.3 extended it to
+> tariffs** through the shared `LotScopedMixin`. The remaining exposed surface is
+> the manager-scoped lot *catalogue* reads, which is increment 3.4.
 
 ---
 

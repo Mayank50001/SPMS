@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import City, ParkingLot, ParkingSlot
+from .models import City, ParkingLot, ParkingSlot, Tariff, BusinessRule
 
 
 @admin.register(City)
@@ -20,5 +20,17 @@ class ParkingSlotAdmin(admin.ModelAdmin):
     list_display = ("lot", "number", "floor", "slot_type", "status")
     list_filter = ("slot_type", "status", "lot")
     search_fields = ("number", "lot__code")
+
+@admin.register(Tariff)
+class TariffAdmin(admin.ModelAdmin):
+    list_display = ("lot", "slot_type", "hourly_rate")
+    list_filter = ("slot_type", "lot")
+    search_fields = ("lot__code",)
+
+
+@admin.register(BusinessRule)
+class BusinessRuleAdmin(admin.ModelAdmin):
+    list_display = ("id", "max_hourly_rate", "updated_at")
+
 
     

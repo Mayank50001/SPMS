@@ -15,17 +15,25 @@ from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.permissions import SAFE_METHODS, AllowAny
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.accounts.models import User
 from apps.accounts.permissions import IsAdmin, IsAdminOrManager
 
-from .models import City, ParkingLot, ParkingSlot
+from .models import City, ParkingLot, ParkingSlot, Tariff, BusinessRule
+
 from .serializers import (
     CitySerializer,
     ParkingLotSerializer,
     ParkingLotWriteSerializer,
     ParkingSlotSerializer,
-    ParkingSlotWriteSerializer
+    ParkingSlotWriteSerializer,
+    TariffSerializer, TariffWriteSerializer,
+    BusinessRuleSerializer, BusinessRuleUpdateSerializer
+)
+
+from .services import (
+    MaxRateBelowTariffError, MaxRateExceededError, set_max_hourly_rate, set_tariff
 )
 
 def _is_admin(request):
@@ -222,3 +230,122 @@ class ParkingSlotDetailView(LotScopedMixin, generics.RetrieveUpdateAPIView):
         serializer.is_valid(raise_exception=True)
         slot = serializer.save()
         return Response(ParkingSlotSerializer(slot).data)
+
+class TariffListCreateView(LotScopedMixin, generics.ListCreateAPIView):
+    """List a lot's tariffs (public) or add one (Admin / the lot's Manager).
+
+    ``GET  /api/parking-lots/{lot_pk}/tariffs/``
+    ``POST /api/parking-lots/{lot_pk}/tariffs/``
+
+    Reads are public like the lot catalogue (D37/Q5): a consumer needs prices to
+    choose a lot. Writes go through ``services.set_tariff`` so Invariant 4 is
+    enforced on every path (D35).
+    """
+
+    def get_permissions(self):
+        if self.request.method in SAFE_METHODS:
+            return [AllowAny()]
+        return [IsAdminOrManager()]
+
+    def get_queryset(self):
+        return Tariff.objects.filter(lot=self.get_lot()).select_related("lot")
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return TariffWriteSerializer
+        return TariffSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            tariff = set_tariff(
+                lot=self.get_lot(),
+                slot_type = serializer.validated_data["slot_type"],
+                hourly_rate=serializer.validated_data["hourly_rate"],
+            )
+        except MaxRateExceededError as exc:
+            return Response(
+                {"error" : "RATE_ABOVE_MAXIMUM", "hourly_rate": [str(exc)]},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(TariffSerializer(tariff).data, status=status.HTTP_201_CREATED)
+
+class TariffDetailView(LotScopedMixin, generics.RetrieveUpdateAPIView):
+    """Read one tariff (public) or edit it (Admin / the lot's Manager).
+
+    ``PUT`` is disabled so a partial payload cannot blank the rate; ``DELETE``
+    is disabled because a price is changed, not removed (mirrors the lifecycle
+    rule, D38).
+    """
+
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def get_permissions(self):
+        if self.request.method in SAFE_METHODS:
+            return [AllowAny()]
+        return [IsAdminOrManager()]
+
+    def get_queryset(self):
+        return Tariff.objects.filter(lot=self.get_lot()).select_related("lot")
+
+    def get_serializer_class(self):
+        if self.request.method == "PATCH":
+            return TariffWriteSerializer
+        return TariffSerializer
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        try:
+            tariff = set_tariff(
+                lot=self.get_lot(),
+                slot_type=serializer.validated_data.get(
+                    "slot_type", instance.slot_type
+                ),
+                hourly_rate=serializer.validated_data.get(
+                    "hourly_rate", instance.hourly_rate
+                ),
+                instance=instance,
+            )
+        except MaxRateExceededError as exc:
+            return Response(
+                {"error" : "RATE_ABOVE_MAX"},
+                status=status.HTTP_409_CONFLICT
+            )
+        return Response(TariffSerializer(tariff).data)
+
+class BusinessRuleView(APIView):
+    """Read or update the platform's single business-rule row (D35).
+
+    ``GET   /api/business-rules/`` -- public (a Manager needs the cap to price
+                                       within it; the value is non-PII).
+    ``PATCH /api/business-rules/`` -- Administrator only. Lowering the cap below
+                                       an existing tariff is a ``409`` with a
+                                       stable ``error`` code (Q2), not a bare
+                                       validation error.
+    """
+
+    def get_permissions(self):
+        if self.request.method in SAFE_METHODS:
+            return [AllowAny()]
+        return [IsAdmin()]
+
+    def get(self, request):
+        return Response(BusinessRuleSerializer(BusinessRule.load()).data)
+
+    def patch(self, request):
+        serializer = BusinessRuleUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            rule = set_max_hourly_rate(
+                max_hourly_rate=serializer.validated_data["max_hourly_rate"]
+            )
+        except MaxRateBelowTariffError as exc:
+            return Response(
+                {"error": "MAX_RATE_BELOW_TARIFF", "message": str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(BusinessRuleSerializer(rule).data)

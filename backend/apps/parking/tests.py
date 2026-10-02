@@ -6,6 +6,7 @@ any test runs. Each class therefore clears the table and creates its own data,
 so the tests never assert against production seed data or assume an empty table.
 """
 
+from decimal import Decimal
 from django.db import IntegrityError, transaction
 from django.db.models import ProtectedError
 from django.test import TestCase
@@ -14,8 +15,8 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 
-from .models import City, ParkingLot, ParkingSlot
-
+from .models import City, ParkingLot, ParkingSlot, Tariff, BusinessRule
+from .services import MaxRateExceededError, MaxRateBelowTariffError, set_tariff, set_max_hourly_rate
 
 class CityModelTests(TestCase):
     def setUp(self):
@@ -261,6 +262,7 @@ class ParkingSlotModelTests(TestCase):
         cls.other_lot = ParkingLot.objects.create(
             city=cls.city, number=2, name="Other", address_line="Other 2"
         )
+        
 
     def test_defaults(self):
         slot = ParkingSlot.objects.create(lot=self.lot, number="A-01")
@@ -337,6 +339,21 @@ class ParkingSlotApiTests(TestCase):
             manager=cls.other_manager,
         )
         cls.slot = ParkingSlot.objects.create(lot=cls.lot, number="A-01")
+        Tariff.objects.create(
+            lot=cls.lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+        Tariff.objects.create(
+            lot=cls.lot,
+            slot_type=ParkingSlot.SlotType.EV,
+            hourly_rate=Decimal("30.00"),
+        )
+        Tariff.objects.create(
+            lot=cls.other_lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
 
     def setUp(self):
         self.client = APIClient()
@@ -476,5 +493,310 @@ class ParkingSlotApiTests(TestCase):
             self.client.put(url, {}, format="json").status_code,
             status.HTTP_405_METHOD_NOT_ALLOWED,
         )
+
+    def test_cannot_create_slot_of_an_unpriced_type(self):
+        self._login(self.admin)
+        response = self.client.post(
+            self._slots_url(self.lot),
+            {"number": "A-05", "slot_type" : "LARGE"},
+            format = "json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("slot_type", response.data)
+
+class TariffModelTests(TestCase):
+    """Model rules for tariffs and the business-rule singleton (increment 3.3)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        cls.city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=cls.city, number=1, name="MG Road", address_line="MG Road 1"
+        )
+        cls.other_lot = ParkingLot.objects.create(
+            city=cls.city, number=2, name="Other", address_line="Other 2"
+        )
+
+    def test_str_includes_lot_code_type_and_rate(self):
+        tariff = Tariff.objects.create(
+            lot=self.lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+        self.assertEqual(str(tariff), "BLR-001 - REGULAR: 20.00")
+
+    def test_same_type_in_different_lots_is_allowed(self):
+        Tariff.objects.create(lot=self.lot, slot_type="REGULAR", hourly_rate="20.00")
+        Tariff.objects.create(
+            lot=self.other_lot, slot_type="REGULAR", hourly_rate="25.00"
+        )
+        self.assertEqual(Tariff.objects.count(), 2)
+
+    def test_type_is_unique_within_a_lot(self):
+        Tariff.objects.create(lot=self.lot, slot_type="REGULAR", hourly_rate="20.00")
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Tariff.objects.create(
+                    lot=self.lot, slot_type="REGULAR", hourly_rate="30.00"
+                )
+
+    def test_rate_must_be_positive_at_the_database(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Tariff.objects.create(
+                    lot=self.lot, slot_type="EV", hourly_rate="0.00"
+                )
+
+    def test_deleting_a_lot_cascades_to_its_tariffs(self):
+        Tariff.objects.create(lot=self.lot, slot_type="REGULAR", hourly_rate="20.00")
+        self.lot.delete()
+        self.assertEqual(Tariff.objects.count(), 0)
+
+    def test_load_creates_and_reuses_the_singleton(self):
+        rule = BusinessRule.load()
+        self.assertEqual(rule.pk, 1)
+        self.assertEqual(rule.max_hourly_rate, Decimal("100.00"))
+        self.assertEqual(BusinessRule.load().pk, 1)
+        self.assertEqual(BusinessRule.objects.count(), 1)
+
+    def test_save_always_writes_pk_1(self):
+        rule = BusinessRule(max_hourly_rate=Decimal("50.00"))
+        rule.pk = 99
+        rule.save()
+        self.assertEqual(rule.pk, 1)
+        self.assertEqual(BusinessRule.objects.count(), 1)
+
+    def test_max_rate_must_be_positive_at_the_database(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                BusinessRule.objects.create(max_hourly_rate=Decimal("0.00"))
+
+class Invariant4ServiceTests(TestCase):
+    """Invariant 4 logic lives in services (D35)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        cls.city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=cls.city, number=1, name="MG Road", address_line="MG Road 1"
+        )
+
+    def test_tariff_at_the_cap_is_allowed(self):
+        set_max_hourly_rate(max_hourly_rate=Decimal("50.00"))
+        tariff = set_tariff(
+            lot=self.lot, slot_type="REGULAR", hourly_rate=Decimal("50.00")
+        )
+        self.assertEqual(tariff.hourly_rate, Decimal("50.00"))
+
+    def test_tariff_above_the_cap_is_rejected(self):
+        set_max_hourly_rate(max_hourly_rate=Decimal("50.00"))
+        with self.assertRaises(MaxRateExceededError):
+            set_tariff(
+                lot=self.lot, slot_type="REGULAR", hourly_rate=Decimal("50.01")
+            )
+
+    def test_update_tariff_within_the_cap_succeeds(self):
+        set_max_hourly_rate(max_hourly_rate=Decimal("50.00"))
+        tariff = set_tariff(
+            lot=self.lot, slot_type="REGULAR", hourly_rate=Decimal("20.00")
+        )
+        updated = set_tariff(
+            lot=self.lot,
+            slot_type="REGULAR",
+            hourly_rate=Decimal("40.00"),
+            instance=tariff,
+        )
+        self.assertEqual(updated.pk, tariff.pk)
+        updated.refresh_from_db()
+        self.assertEqual(updated.hourly_rate, Decimal("40.00"))
+
+    def test_lowering_the_cap_below_a_tariff_is_rejected(self):
+        set_max_hourly_rate(max_hourly_rate=Decimal("50.00"))
+        set_tariff(lot=self.lot, slot_type="REGULAR", hourly_rate=Decimal("40.00"))
+        with self.assertRaises(MaxRateBelowTariffError):
+            set_max_hourly_rate(max_hourly_rate=Decimal("30.00"))
+        # The cap is unchanged, so the invariant still holds at rest.
+        self.assertEqual(BusinessRule.load().max_hourly_rate, Decimal("50.00"))
+
+    def test_lowering_the_cap_to_the_highest_tariff_is_allowed(self):
+        set_max_hourly_rate(max_hourly_rate=Decimal("50.00"))
+        set_tariff(lot=self.lot, slot_type="REGULAR", hourly_rate=Decimal("40.00"))
+        rule = set_max_hourly_rate(max_hourly_rate=Decimal("40.00"))
+        self.assertEqual(rule.max_hourly_rate, Decimal("40.00"))
+
+class TariffApiTests(TestCase):
+    """Tariff and business-rule API surface (increment 3.3)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        cls.city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com", password="Tr0ub4dor&3", full_name="Consumer"
+        )
+        cls.manager = User.objects.create_user(
+            email="manager@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Manager",
+            role=User.Role.MANAGER,
+        )
+        cls.other_manager = User.objects.create_user(
+            email="other@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Other",
+            role=User.Role.MANAGER,
+        )
+        cls.admin = User.objects.create_user(
+            email="admin@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Admin",
+            role=User.Role.ADMIN,
+        )
+        cls.lot = ParkingLot.objects.create(
+            city=cls.city,
+            number=1,
+            name="MG Road",
+            address_line="MG Road 1",
+            manager=cls.manager,
+        )
+        cls.inactive_lot = ParkingLot.objects.create(
+            city=cls.city,
+            number=2,
+            name="Closed",
+            address_line="Closed 2",
+            manager=cls.manager,
+            is_active=False,
+        )
+        cls.other_lot = ParkingLot.objects.create(
+            city=cls.city,
+            number=3,
+            name="Other",
+            address_line="Other 3",
+            manager=cls.other_manager,
+        )
+        cls.tariff = Tariff.objects.create(
+            lot=cls.lot, slot_type="REGULAR", hourly_rate=Decimal("20.00")
+        )
+        set_max_hourly_rate(max_hourly_rate=Decimal("50.00"))
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _login(self, user):
+        self.client.force_authenticate(user=user)
+
+    def _tariffs_url(self, lot):
+        return f"/api/parking-lots/{lot.id}/tariffs/"
+
+    def _tariff_url(self, lot, tariff):
+        return f"/api/parking-lots/{lot.id}/tariffs/{tariff.id}/"
+
+    def test_anonymous_can_list_tariffs_of_an_active_lot(self):
+        response = self.client.get(self._tariffs_url(self.lot))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([t["slot_type"] for t in response.data], ["REGULAR"])
+
+    def test_anonymous_gets_404_for_tariffs_of_an_inactive_lot(self):
+        response = self.client.get(self._tariffs_url(self.inactive_lot))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_business_rule_is_publicly_readable(self):
+        response = self.client.get("/api/business-rules/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["max_hourly_rate"], "50.00")
+
+    def test_anonymous_cannot_create_tariff(self):
+        response = self.client.post(self._tariffs_url(self.lot), {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_consumer_cannot_create_tariff(self):
+        self._login(self.consumer)
+        response = self.client.post(self._tariffs_url(self.lot), {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_unassigned_manager_gets_404(self):
+        self._login(self.other_manager)
+        payload = {"slot_type": "EV", "hourly_rate": "30.00"}
+        response = self.client.post(self._tariffs_url(self.lot), payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_assigned_manager_can_create_tariff(self):
+        self._login(self.manager)
+        payload = {"slot_type": "EV", "hourly_rate": "30.00"}
+        response = self.client.post(self._tariffs_url(self.lot), payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["slot_type"], "EV")
+        self.assertEqual(response.data["hourly_rate"], "30.00")
+        self.assertEqual(response.data["lot_code"], "BLR-001")
+
+    def test_tariff_above_the_cap_is_rejected(self):
+        self._login(self.manager)
+        payload = {"slot_type": "EV", "hourly_rate": "60.00"}
+        response = self.client.post(self._tariffs_url(self.lot), payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertIn("hourly_rate", response.data)
+
+    def test_zero_or_negative_rate_is_rejected(self):
+        self._login(self.manager)
+        payload = {"slot_type": "EV", "hourly_rate": "0.00"}
+        response = self.client.post(self._tariffs_url(self.lot), payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("hourly_rate", response.data)
+
+    def test_duplicate_slot_type_in_lot_is_rejected(self):
+        self._login(self.manager)
+        payload = {"slot_type": "REGULAR", "hourly_rate": "25.00"}
+        response = self.client.post(self._tariffs_url(self.lot), payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("slot_type", response.data)
+
+    def test_manager_can_update_a_tariff(self):
+        self._login(self.manager)
+        response = self.client.patch(
+            self._tariff_url(self.lot, self.tariff),
+            {"hourly_rate": "35.00"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.tariff.refresh_from_db()
+        self.assertEqual(self.tariff.hourly_rate, Decimal("35.00"))
+
+    def test_delete_and_put_are_not_allowed_for_tariffs(self):
+        self._login(self.admin)
+        url = self._tariff_url(self.lot, self.tariff)
+        self.assertEqual(
+            self.client.delete(url).status_code, status.HTTP_405_METHOD_NOT_ALLOWED
+        )
+        self.assertEqual(
+            self.client.put(url, {}, format="json").status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    # --- business rule --------------------------------------------------
+
+    def test_consumer_cannot_change_the_business_rule(self):
+        self._login(self.consumer)
+        response = self.client.patch(
+            "/api/business-rules/", {"max_hourly_rate": "40.00"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_can_raise_the_cap(self):
+        self._login(self.admin)
+        response = self.client.patch(
+            "/api/business-rules/", {"max_hourly_rate": "80.00"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["max_hourly_rate"], "80.00")
+
+    def test_admin_cannot_lower_the_cap_below_a_tariff(self):
+        self._login(self.admin)
+        response = self.client.patch(
+            "/api/business-rules/", {"max_hourly_rate": "10.00"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["error"], "MAX_RATE_BELOW_TARIFF")
         
         
