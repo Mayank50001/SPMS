@@ -4,17 +4,17 @@ An academic mini-project: a software-based parking management platform that lets
 consumers discover lots and book slots, managers operate lots and walk-ins, and
 administrators manage users and view platform reports.
 
-**Phase 3 (the parking domain) is complete (3.1–3.4).**
-Phases 0 (repository setup), 1 (backend foundation) and 2 (authentication and
-users) are done. Implemented so far: the custom email-based user model, consumer
+**Phase 4 (booking) is in progress.** Phases 0 (repository setup), 1 (backend
+foundation), 2 (authentication and users) and 3 (the parking domain, 3.1–3.4)
+are complete. Implemented so far: the custom email-based user model, consumer
 self-registration, the JWT authentication surface, consumer profile self-update,
 Administrator user management, role-based authorization, consumer **vehicle
 registration**, and the parking domain — the `City`/`ParkingLot` catalogue, the
 `ParkingSlot` model and API, per-`(lot, slot_type)` **tariffs** capped by the
 Administrator's **`BusinessRule` maximum rate** (Invariant 4), and
-**manager-scoped lot reads** (Invariant 3). Phase 3's §36 scope is fully
-delivered; its optional consumer refinements are folded into later phases, so
-**Phase 4 (booking) is next**. The authoritative specification is
+**manager-scoped lot reads** (Invariant 3). Phase 4 has opened with increment
+**4.1**, the `Booking` model and its state enum (D39–D41); its API and lifecycle
+land increment by increment. The authoritative specification is
 [`PROJECT.md`](PROJECT.md). Documentation is split per phase — start at
 [`docs/README.md`](docs/README.md), the navigation entry point, phase tracker and
 reading protocol.
@@ -47,7 +47,8 @@ ParkingManagementSystem/
 │   ├── deferred-features.md
 │   ├── foundation/         # phases 0-1 + cross-cutting decisions (D1-D10)
 │   ├── phase-2-authentication/
-│   └── phase-3-parking/
+│   ├── phase-3-parking/
+│   └── phase-4-booking/    # booking model, states (D39-D41)
 ├── backend/
 │   ├── manage.py
 │   ├── .env                # local secrets (git-ignored)

@@ -40,8 +40,10 @@ open for re-litigation by the coding agent.
   `select_for_update()` on the slot row followed by an overlap check.
 - **Rationale:** Serialises competing bookings for the same slot and upholds
   Invariant 1 (no two confirmed overlapping bookings for the same slot).
-- **Status:** Design agreed; implementation is the human developer's TODO
-  (Phase 4).
+- **Status:** Design agreed; implementation lands in Phase 4 increments
+  4.3–4.4. **Confirmed and elaborated by D41** (half-open `[start, end)` window;
+  blocking states; lazy-hold exclusion; no DB `EXCLUDE` constraint) in
+  [`../phase-4-booking/DECISIONS.md`](../phase-4-booking/DECISIONS.md).
 
 ## D4 — PostgreSQL is mandatory
 

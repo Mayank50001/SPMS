@@ -64,3 +64,12 @@ D31/D32/D34/D35/D37/D38 at the end of that file.)
 | D36 | Manager assignment: single `manager` FK | Accepted |
 | D37 | Parking API surface and permissions | Accepted |
 | D38 | Lot/slot deactivation and deletion | Accepted |
+
+## Phase 4 — Booking
+Full entries: [`phase-4-booking/DECISIONS.md`](phase-4-booking/DECISIONS.md)
+
+| ID | Title | Status |
+|----|-------|--------|
+| D39 | Booking persistence, relationships and price snapshot | Accepted |
+| D40 | Booking state model | Accepted |
+| D41 | Conflict window and concurrency | Accepted |
