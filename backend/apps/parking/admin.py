@@ -17,7 +17,7 @@ class ParkingLotAdmin(admin.ModelAdmin):
 
 @admin.register(ParkingSlot)
 class ParkingSlotAdmin(admin.ModelAdmin):
-    list_display = ("lot", "number", "floor", "slot_type", "status")
+    list_display = ("lot", "number", "floor", "slot_type", "status", "min_booking_hours", "max_booking_hours")
     list_filter = ("slot_type", "status", "lot")
     search_fields = ("number", "lot__code")
 
@@ -30,7 +30,7 @@ class TariffAdmin(admin.ModelAdmin):
 
 @admin.register(BusinessRule)
 class BusinessRuleAdmin(admin.ModelAdmin):
-    list_display = ("id", "max_hourly_rate", "updated_at")
+    list_display = ("id", "max_hourly_rate", "max_booking_hours", "updated_at")
 
 
     

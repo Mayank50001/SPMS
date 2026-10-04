@@ -6,7 +6,7 @@ from .models import Booking
 class BookingAdmin(admin.ModelAdmin):
     """Read-mostly admin view for inspecting bookings during development."""
     list_display = (
-        "id", "slot", 'vehicle', 'status', 'start_time', 'end_time', 'user',
+        "id", "slot", 'vehicle', 'status', 'start_time', 'end_time', 'base_amount', 'user',
     )
     list_filter = ("status", "slot_type")
     search_fields = ("vehicle_plate", "user__email")

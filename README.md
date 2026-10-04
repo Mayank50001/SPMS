@@ -11,13 +11,17 @@ self-registration, the JWT authentication surface, consumer profile self-update,
 Administrator user management, role-based authorization, consumer **vehicle
 registration**, and the parking domain — the `City`/`ParkingLot` catalogue, the
 `ParkingSlot` model and API, per-`(lot, slot_type)` **tariffs** capped by the
-Administrator's **`BusinessRule` maximum rate** (Invariant 4), and
-**manager-scoped lot reads** (Invariant 3). Phase 4 has opened with increment
-**4.1**, the `Booking` model and its state enum (D39–D41); its API and lifecycle
-land increment by increment. The authoritative specification is
-[`PROJECT.md`](PROJECT.md). Documentation is split per phase — start at
-[`docs/README.md`](docs/README.md), the navigation entry point, phase tracker and
-reading protocol.
+Administrator's **`BusinessRule` maximum rate** (Invariant 4),
+**manager-scoped lot reads** (Invariant 3), and the per-slot **duration policy**
+(`min_booking_hours` / `max_booking_hours`, capped by `max_booking_hours`, D45).
+Phase 4 has delivered increments **4.1** (the `Booking` model and state enum,
+D39–D41) and **4.2** (the booking rule layer: `quote_booking`, the D41 conflict
+predicate, lazy hold expiry, the stored **`base_amount`** snapshot — D39 revised
+— and the per-slot duration policy **D45**); its API and lifecycle land increment
+by increment, next **4.3**, the time-window availability query. The authoritative
+specification is [`PROJECT.md`](PROJECT.md). Documentation is split per phase —
+start at [`docs/README.md`](docs/README.md), the navigation entry point, phase
+tracker and reading protocol.
 
 ---
 
@@ -48,7 +52,7 @@ ParkingManagementSystem/
 │   ├── foundation/         # phases 0-1 + cross-cutting decisions (D1-D10)
 │   ├── phase-2-authentication/
 │   ├── phase-3-parking/
-│   └── phase-4-booking/    # booking model, states (D39-D41)
+│   └── phase-4-booking/    # booking model, rules, duration policy (D39-D45; D39 revised in 4.2)
 ├── backend/
 │   ├── manage.py
 │   ├── .env                # local secrets (git-ignored)
@@ -181,7 +185,7 @@ npm run build
 | GET    | `/api/parking-lots/{lot}/tariffs/{id}/` | Public | Retrieve a tariff |
 | PATCH  | `/api/parking-lots/{lot}/tariffs/{id}/` | Admin/Manager | Edit a tariff |
 | GET    | `/api/business-rules/` | Public     | The max-hourly-rate singleton    |
-| PATCH  | `/api/business-rules/` | Admin      | Change the max hourly rate       |
+| PATCH  | `/api/business-rules/` | Admin      | Change the max hourly rate / max booking hours |
 
 > Authorisation is enforced server-side on every request (D15, D18). `Admin`
 > above means the authenticated account's `role` must be `ADMIN`; a `403` is
@@ -193,8 +197,11 @@ npm run build
 > deactivated ones), while the single-lot read is active-or-assigned. Parking
 > writes are Administrator-only, except slots and tariffs which also accept the
 > lot's assigned Manager (Invariant 3) — an unassigned lot returns `404`, never
-> `403`. `BusinessRule` is a singleton at `/api/business-rules/`; lowering its
-> cap below an existing tariff is a `409` `MAX_RATE_BELOW_TARIFF`.
+> `403`. `BusinessRule` is a singleton at `/api/business-rules/` and carries two
+> ceilings: lowering `max_hourly_rate` below an existing tariff is a `409`
+> `MAX_RATE_BELOW_TARIFF`, and lowering `max_booking_hours` below an existing
+> slot's maximum is a `409` `MAX_DURATION_BELOW_SLOT`. A slot whose
+> `max_booking_hours` exceeds the cap is a `409` `MAX_DURATION_ABOVE_CAP`.
 
 ### Vehicles
 
@@ -338,3 +345,12 @@ the cap is refused so the invariant never breaks at rest:
 ```
 
 The hour is the billing unit; `daily_rate` is deliberately deferred (`D34`).
+
+Each slot also carries a **per-slot duration policy** (D45, Phase 4):
+`min_booking_hours` / `max_booking_hours` in whole hours, defaults `1` / `24`,
+set by the lot's Manager (or an Administrator) through the slot create/PATCH
+surface. The Administrator's `BusinessRule.max_booking_hours` (default `72`) caps
+any slot's maximum — the duration twin of the rate cap. A requested booking whose
+rounded duration falls outside the slot's range is refused with
+`MIN_DURATION_NOT_MET` / `MAX_DURATION_EXCEEDED` (enforced by the booking rules in
+Phase 4, not by the parking API).

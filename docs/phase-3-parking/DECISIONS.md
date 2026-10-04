@@ -8,6 +8,13 @@ Status as of **2026-10-03**:
   by increments 3.1–3.4, whose decisions are recorded in the increment sections
   at the end of this file. The former increment 3.5 is retired; its optional
   ideas are folded into later phases (see `PROGRESS.md`).
+- **Post-close change (2026-10-05):** Phase 4's **D45** per-slot duration policy
+  added fields to two Phase 3 models (`ParkingSlot.min/max_booking_hours`,
+  `BusinessRule.max_booking_hours`) and extended `parking/services.py`. D45 is
+  owned by Phase 4 and recorded in
+  [`../phase-4-booking/DECISIONS.md`](../phase-4-booking/DECISIONS.md); the
+  section at the end of this file records only the Phase 3 impact. No other
+  Phase 3 decision changed.
 
 > A "Decision" below is the human's, not the agent's. Rationale/Consequence
 > record why, so the choice can be defended later.
@@ -353,3 +360,31 @@ refine D37/D38; they do not replace them.
 - Enforcement lives in two module helpers in `apps/parking/views.py`
   (`_visible_lot_catalogue`, `_addressable_lot`), reusing `_is_admin`. No model,
   serializer or URL change; assignment already exists (D36).
+
+---
+
+## Post-close change — per-slot duration policy (D45, Phase 4)
+
+Phase 3's models were deliberately reopened once, by Phase 4's increment 4.2, to
+add the **duration policy** the booking phase prices against. The decision is
+Phase 4's — **D45** in
+[`../phase-4-booking/DECISIONS.md`](../phase-4-booking/DECISIONS.md) — so this
+note records only what changed in the parking domain.
+
+- **`ParkingSlot`** gains `min_booking_hours` / `max_booking_hours` (whole
+  hours, defaults `1` / `24`, `MinValueValidator(1)`) with the
+  `slot_min_booking_hours_lte_max` check. They are set by the lot's Manager (or
+  an Administrator) through the existing slot create/PATCH surface.
+- **`BusinessRule`** gains `max_booking_hours` (default `72`), the ceiling on
+  any slot's maximum — the duration twin of the `max_hourly_rate` cap (D35,
+  Invariant 4). Migration
+  `parking/0005_businessrule_max_booking_hours_and_more.py`.
+- **`parking/services.py`** gains `save_slot` (a slot write checks its effective
+  maximum against the locked singleton; `409 MAX_DURATION_ABOVE_CAP`) and
+  `set_business_rules` (one locked singleton write; refuses to lower the cap
+  below an existing slot with `409 MAX_DURATION_BELOW_SLOT`). `set_max_hourly_rate`
+  is retained as a thin wrapper for existing callers and tests.
+- **Unchanged:** D34 pricing granularity (`Tariff` per `(lot, slot_type)`) and
+  the `max_hourly_rate` Invariant 4. Duration is a *separate* axis from price.
+- **Verification:** `apps.parking` is **103 tests green** after the change
+  (89 at close + the new duration tests).

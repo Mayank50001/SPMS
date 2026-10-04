@@ -18,8 +18,8 @@ context — what each phase built (**PROGRESS**) and the decisions made or pendi
 | 0 | Repository setup | ✅ Done | [`foundation/PROGRESS.md`](foundation/PROGRESS.md) |
 | 1 | Backend foundation (config, PostgreSQL, health) | ✅ Done | [`foundation/PROGRESS.md`](foundation/PROGRESS.md) |
 | 2 | Authentication and users | ✅ Done | [`phase-2-authentication/`](phase-2-authentication/) |
-| 3 | **Parking domain (lots, slots, pricing, assignments)** | ✅ Done (3.1–3.4) | [`phase-3-parking/`](phase-3-parking/) |
-| 4 | Booking | 🔵 In progress (4.1) | [`phase-4-booking/`](phase-4-booking/) |
+| 3 | **Parking domain (lots, slots, pricing, assignments)** | ✅ Done (3.1–3.4; reopened once for D45 duration fields) | [`phase-3-parking/`](phase-3-parking/) |
+| 4 | Booking | 🔵 In progress (4.1–4.2 ✅; next 4.3) | [`phase-4-booking/`](phase-4-booking/) |
 | 5 | Payment | ⚪ Not started | — |
 | 6 | Occupancy simulation | ⚪ Not started | — |
 | 7 | Notifications | ⚪ Not started | — |
@@ -44,10 +44,10 @@ docs/
 │   └── DECISIONS.md                # D11-D28
 ├── phase-3-parking/
 │   ├── PROGRESS.md
-│   └── DECISIONS.md                # D29-D38 (accepted; D33 revises D2) + 3.2-3.4 refinements
+│   └── DECISIONS.md                # D29-D38 (accepted; D33 revises D2) + 3.2-3.4 refinements + post-close D45 fields
 └── phase-4-booking/
     ├── PROGRESS.md
-    └── DECISIONS.md                # D39-D41 (accepted) + later-increment open questions
+    └── DECISIONS.md                # D39-D45 (accepted; D39 revised in 4.2) + later-increment open questions
 ```
 
 Each phase owns one `PROGRESS.md` (state) and one `DECISIONS.md` (decisions that

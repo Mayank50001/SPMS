@@ -6,10 +6,14 @@
 > plus the increment-3.2, 3.3 and 3.4 refinements at the end of that file).
 > Working conventions and the reading protocol: [`../README.md`](../README.md).
 
-Last updated: 2026-10-03 · **Phase 3 closed — §36 scope delivered (3.1–3.4),
-89 tests green.** The former increment 3.5 is retired: its optional ideas are
+Last updated: 2026-10-05 · **Phase 3 closed — §36 scope delivered (3.1–3.4).**
+Post-close (2026-10-05): Phase 4's **D45** reopened two parking models once, to
+add the per-slot duration policy (`ParkingSlot.min/max_booking_hours`,
+`BusinessRule.max_booking_hours`); see [`DECISIONS.md`](DECISIONS.md) →
+"Post-close change". `apps.parking` is now **103 tests green** (89 at close + the
+new duration tests). The former increment 3.5 is retired: its optional ideas are
 folded into later phases (see "Optional follow-ups" below). Phase 4 (Booking) is
-the next phase.
+the current phase.
 
 ---
 
@@ -371,7 +375,9 @@ building a parking-side approximation now would mean designing it twice
 | ~~3.5~~ | ~~Consumer lot/slot refinements~~ — **retired**; ideas folded into Phase 4 / 9 / 10 | ⚪ — see "Optional follow-ups" |
 
 **Phase 3 is closed:** all of its PROJECT.md §36 scope is done and verified
-(89 tests green). No further parking increment is required.
+(89 tests green at close). No further parking increment is required; the only
+post-close change is Phase 4's D45 duration fields (see the top of this file and
+`DECISIONS.md`), which brings `apps.parking` to 103 tests.
 
 > **Note:** D36 replaced the `ManagerLotAssignment` join table with a single
 > `manager` FK on the lot, so there is no separate "assignment model" increment.

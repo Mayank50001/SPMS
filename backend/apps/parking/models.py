@@ -178,6 +178,24 @@ class ParkingSlot(models.Model):
         default=Status.AVAILABLE,
     )
 
+    # D45: the manager-set bookable duration policy for THIS bay, in whole
+    # hours. Per-slot (not per lot or type) so a premium bay near a lift or an
+    # EV charger can enforce a short maximum while a long-stay bay allows a
+    # full day. Defaults let every existing slot keep working with no backfill.
+    DEFAULT_MIN_BOOKING_HOURS = 1
+    DEFAULT_MAX_BOOKING_HOURS = 24
+
+    min_booking_hours = models.PositiveIntegerField(
+        default=DEFAULT_MIN_BOOKING_HOURS,
+        validators=[MinValueValidator(1)],
+        help_text="Shortest bookable duration for this bay, in whole hours.",
+    )
+    max_booking_hours = models.PositiveIntegerField(
+        default=DEFAULT_MAX_BOOKING_HOURS,
+        validators=[MinValueValidator(1)],
+        help_text="Longest bookable duration for this bay, in whole hours.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -191,6 +209,13 @@ class ParkingSlot(models.Model):
             models.UniqueConstraint(
                 fields=["lot", "number"],
                 name="unique_slot_number_per_lot",
+            ),
+            # D45: a slot may not have a minimum above its maximum.
+            models.CheckConstraint(
+                condition=models.Q(
+                    min_booking_hours__lte=models.F("max_booking_hours")
+                ),
+                name="slot_min_booking_hours_lte_max",
             ),
         ]
 
@@ -276,6 +301,14 @@ class BusinessRule(models.Model):
         validators=[MinValueValidator(Decimal("0.01"))],
     )
 
+    # D45: the Administrator's ceiling on any slot's bookable maximum -- the
+    # duration analogue of ``max_hourly_rate`` (Invariant 4). A manager may set
+    # a slot's maximum up to this value, never above it.
+    max_booking_hours = models.PositiveIntegerField(
+        default=72,
+        validators=[MinValueValidator(1)],
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -285,6 +318,10 @@ class BusinessRule(models.Model):
             models.CheckConstraint(
                 condition=models.Q(max_hourly_rate__gt=0),
                 name="business_rule_max_hourly_rate_positive",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(max_booking_hours__gt=0),
+                name="business_rule_max_booking_hours_positive",
             ),
         ]
 

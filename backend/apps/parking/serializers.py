@@ -152,6 +152,8 @@ class ParkingSlotSerializer(serializers.ModelSerializer):
             "floor",
             "slot_type",
             "status",
+            "min_booking_hours",
+            "max_booking_hours",
             "created_at",
             "updated_at",
         ]
@@ -177,10 +179,13 @@ class ParkingSlotWriteSerializer(serializers.ModelSerializer):
     ]
 
     status = serializers.ChoiceField(choices=SUPERVISED_STATUSES, required=False)
+    min_booking_hours = serializers.IntegerField(required=False, min_value=1)
+    max_booking_hours = serializers.IntegerField(required=False, min_value=1)
+
 
     class Meta:
         model = ParkingSlot
-        fields = ["id", "number", "floor", "slot_type", "status"]
+        fields = ["id", "number", "floor", "slot_type", "status", "min_booking_hours", "max_booking_hours",]
         read_only_fields = ["id"]
 
     def validate_number(self, value):
@@ -225,6 +230,18 @@ class ParkingSlotWriteSerializer(serializers.ModelSerializer):
                         )
                     }
                 )
+
+        # D45: min <= max. A clean 400 here; the DB CheckConstraint is the
+        # backstop. The ceiling against the Administrator's cap is enforced in
+        # ``services.save_slot`` (409), not here.
+        min_hours = attrs.get("min_booking_hours", self.instance.min_booking_hours 
+            if self.instance is not None 
+            else ParkingSlot.DEFAULT_MIN_BOOKING_HOURS)
+        max_hours = attrs.get("max_booking_hours", self.instance.max_booking_hours if self.instance is not None else ParkingSlot.DEFAULT_MAX_BOOKING_HOURS)
+        if min_hours > max_hours:
+            raise serializers.ValidationError(
+                {"max_booking_hours": "The maximum must not be below the minimum."}
+            )
         return attrs
 
 class TariffSerializer(serializers.ModelSerializer):
@@ -294,19 +311,21 @@ class BusinessRuleSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = BusinessRule
-        fields = ["id", "max_hourly_rate", "updated_at"]
+        fields = ["id", "max_hourly_rate","max_booking_hours", "updated_at"]
         read_only_fields = fields
 
 class BusinessRuleUpdateSerializer(serializers.ModelSerializer):
-    """Write shape for the singleton: only ``max_hourly_rate`` is editable.
+    """Write shape for the singleton: either ceiling may be edited.
 
-    The Invariant 4 "cannot lower below an existing tariff" guard is not here;
-    it lives in ``services.set_max_hourly_rate`` (D35).
+    The "cannot lower below an existing row" guards are not here; they live in
+    ``services.set_business_rules`` (D35, D45).
     """
+
+    max_booking_hours = serializers.IntegerField(required=False, min_value=1)
 
     class Meta:
         model = BusinessRule
-        fields = ["max_hourly_rate"]
+        fields = ["max_hourly_rate", "max_booking_hours"]
 
     def validate_max_hourly_rate(self, value):
         if value <= 0:
@@ -314,4 +333,8 @@ class BusinessRuleUpdateSerializer(serializers.ModelSerializer):
                 "The maximum hourly rate must be greater than zero."
             )
         return value
-    
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError("Provide at least one field to update.")
+        return attrs

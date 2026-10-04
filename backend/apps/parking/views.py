@@ -33,7 +33,7 @@ from .serializers import (
 )
 
 from .services import (
-    MaxRateBelowTariffError, MaxRateExceededError, set_max_hourly_rate, set_tariff
+    MaxRateBelowTariffError, MaxRateExceededError, save_slot, set_tariff, set_business_rules, MaxDurationBelowSlotError, SlotDurationAboveMaximumError
 )
 
 def _is_admin(request):
@@ -220,7 +220,13 @@ class ParkingSlotListCreateView(LotScopedMixin, generics.ListCreateAPIView):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        slot = serializer.save(lot=self.get_lot())
+        try:
+            slot = save_slot(serializer=serializer, lot=self.get_lot())
+        except SlotDurationAboveMaximumError as exc:
+            return Response(
+                {"error": "MAX_DURATION_ABOVE_CAP", "max_booking_hours": [str(exc)]},
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(
             ParkingSlotSerializer(slot).data, status=status.HTTP_201_CREATED
         )
@@ -256,7 +262,13 @@ class ParkingSlotDetailView(LotScopedMixin, generics.RetrieveUpdateAPIView):
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
-        slot = serializer.save()
+        try:
+            slot = save_slot(serializer=serializer)
+        except SlotDurationAboveMaximumError as exc:
+            return Response(
+                {"error": "MAX_DURATION_ABOVE_CAP", "max_booking_hours": [str(exc)]},
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(ParkingSlotSerializer(slot).data)
 
 class TariffListCreateView(LotScopedMixin, generics.ListCreateAPIView):
@@ -368,12 +380,18 @@ class BusinessRuleView(APIView):
         serializer = BusinessRuleUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            rule = set_max_hourly_rate(
-                max_hourly_rate=serializer.validated_data["max_hourly_rate"]
+            rule = set_business_rules(
+                max_hourly_rate=serializer.validated_data.get("max_hourly_rate"),
+                max_booking_hours=serializer.validated_data.get("max_booking_hours"),
             )
         except MaxRateBelowTariffError as exc:
             return Response(
                 {"error": "MAX_RATE_BELOW_TARIFF", "message": str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except MaxDurationBelowSlotError as exc:
+            return Response(
+                {"error": "MAX_DURATION_BELOW_SLOT", "message": str(exc)},
                 status=status.HTTP_409_CONFLICT,
             )
         return Response(BusinessRuleSerializer(rule).data)

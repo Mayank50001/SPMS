@@ -56,6 +56,24 @@ work starts before its backend contract is settled (PROJECT.md §23).
 
 ---
 
+## Advanced pricing structures
+
+Beyond the flat hourly rate D34 defines: progressive hour tiers (e.g. first hour
+₹40, each additional ₹30), a daily cap ("max ₹250/day"), and time-of-day / peak
+or demand-based rates.
+
+**Scope when picked up:** extend the `Tariff` model with the rate structure and
+extend `apps/bookings/services.quote_booking` — the single pricing seam created
+in 4.2 — to return an itemised `BookingQuote`. Because `Booking.base_amount` is a
+stored snapshot (D39 revised in 4.2), a new rate structure does not rewrite
+existing bookings.
+
+**Why deferred:** the SRS specifies an hourly rate only. The storage model
+(`Decimal` money, `(lot, slot_type)` tariff) and the pricing seam are already in
+place, so this can be added without a redesign (D42, PROJECT.md §47).
+
+---
+
 ## Repository hygiene
 
 - `requirements.txt` pins `redis==8.1.0` and `pillow==12.3.0`, neither of which

@@ -127,6 +127,12 @@ class Booking(models.Model):
         validators=[MinValueValidator(Decimal("0.01"))]
     )
 
+    base_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+
     # ---- lifecycle bookkeeping ---------------------------------------------
     status = models.CharField(
         max_length=20,
@@ -174,21 +180,20 @@ class Booking(models.Model):
             ),
             models.CheckConstraint(
                 condition=Q(billed_hours__gte=1),
+                name="booking_billed_hours_min_one",
+            ),
+            models.CheckConstraint(
+                condition=~Q(vehicle_plate=""),
                 name="booking_vehicle_plate_not_blank",
             ),
+            models.CheckConstraint(
+                condition=Q(base_amount__gt=0),
+                name="booking_base_amount_positive",
+            )
         ]
 
     def __str__(self):
         return f"{self.slot_id} {self.start_time:%Y-%m-%d %H:%M} [{self.status}]"
-
-    @property
-    def base_amount(self):
-        """The charge for the booked duration, from the snapshot (D39).
-
-        ``hourly_rate * billed_hours``. The overstay surcharge is added at
-        completion (Phase 6). Money stays ``Decimal`` throughout (D34).
-        """
-        return self.hourly_rate * self.billed_hours
 
     def save(self, *args, **kwargs):
         # D39/V6: the plate snapshot is authoritative and single-form. When a

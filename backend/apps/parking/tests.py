@@ -16,7 +16,7 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 
 from .models import City, ParkingLot, ParkingSlot, Tariff, BusinessRule
-from .services import MaxRateExceededError, MaxRateBelowTariffError, set_tariff, set_max_hourly_rate
+from .services import MaxRateExceededError, MaxRateBelowTariffError, set_tariff, set_max_hourly_rate, MaxDurationBelowSlotError, set_business_rules
 
 class CityModelTests(TestCase):
     def setUp(self):
@@ -988,3 +988,165 @@ class ManagerScopedLotReadTests(TestCase):
                 self.other_managers_closed.id,
             },
         )
+
+class SlotDurationPolicyTests(TestCase):
+    """Per-slot duration policy + the Administrator's duration cap (D45)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        cls.city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.manager = User.objects.create_user(
+            email="manager@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Manager",
+            role=User.Role.MANAGER,
+        )
+        cls.admin = User.objects.create_user(
+            email="admin@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Admin",
+            role=User.Role.ADMIN,
+        )
+        cls.lot = ParkingLot.objects.create(
+            city=cls.city,
+            number=1,
+            name="MG Road",
+            address_line="MG Road 1",
+            manager=cls.manager,
+        )
+        Tariff.objects.create(
+            lot=cls.lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+        # Re-create the singleton per test so a cap change in one test cannot
+        # leak into another (TestCase rolls back, but being explicit is clearer).
+        BusinessRule.objects.all().delete()
+
+    def _login(self, user):
+        self.client.force_authenticate(user=user)
+
+    # --- model ----------------------------------------------------------
+
+    def test_slot_duration_defaults(self):
+        slot = ParkingSlot.objects.create(lot=self.lot, number="A-01")
+        self.assertEqual(slot.min_booking_hours, 1)
+        self.assertEqual(slot.max_booking_hours, 24)
+
+    def test_min_above_max_is_rejected_at_the_database(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ParkingSlot.objects.create(
+                    lot=self.lot,
+                    number="A-02",
+                    min_booking_hours=5,
+                    max_booking_hours=2,
+                )
+
+    def test_business_rule_duration_cap_default(self):
+        self.assertEqual(BusinessRule.load().max_booking_hours, 72)
+
+    # --- service: lowering the cap --------------------------------------
+
+    def test_lowering_cap_below_a_slot_max_is_rejected(self):
+        ParkingSlot.objects.create(
+            lot=self.lot, number="A-04", max_booking_hours=48
+        )
+        with self.assertRaises(MaxDurationBelowSlotError):
+            set_business_rules(max_booking_hours=24)
+        self.assertEqual(BusinessRule.load().max_booking_hours, 72)
+
+    def test_lowering_cap_to_the_highest_slot_max_is_allowed(self):
+        ParkingSlot.objects.create(
+            lot=self.lot, number="A-05", max_booking_hours=48
+        )
+        rule = set_business_rules(max_booking_hours=48)
+        self.assertEqual(rule.max_booking_hours, 48)
+
+    # --- API: slot duration ---------------------------------------------
+
+    def test_manager_can_set_slot_duration_policy(self):
+        self._login(self.manager)
+        response = self.client.post(
+            f"/api/parking-lots/{self.lot.id}/slots/",
+            {"number": "B-01", "min_booking_hours": 2, "max_booking_hours": 4},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["min_booking_hours"], 2)
+        self.assertEqual(response.data["max_booking_hours"], 4)
+
+    def test_slot_max_above_the_cap_is_a_409(self):
+        set_business_rules(max_booking_hours=24)
+        self._login(self.manager)
+        response = self.client.post(
+            f"/api/parking-lots/{self.lot.id}/slots/",
+            {"number": "B-02", "max_booking_hours": 30},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["error"], "MAX_DURATION_ABOVE_CAP")
+
+    def test_patching_slot_max_above_the_cap_is_a_409(self):
+        slot = ParkingSlot.objects.create(lot=self.lot, number="B-03")
+        set_business_rules(max_booking_hours=24)
+        self._login(self.manager)
+        response = self.client.patch(
+            f"/api/parking-lots/{self.lot.id}/slots/{slot.id}/",
+            {"max_booking_hours": 30},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["error"], "MAX_DURATION_ABOVE_CAP")
+
+    def test_min_greater_than_max_is_a_400(self):
+        self._login(self.manager)
+        response = self.client.post(
+            f"/api/parking-lots/{self.lot.id}/slots/",
+            {"number": "B-04", "min_booking_hours": 5, "max_booking_hours": 2},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("max_booking_hours", response.data)
+
+    def test_public_can_read_slot_duration_fields(self):
+        ParkingSlot.objects.create(lot=self.lot, number="B-06")
+        response = self.client.get(f"/api/parking-lots/{self.lot.id}/slots/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data[0]["min_booking_hours"], 1)
+        self.assertEqual(response.data[0]["max_booking_hours"], 24)
+
+    # --- API: the Administrator's duration cap --------------------------
+
+    def test_business_rule_exposes_the_duration_cap(self):
+        response = self.client.get("/api/business-rules/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["max_booking_hours"], 72)
+
+    def test_admin_can_raise_the_duration_cap(self):
+        self._login(self.admin)
+        response = self.client.patch(
+            "/api/business-rules/", {"max_booking_hours": 96}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["max_booking_hours"], 96)
+
+    def test_admin_cannot_lower_duration_cap_below_a_slot(self):
+        ParkingSlot.objects.create(
+            lot=self.lot, number="B-05", max_booking_hours=48
+        )
+        self._login(self.admin)
+        response = self.client.patch(
+            "/api/business-rules/", {"max_booking_hours": 12}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["error"], "MAX_DURATION_BELOW_SLOT")
+
+    def test_empty_business_rule_patch_is_rejected(self):
+        self._login(self.admin)
+        response = self.client.patch("/api/business-rules/", {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

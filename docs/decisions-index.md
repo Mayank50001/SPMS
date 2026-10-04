@@ -70,6 +70,10 @@ Full entries: [`phase-4-booking/DECISIONS.md`](phase-4-booking/DECISIONS.md)
 
 | ID | Title | Status |
 |----|-------|--------|
-| D39 | Booking persistence, relationships and price snapshot | Accepted |
+| D39 | Booking persistence, relationships and price snapshot (revised in 4.2: stored `base_amount`) | Accepted |
 | D40 | Booking state model | Accepted |
 | D41 | Conflict window and concurrency | Accepted |
+| D42 | Upfront pricing model and fixed-window paradigm (revised) | Accepted |
+| D43 | Shared D41 predicates and lazy-expiry evaluation | Accepted |
+| D44 | Booking helper module layout and refusal contract | Accepted |
+| D45 | Per-slot duration policy + Administrator duration cap (reopens Phase 3 models) | Accepted |
