@@ -77,3 +77,4 @@ Full entries: [`phase-4-booking/DECISIONS.md`](phase-4-booking/DECISIONS.md)
 | D43 | Shared D41 predicates and lazy-expiry evaluation | Accepted |
 | D44 | Booking helper module layout and refusal contract | Accepted |
 | D45 | Per-slot duration policy + Administrator duration cap (reopens Phase 3 models) | Accepted |
+| D46 | Availability query: derived `.../availability/` endpoint and its bookability rules | Accepted |

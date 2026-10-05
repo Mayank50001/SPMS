@@ -15,10 +15,11 @@ Administrator's **`BusinessRule` maximum rate** (Invariant 4),
 **manager-scoped lot reads** (Invariant 3), and the per-slot **duration policy**
 (`min_booking_hours` / `max_booking_hours`, capped by `max_booking_hours`, D45).
 Phase 4 has delivered increments **4.1** (the `Booking` model and state enum,
-D39–D41) and **4.2** (the booking rule layer: `quote_booking`, the D41 conflict
+D39–D41), **4.2** (the booking rule layer: `quote_booking`, the D41 conflict
 predicate, lazy hold expiry, the stored **`base_amount`** snapshot — D39 revised
-— and the per-slot duration policy **D45**); its API and lifecycle land increment
-by increment, next **4.3**, the time-window availability query. The authoritative
+— and the per-slot duration policy **D45**) and **4.3** (the read-only, derived
+time-window availability query, D46); its lifecycle lands increment by increment,
+next **4.4**, booking creation with the D3/D41 concurrency guard. The authoritative
 specification is [`PROJECT.md`](PROJECT.md). Documentation is split per phase —
 start at [`docs/README.md`](docs/README.md), the navigation entry point, phase
 tracker and reading protocol.
@@ -186,6 +187,7 @@ npm run build
 | PATCH  | `/api/parking-lots/{lot}/tariffs/{id}/` | Admin/Manager | Edit a tariff |
 | GET    | `/api/business-rules/` | Public     | The max-hourly-rate singleton    |
 | PATCH  | `/api/business-rules/` | Admin      | Change the max hourly rate / max booking hours |
+| GET    | `/api/parking-lots/{lot}/availability/` | Public | Slots bookable for `?start=&end=` (4.3) |
 
 > Authorisation is enforced server-side on every request (D15, D18). `Admin`
 > above means the authenticated account's `role` must be `ADMIN`; a `403` is
@@ -354,3 +356,46 @@ any slot's maximum — the duration twin of the rate cap. A requested booking wh
 rounded duration falls outside the slot's range is refused with
 `MIN_DURATION_NOT_MET` / `MAX_DURATION_EXCEEDED` (enforced by the booking rules in
 Phase 4, not by the parking API).
+
+### Availability (Phase 4, increment 4.3)
+
+Which of a lot's slots can be booked for a given window. Availability is
+**derived from bookings** (D2/D33), never stored, and the read is
+**side-effect free** — a lapsed hold is filtered out by the query, not expired by
+it (D43).
+
+```text
+GET /api/parking-lots/1/availability/?start=2026-10-06T10:00:00Z&end=2026-10-06T12:00:00Z
+```
+
+Both `start` and `end` are required, offset-aware ISO-8601 instants (stored UTC,
+D5). The response is the **bookable subset** of the lot's slots, in the same
+shape as `GET /api/parking-lots/1/slots/`:
+
+```json
+[
+  {
+    "id": 1,
+    "lot": 1,
+    "lot_code": "BLR-001",
+    "number": "A-01",
+    "floor": "",
+    "slot_type": "REGULAR",
+    "status": "AVAILABLE",
+    "min_booking_hours": 1,
+    "max_booking_hours": 24,
+    "created_at": "2026-10-03T10:15:00Z",
+    "updated_at": "2026-10-03T10:15:00Z"
+  }
+]
+```
+
+A slot is bookable when all three hold (D46): it is **not `OUT_OF_SERVICE`**
+(Invariant 5); the window fits its **D45 duration policy**; and **no booking
+blocks the window** — i.e. no `CONFIRMED` / `IN_PROGRESS` overlap, and no
+`PENDING_PAYMENT` whose hold is still live. Adjacent windows do **not** conflict:
+a booking ending at `12:00` leaves a `12:00–14:00` request free (D41's half-open
+rule). `OCCUPIED` is deliberately **not** excluded — it is a physical, time-
+unbounded state owned by Phase 6. A backwards or empty window is a `400`
+`INVALID_WINDOW`; the lot follows the usual nested-read scoping, so a consumer
+gets a `404` for an inactive lot while its Manager may still address it (D38).

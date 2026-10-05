@@ -13,10 +13,10 @@ import math
 from decimal import Decimal
 from typing import NamedTuple
 
-from django.db.models import Q
+from django.db.models import Q, Exists, OuterRef
 from django.utils import timezone
 
-from apps.parking.models import Tariff
+from apps.parking.models import Tariff, ParkingSlot
 
 from .models import Booking
 
@@ -162,3 +162,39 @@ def expire_stale_holds(*, slot=None, now=None):
     if slot is not None:
         stale = stale.filter(slot=slot)
     return stale.update(status=Booking.Status.EXPIRED, updated_at=now)
+
+def available_slots(*, lot, start_time, end_time, now=None):
+    """Slots in ``lot`` that can be booked for ``[start_time, end_time)`` (D46).
+
+    Read-only: a pending hold's liveness is decided by ``blocking_window_q`` (a
+    lapsed hold simply stops blocking), never by persisting expiry, so a GET has
+    no side effects (D43, Invariant 6).
+
+    A slot is returned when it is not ``OUT_OF_SERVICE`` (Invariant 5), the
+    window fits its per-slot duration policy (D45), and no blocking booking
+    overlaps it (D41). ``OCCUPIED`` is deliberately not excluded -- it is
+    physical, time-unbounded state owned by Phase 6 (PROJECT.md §28).
+
+    The overlap test is a correlated ``EXISTS``, so the whole lot is answered in
+    one query (using ``booking_slot_window_idx``) rather than one query per slot.
+    """
+
+    validate_window(start_time, end_time)
+    now = now or timezone.now()
+    billed_hours = hours_between(start_time, end_time)
+
+    blocking = Booking.objects.filter(slot=OuterRef("pk")).filter(
+        blocking_window_q(start_time, end_time, now)
+    )
+
+    return  (
+        ParkingSlot.objects.filter(
+            lot=lot,
+            min_booking_hours__lte=billed_hours,
+            max_booking_hours__gte=billed_hours,
+        )
+        .exclude(status=ParkingSlot.Status.OUT_OF_SERVICE)
+        .annotate(is_booked=Exists(blocking))
+        .filter(is_booked=False)
+        .select_related("lot")
+    )

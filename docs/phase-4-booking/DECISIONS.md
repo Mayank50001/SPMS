@@ -6,8 +6,10 @@ Status as of **2026-10-05**:
   see below), D40 (state model), D41 (conflict window and concurrency) —
   increment 4.1. D42 (upfront fixed-window model), D43 (shared D41 predicates
   and lazy-expiry evaluation), D44 (helper module and refusal contract), D45
-  (per-slot duration policy) — increment 4.2, which is **delivered and
-  verified** (137 tests across `apps.parking` + `apps.bookings`).
+  (per-slot duration policy) — increment 4.2. D46 (availability query shape and
+  semantics) — increment 4.3, also **delivered** (availability is a read-only,
+  derived query; the phase's `apps.parking` + `apps.bookings` suite covers the
+  conflict, liveness, out-of-service and duration-policy cases).
 - **Open:** nothing blocking. Later increments add their own decisions (see
   "Open questions carried to later increments" at the end).
 
@@ -309,6 +311,52 @@ helpers; they refine D39/D42/D43/D44/D45, not replace them.
 
 ---
 
+## D46 — Availability query: shape and semantics (accepted 2026-10-05)
+
+The time-window availability read (increment 4.3). All questions decided.
+
+- **Decision:**
+  - **Endpoint: B.** `GET /api/parking-lots/{lot}/availability/?start=&end=` —
+    a dedicated, **derived** sub-resource (D2/D33), not a filter on the
+    catalogue collection. Both `start` and `end` are required, offset-aware
+    ISO-8601 instants; the project stores UTC (D5). The read is public
+    (`AllowAny`), consistent with the rest of the parking catalogue (D37). The
+    lot follows the existing nested-read scoping (`LotScopedMixin`), so an
+    inactive lot is a `404` for a consumer while its Manager may still address
+    it (D38).
+  - **"Available" means:** the slot is not `OUT_OF_SERVICE` (Invariant 5, §19)
+    **and** the requested window fits the slot's D45 duration policy
+    (`min_booking_hours <= billed_hours <= max_booking_hours`) **and** no
+    booking blocks the window per `blocking_window_q` (D41).
+  - **`OCCUPIED` is not excluded.** It is a time-unbounded physical state
+    written by Phase 6 (§28); availability is about a *future window*, so the
+    occupancy policy is deferred to Phase 6 rather than guessed here.
+  - **Response shape:** the bookable subset, serialised with the existing
+    `ParkingSlotSerializer` — the client's `/slots/` parsing is unchanged.
+  - **Refusals:** a window with `end <= start` is `400 INVALID_WINDOW` (the same
+    rule creation enforces); missing/unparseable params are field-shaped `400`s.
+  - **Read-only (D43):** the query never persists expiry. A lapsed
+    `PENDING_PAYMENT` hold is excluded by the predicate, not by a write, so
+    Invariant 6 holds without a GET mutating rows.
+- **Placement:** the selector `available_slots(*, lot, start_time, end_time,
+  now=None)` lives in `apps/bookings/services.py` (the rule layer, D44); the view
+  lives in `apps/parking/views.py` because it is a lot-scoped read reusing
+  `LotScopedMixin`. `apps.bookings` already imports `apps.parking.models`, so the
+  view → bookings-service call respects the established dependency direction at
+  the service layer.
+- **Rejected:** filtering the existing `GET .../slots/` collection with
+  `?start=&end=` (Option A). It overloads the management listing — which must
+  keep returning *all* slots including out-of-service ones — with a
+  parameter-dependent consumer shape, and gives no natural home for later
+  availability-specific fields.
+- **Consequence:** no migration (read-only; no schema change). The correlated
+  `EXISTS` is backed by `booking_slot_window_idx` (`(slot, start_time,
+  end_time)`); serialisation uses `select_related("lot")`. Advanced availability
+  (per-slot reasons, pagination, pricing in the response) stays additive.
+- **Status:** Accepted (2026-10-05).
+
+---
+
 ## Open questions carried to later increments
 
 Each will be surfaced as its own decision when its increment is opened.
@@ -320,6 +368,5 @@ Each will be surfaced as its own decision when its increment is opened.
 | `BusinessRule.overstay_multiplier` (§19 default 1.5) | Phase 6 |
 | Confirmation seam in Phase 4 vs deferring to Phase 5's gateway | 4.6 |
 | Walk-in public `reference`/`ticket_code` (unguessable bearer key) | 4.4 / 4.6 |
-| Availability endpoint shape (`?start=&end=` on slot list vs a separate view) | 4.3 |
 | Extension charge seam (Phase 5 payment handoff) | 4.8 |
 | Whether `CANCELLED` and `TERMINATED` need distinct refusal messages | 4.7 |

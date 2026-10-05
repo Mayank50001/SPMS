@@ -11,7 +11,7 @@ from django.db import IntegrityError, transaction
 from django.db.models.deletion import ProtectedError
 from django.test import TestCase
 from django.utils import timezone
-
+from rest_framework.test import APIClient
 from apps.accounts.models import User, Vehicle
 from apps.parking.models import City, ParkingLot, ParkingSlot, Tariff
 
@@ -28,6 +28,7 @@ from .services import (
     quote_booking,
     validate_duration,
     validate_window,
+    available_slots,
 )
 
 
@@ -427,3 +428,125 @@ class BookingServicesTests(TestCase):
         self.assertTrue(is_hold_live(live, now))
         self.assertFalse(is_hold_live(lapsed, now))
         self.assertFalse(is_hold_live(confirmed, now))
+
+class AvailabilityQueryTests(TestCase):
+    """The time-window availability selector (increment 4.3, D46)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(lot=cls.lot, number="A-01")
+
+    def _window(self, start_hours=2, end_hours=4):
+        now = timezone.now()
+        return now + timedelta(hours=start_hours), now + timedelta(hours=end_hours)
+
+    def _booking(self, *, start, end, status, hold=None):
+        return Booking.objects.create(
+            slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=start,
+            end_time=end,
+            billed_hours=1,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("20.00"),
+            status=status,
+            hold_expires_at=hold,
+            vehicle_plate="KA01AB1234",
+        )
+
+    def _available_ids(self, start, end):
+        return set(
+            available_slots(
+                lot=self.lot, start_time=start, end_time=end
+            ).values_list("id", flat=True)
+        )
+
+    def test_free_slot_is_returned(self):
+        start, end = self._window()
+        self.assertIn(self.slot.id, self._available_ids(start, end))
+
+    def test_confirmed_overlap_hides_the_slot(self):
+        start, end = self._window()
+        self._booking(start=start, end=end, status=Booking.Status.CONFIRMED)
+        self.assertNotIn(self.slot.id, self._available_ids(start, end))
+
+    def test_adjacent_booking_does_not_hide_the_slot(self):
+        start, end = self._window()
+        # A booking ending exactly when the request begins does not overlap:
+        # the interval is half-open (D41).
+        self._booking(
+            start=end, end=end + timedelta(hours=1),
+            status=Booking.Status.CONFIRMED,
+        )
+        self.assertIn(self.slot.id, self._available_ids(start, end))
+
+    def test_live_pending_hold_hides_the_slot(self):
+        start, end = self._window()
+        self._booking(
+            start=start, end=end, status=Booking.Status.PENDING_PAYMENT,
+            hold=timezone.now() + timedelta(minutes=5),
+        )
+        self.assertNotIn(self.slot.id, self._available_ids(start, end))
+
+    def test_lapsed_hold_does_not_hide_and_is_not_written(self):
+        start, end = self._window()
+        stale = self._booking(
+            start=start, end=end, status=Booking.Status.PENDING_PAYMENT,
+            hold=timezone.now() - timedelta(minutes=1),
+        )
+        self.assertIn(self.slot.id, self._available_ids(start, end))
+        # D43: the read must not persist expiry.
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, Booking.Status.PENDING_PAYMENT)
+
+    def test_cancelled_booking_does_not_hide_the_slot(self):
+        start, end = self._window()
+        self._booking(start=start, end=end, status=Booking.Status.CANCELLED)
+        self.assertIn(self.slot.id, self._available_ids(start, end))
+
+    def test_out_of_service_slot_is_excluded(self):
+        self.slot.status = ParkingSlot.Status.OUT_OF_SERVICE
+        self.slot.save(update_fields=["status"])
+        start, end = self._window()
+        self.assertNotIn(self.slot.id, self._available_ids(start, end))
+
+    def test_occupied_slot_is_still_offered(self):
+        # D46: OCCUPIED is physical, time-unbounded state owned by Phase 6, so
+        # the window query does not exclude it.
+        self.slot.status = ParkingSlot.Status.OCCUPIED
+        self.slot.save(update_fields=["status"])
+        start, end = self._window()
+        self.assertIn(self.slot.id, self._available_ids(start, end))
+
+    def test_duration_policy_hides_a_too_long_window(self):
+        self.slot.max_booking_hours = 1
+        self.slot.save(update_fields=["max_booking_hours"])
+        start, end = self._window(2, 4)  # 2 hours > max of 1
+        self.assertNotIn(self.slot.id, self._available_ids(start, end))
+
+    def test_duration_policy_hides_a_too_short_window(self):
+        self.slot.min_booking_hours = 3
+        self.slot.save(update_fields=["min_booking_hours"])
+        start, end = self._window(2, 4)  # 2 hours < min of 3
+        self.assertNotIn(self.slot.id, self._available_ids(start, end))
+
+    def test_invalid_window_is_refused(self):
+        now = timezone.now()
+        with self.assertRaises(InvalidWindowError):
+            available_slots(lot=self.lot, start_time=now, end_time=now)
+
+    def test_only_the_addressed_lot_is_queried(self):
+        other_lot = ParkingLot.objects.create(
+            city=City.objects.get(code="BLR"), number=2,
+            name="Other", address_line="Other 1",
+        )
+        other_slot = ParkingSlot.objects.create(lot=other_lot, number="B-01")
+        start, end = self._window()
+        ids = self._available_ids(start, end)
+        self.assertNotIn(other_slot.id, ids)
+        self.assertIn(self.slot.id, ids)

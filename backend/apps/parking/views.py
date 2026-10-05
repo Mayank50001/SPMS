@@ -17,6 +17,7 @@ from rest_framework.permissions import SAFE_METHODS, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.bookings.services import InvalidWindowError, available_slots
 from apps.accounts.models import User
 from apps.accounts.permissions import IsAdmin, IsAdminOrManager
 
@@ -29,12 +30,15 @@ from .serializers import (
     ParkingSlotSerializer,
     ParkingSlotWriteSerializer,
     TariffSerializer, TariffWriteSerializer,
-    BusinessRuleSerializer, BusinessRuleUpdateSerializer
+    BusinessRuleSerializer, BusinessRuleUpdateSerializer,
+    AvailabilityQuerySerializer,
 )
 
 from .services import (
     MaxRateBelowTariffError, MaxRateExceededError, save_slot, set_tariff, set_business_rules, MaxDurationBelowSlotError, SlotDurationAboveMaximumError
 )
+
+from apps.bookings.services import InvalidWindowError, available_slots
 
 def _is_admin(request):
     """True when the caller is an authenticated Administrator."""
@@ -395,3 +399,31 @@ class BusinessRuleView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
         return Response(BusinessRuleSerializer(rule).data)
+
+class ParkingLotAvailabilityView(LotScopedMixin, generics.ListAPIView):
+    serializer_class = ParkingSlotSerializer
+
+    def get_permissions(self):
+        # Read-only and non-PII, so it opts out of the deny-by-default posture
+        # exactly as the rest of the parking reads do (D18/D37).
+        return [AllowAny()]
+
+    def get_queryset(self):
+        window = AvailabilityQuerySerializer(data = self.request.query_params)
+        window.is_valid(raise_exception=True)
+        return available_slots(
+            lot=  self.get_lot(),
+            start_time = window.validated_data["start"],
+            end_time = window.validated_data["end"],
+        )
+
+    def list(self, request, *args, **kwargs):
+        try:
+            return super().list(request, *args, **kwargs)
+        except InvalidWindowError as exc:
+            return Response(
+                {"error" : "INVALID_WINDOW", "message" : str(exc)},
+                status = status.HTTP_400_BAD_REQUEST,
+            )
+
+

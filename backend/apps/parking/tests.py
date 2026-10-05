@@ -10,10 +10,12 @@ from decimal import Decimal
 from django.db import IntegrityError, transaction
 from django.db.models import ProtectedError
 from django.test import TestCase
+from datetime import timedelta
 from rest_framework import status
 from rest_framework.test import APIClient
-
+from django.utils import timezone
 from apps.accounts.models import User
+from apps.bookings.models import Booking
 
 from .models import City, ParkingLot, ParkingSlot, Tariff, BusinessRule
 from .services import MaxRateExceededError, MaxRateBelowTariffError, set_tariff, set_max_hourly_rate, MaxDurationBelowSlotError, set_business_rules
@@ -1150,3 +1152,106 @@ class SlotDurationPolicyTests(TestCase):
         self._login(self.admin)
         response = self.client.patch("/api/business-rules/", {}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+class AvailabilityApiTests(TestCase):
+    """The derived availability endpoint (increment 4.3, D46)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        cls.city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=cls.city, number=1, name="MG Road", address_line="MG Road 1"
+        )
+        cls.manager = User.objects.create_user(
+            email="manager@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Manager",
+            role=User.Role.MANAGER,
+        )
+        cls.inactive = ParkingLot.objects.create(
+            city=cls.city, number=2, name="Closed", address_line="Closed 2",
+            is_active=False, manager=cls.manager,
+        )
+        cls.slot = ParkingSlot.objects.create(lot=cls.lot, number="A-01")
+        ParkingSlot.objects.create(
+            lot=cls.lot, number="A-02",
+            status=ParkingSlot.Status.OUT_OF_SERVICE,
+        )
+        Tariff.objects.create(
+            lot=cls.lot, slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _window(self):
+        start = timezone.now() + timedelta(hours=2)
+        return start, start + timedelta(hours=2)
+
+    def _url(self, lot=None):
+        return f"/api/parking-lots/{(lot or self.lot).id}/availability/"
+
+    def test_anonymous_can_query_availability(self):
+        start, end = self._window()
+        response = self.client.get(
+            self._url(), {"start": start.isoformat(), "end": end.isoformat()}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([s["number"] for s in response.data], ["A-01"])
+
+    def test_missing_window_params_are_rejected(self):
+        self.assertEqual(
+            self.client.get(self._url()).status_code, status.HTTP_400_BAD_REQUEST
+        )
+        response = self.client.get(
+            self._url(), {"start": timezone.now().isoformat()}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_backwards_window_is_invalid_window(self):
+        start, _ = self._window()
+        response = self.client.get(
+            self._url(), {"start": start.isoformat(), "end": start.isoformat()}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["error"], "INVALID_WINDOW")
+
+    def test_out_of_service_slot_is_absent(self):
+        start, end = self._window()
+        response = self.client.get(
+            self._url(), {"start": start.isoformat(), "end": end.isoformat()}
+        )
+        self.assertNotIn("A-02", [s["number"] for s in response.data])
+
+    def test_confirmed_overlap_is_absent(self):
+        start, end = self._window()
+        Booking.objects.create(
+            slot=self.slot, slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=start, end_time=end, billed_hours=2,
+            hourly_rate=Decimal("20.00"), base_amount=Decimal("40.00"),
+            status=Booking.Status.CONFIRMED, vehicle_plate="KA01AB1234",
+        )
+        response = self.client.get(
+            self._url(), {"start": start.isoformat(), "end": end.isoformat()}
+        )
+        self.assertEqual(response.data, [])
+
+    def test_inactive_lot_is_404_for_anonymous(self):
+        start, end = self._window()
+        response = self.client.get(
+            self._url(self.inactive),
+            {"start": start.isoformat(), "end": end.isoformat()},
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_manager_can_query_an_inactive_assigned_lot(self):
+        self.client.force_authenticate(user=self.manager)
+        start, end = self._window()
+        response = self.client.get(
+            self._url(self.inactive),
+            {"start": start.isoformat(), "end": end.isoformat()},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])

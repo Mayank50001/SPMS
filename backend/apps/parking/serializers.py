@@ -338,3 +338,16 @@ class BusinessRuleUpdateSerializer(serializers.ModelSerializer):
         if not attrs:
             raise serializers.ValidationError("Provide at least one field to update.")
         return attrs
+
+
+class AvailabilityQuerySerializer(serializers.Serializer):
+    """Validates the ``?start=&end=`` window of the availability read (D46).
+
+    Both instants are required. DRF parses offset-aware ISO-8601 and normalises
+    to the current timezone (UTC, D5), so the service and the database always
+    compare aware UTC values; a malformed value is a field-shaped ``400``.
+    """
+
+    start = serializers.DateTimeField()
+    end = serializers.DateTimeField()
+

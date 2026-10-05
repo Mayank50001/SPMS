@@ -9,14 +9,16 @@
 > Phase 3 context (parking catalogue, slots, tariffs): 
 > [`../phase-3-parking/PROGRESS.md`](../phase-3-parking/PROGRESS.md).
 
-Last updated: 2026-10-05 · **Increments 4.1 and 4.2 are complete and verified.**
+Last updated: 2026-10-05 · **Increments 4.1, 4.2 and 4.3 are complete.**
 4.1 delivered the `Booking` model + state enum (D39–D41). 4.2 delivered the
 booking rule layer whole: the tariff quote (`quote_booking`, the single pricing
 seam), the D41 conflict predicate, lazy hold expiry, the **stored `base_amount`
 snapshot** (D39 revised), and the **per-slot duration policy (D45)** — which
 reopened two Phase 3 models once (`ParkingSlot.min/max_booking_hours`,
-`BusinessRule.max_booking_hours`). `apps.parking` is 103 tests green,
-`apps.bookings` 34. **Next: 4.3, the time-window availability query.**
+`BusinessRule.max_booking_hours`). 4.3 delivered the read-only **time-window
+availability query** (D46): the derived `.../availability/` read, consuming
+`blocking_window_q` (D43) inside a correlated `EXISTS` with no schema change.
+**Next: 4.4, booking creation + concurrency (D3/D41).**
 
 ---
 
@@ -28,11 +30,12 @@ reopened two Phase 3 models once (`ParkingSlot.min/max_booking_hours`,
    the open questions carried to later increments.
 4. Only if a task touches it: the "Dependencies on earlier phases" table below.
 
-**Next session starts here:** increment **4.3 — the time-window availability
-query**. It consumes `services.blocking_window_q` (D43) and is read-only. The
-availability endpoint shape (`?start=&end=` on the slot list vs a separate view)
-is the one open question for that increment (listed in `DECISIONS.md`); settle it
-first if it is still open.
+**Next session starts here:** increment **4.4 — booking creation and
+concurrency**. It consumes `available_slots` (4.3) / `blocking_window_q` (D43)
+and `quote_booking` (4.2), and is the first *write* path: an atomic,
+slot-locked transaction that re-checks the window before insert (D3/D41). It
+also decides the walk-in public `reference`/`ticket_code` (see the open
+questions in `DECISIONS.md`).
 
 ---
 
@@ -42,7 +45,7 @@ first if it is still open.
 |---|-----------|--------|
 | 4.1 | `Booking` model + state enum + migration + model tests | ✅ Done |
 | 4.2 | Pricing / duration / (lazy) expiry helpers + per-slot duration policy (D45) | ✅ Done |
-| 4.3 | Time-window availability query | ⚪ Not started |
+| 4.3 | Time-window availability query (D46) | ✅ Done |
 | 4.4 | Booking creation + concurrency (D3/D41) | ⚪ Not started |
 | 4.5 | Temporary hold + lazy expiry (D6) | ⚪ Not started |
 | 4.6 | Confirmation seam (Phase 5 wires the gateway) | ⚪ Not started |
@@ -194,14 +197,88 @@ Result: no check issues; **137 tests OK** (`apps.parking` 103, `apps.bookings`
 
 ### Known, deliberate gaps from 4.2
 
-- **No availability endpoint** — `blocking_window_q` exists but nothing exposes
-  it over HTTP until 4.3.
+- **Availability endpoint** — added in 4.3 as
+  `GET /api/parking-lots/{lot}/availability/` (D46); `blocking_window_q` is now
+  reachable over HTTP.
 - **No creation path** — `expire_stale_holds` is tested directly but is not yet
   *called* by the creation transaction (4.4 wires it).
 - **`hold_minutes` / `cancellation_cutoff_minutes` / `overstay_multiplier` not
   added** — 4.5 / 4.7 / Phase 6.
 - **Advanced pricing deferred** — tiers, day caps, peak/demand; the seam is
   `quote_booking` (see [`../deferred-features.md`](../deferred-features.md)).
+
+---
+
+## Increment 4.3 — time-window availability query ✅
+
+### What it delivers
+
+The read side of the booking domain: given a lot and a window `[start, end)`,
+which of its slots can be booked. Availability is **derived** from bookings
+(D2/D33) and the query is **read-only** (D43) — it never persists expiry. No
+model change, so **no migration**. Creation is 4.4.
+
+### Files
+
+| File | State |
+|------|-------|
+| `apps/bookings/services.py` | **extended** — `available_slots(*, lot, start_time, end_time, now=None)` selector (reuses `validate_window`, `hours_between`, `blocking_window_q`) |
+| `apps/parking/serializers.py` | **extended** — `AvailabilityQuerySerializer` (`start` / `end` `DateTimeField`) |
+| `apps/parking/views.py` | **extended** — `ParkingLotAvailabilityView` (`LotScopedMixin` + `ListAPIView`) |
+| `apps/parking/urls.py` | **extended** — `parking-lots/<int:lot_pk>/availability/` |
+| `apps/bookings/tests.py` | **extended** — `AvailabilityQueryTests` (12 selector tests) |
+| `apps/parking/tests.py` | **extended** — `AvailabilityApiTests` (7 API / permission tests) |
+
+Suggested commit (PROJECT.md §43):
+`feat(bookings): add time-window availability query`
+
+### Decisions realized in the code
+
+- **D46** — dedicated `.../availability/?start=&end=` sub-resource; "available"
+  = not `OUT_OF_SERVICE` + window within the slot's D45 duration policy + no
+  blocking overlap; `OCCUPIED` deliberately not excluded; response is the
+  bookable `ParkingSlotSerializer` subset.
+- **D41/D43** — the overlap and liveness test is `blocking_window_q`, used
+  unchanged inside a correlated `Exists`; a lapsed `PENDING_PAYMENT` does not
+  hide the slot and is left untouched (Invariant 6, read-only reads).
+- **D44** — the selector is a service in `apps/bookings/services.py`; the
+  refusal `INVALID_WINDOW` is mapped to `400 {"error": ..., "message": ...}`.
+- **D45** — the requested `billed_hours` is checked against each slot's
+  `min_booking_hours` / `max_booking_hours` in the queryset, so availability
+  never offers a slot that creation would refuse.
+
+### Migration note (PROJECT.md §42)
+
+- **Model change:** none.
+- **Expected DB change:** none — read-only increment.
+- **Data implications:** none.
+
+### Verification
+
+```bash
+cd backend
+../env/bin/python manage.py check
+../env/bin/python manage.py test apps.parking apps.bookings
+```
+
+Expected: no check issues; all tests pass, including the new availability
+selector (`apps.bookings`) and API (`apps.parking`) tests. Manual spot-check:
+
+```bash
+curl "http://127.0.0.1:8000/api/parking-lots/1/availability/?start=2026-10-06T10:00:00Z&end=2026-10-06T12:00:00Z"
+```
+
+A missing `start` / `end`, or `end <= start`, is a `400`.
+
+### Known, deliberate gaps from 4.3
+
+- **No creation path** — availability says "free"; 4.4 makes the atomic,
+  slot-locked booking that guarantees it under concurrency.
+- **`OCCUPIED` policy deferred** — Phase 6 owns physical occupancy (§28).
+- **No per-slot availability reason** — the endpoint returns bookable slots
+  only; an annotated `is_available` / `reason` shape is additive if the UI needs
+  to grey out slots.
+- **No pagination** (Phase 10).
 
 ---
 
