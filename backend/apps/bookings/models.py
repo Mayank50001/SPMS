@@ -14,6 +14,8 @@ from django.db import models
 from django.db.models import F, Q
 from apps.parking.models import ParkingSlot
 
+from .references import generate_reference
+
 class Booking(models.Model):
     """A reservation of one :class:`~apps.parking.models.ParkingSlot` for a time
     window (PROJECT.md §15, §17).
@@ -47,6 +49,19 @@ class Booking(models.Model):
         Status.PENDING_PAYMENT,
         Status.CONFIRMED,
         Status.IN_PROGRESS,
+    )
+
+    # ---- identity ----------------------------------------------------------
+
+    # D52: the public, unguessable code a receipt or QR code carries, so a
+    # walk-in (no account) or a gate scanner can look a booking up. Random and
+    # unique; generated on save via ``default`` and never edited by a client.
+    reference = models.CharField(
+        max_length=12,
+        unique=True,
+        editable=False,
+        default=generate_reference,
+        help_text="Public, unguessable code for receipts and QR/gate lookup (D52).",
     )
 
     # ---- who ---------------------------------------------------------------

@@ -82,8 +82,11 @@ Full entries: [`phase-4-booking/DECISIONS.md`](phase-4-booking/DECISIONS.md)
 | D48 | Booking creation refusals and the HTTP status map | Accepted |
 | D49 | Booking creation locking strategy and idempotency deferral | Accepted |
 | D50 | Effective `status` for a lapsed hold; read-only expiry (4.5) | Accepted |
+| D51 | Confirmation seam: slot-locked, idempotent `PENDING_PAYMENT → CONFIRMED` (4.6) | Accepted |
+| D52 | Public booking `reference`: random, unguessable receipt/QR code (4.6) | Accepted |
 
-> Increment **4.5** (temporary hold) landed **D50**; its worksheet is resolved
-> and kept in that file. Increment **4.6** (confirmation seam + walk-in
-> `reference`) has not opened its decisions yet.
+> Increment **4.5** (temporary hold) landed **D50** and increment **4.6**
+> (confirmation seam + public `reference`) landed **D51–D52**; their worksheets
+> are resolved and kept in that file. Increment **4.7** (cancellation) has not
+> opened its decisions yet.
 > This index intentionally lists only *accepted* decisions.

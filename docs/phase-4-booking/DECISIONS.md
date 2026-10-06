@@ -20,9 +20,13 @@ Status as of **2026-10-06**:
   no early release; no extra expiry writer) — increment 4.5, **delivered** (the
   read side now reports a lapsed `PENDING_PAYMENT` as `EXPIRED` with no write;
   the stored status is unchanged).
-- **Open:** nothing blocking 4.1–4.5. Increment **4.6** (confirmation seam +
-  walk-in `reference`) and 4.7 (cancellation) will add their own decisions (see
-  "Open questions carried to later increments").
+- **Accepted (4.6, 2026-10-06):** D51 (the confirmation seam: an internal
+  `PENDING_PAYMENT → CONFIRMED` transition, slot-locked and guarded), D52 (the
+  public, unguessable booking `reference`) — increment 4.6, **delivered** (a
+  Phase 5 gateway can confirm a live booking; every booking now carries a
+  receipts/QR code).
+- **Open:** nothing blocking 4.1–4.6. Increment **4.7** (cancellation) will add
+  its own decisions (see "Open questions carried to later increments").
 
 > A "Decision" below is the human's, not the agent's. Rationale/Consequence
 > record why, so the choice can be defended later.
@@ -530,6 +534,100 @@ remaining, presentation-side semantics. This entry records the answers to the
 
 ---
 
+## D51 — Confirmation seam: the `PENDING_PAYMENT → CONFIRMED` transition (accepted 2026-10-06)
+
+Increment 4.6. 4.4 creates a booking as `PENDING_PAYMENT`; this is the only
+doorway that moves a paid booking to `CONFIRMED`. Phase 4 does **not** process a
+payment — Phase 5's gateway calls this transition when a payment succeeds.
+
+- **Decision:**
+  - **Q1 — surface: A.** An internal service function
+    `services.confirm_booking(*, booking_id)` only. No HTTP endpoint: a
+    consumer-facing "confirm" route would let an unpaid booking be confirmed,
+    and the Phase 4 API has no payment to trigger it. Phase 5 supplies the
+    trigger.
+  - **Q2 — guards and refusals: A.** Only a **live** `PENDING_PAYMENT` may
+    confirm. A booking already `CONFIRMED` returns unchanged — an **idempotent**
+    success, because payment gateways retry callbacks. Every other state is
+    refused with the new error **code** `BOOKING_NOT_CONFIRMABLE` (409), not a
+    new state: a lapsed hold is swept to the existing `EXPIRED` state first, so
+    "payment too late" and "cancelled" share one refusal. A missing id raises
+    `BOOKING_NOT_FOUND`.
+  - **Q3 — concurrency: A.** `confirm_booking` takes the **slot** row lock
+    (not the booking row), reuses `expire_stale_holds`, and re-checks
+    `blocking_window_q` for *other* blocking bookings before committing — the
+    creation ordering of D49, mirrored. This keeps Invariant 1 even in the race
+    after a hold lapses.
+  - **Q4 — hold on success: A.** Confirmation sets `hold_expires_at = NULL` (a
+    hold means something only while pending). The in-lock sweep also retires any
+    other lapsed holds on the slot, and commits with the confirmation.
+    A **refused** attempt is atomic and rolls the sweep back, leaving the stale
+    row untouched — harmless, because a lapsed hold no longer blocks (D41) and
+    reads report it as `EXPIRED` (D50).
+
+- **Rationale:** A pure service seam keeps Phase 4 free of payment processing
+  (§26/§36 boundary) while giving Phase 5 a single, correct transition to call.
+  Idempotency matters because a gateway may deliver the same success twice
+  (§35 "duplicate payment callback"); the ordering matters because confirmation
+  is the second writer that can create a stored `CONFIRMED` overlap, so it must
+  serialize with creation exactly as creation serializes with itself. Refusing a
+  lapsed hold honours §19's timeout: once the 5-minute hold is gone the slot may
+  already be someone else's.
+
+- **Consequence:** `services.py` gains `BookingNotFoundError`/`BOOKING_NOT_FOUND`
+  and `BookingNotConfirmableError`/`BOOKING_NOT_CONFIRMABLE`; the existing
+  `BOOKING_CONFLICT` (409) is reused for the taken-window guard. No model change
+  ⇒ **no migration**. The HTTP status map is not extended yet, because 4.6 adds
+  no endpoint; `confirm_booking` is called directly and covered by service
+  tests. Because the two new codes are *refusal codes*, the seven booking states
+  in `models.py` are unchanged.
+
+- **Status:** Accepted (2026-10-06).
+
+---
+
+## D52 — Public booking reference (accepted 2026-10-06)
+
+Increment 4.6. D47/Q4 deferred the walk-in/receipt identifier to this increment;
+this entry settles its scope, format and exposure.
+
+- **Decision:**
+  - **Scope: A.** **Every** booking gets a `reference` — consumer and walk-in
+    alike. Receipts and the §30 booking QR code apply to both, so one uniform
+    code path is simpler than a walk-in-only field.
+  - **Format: A.** A **random, unguessable** code: `REFERENCE_LENGTH = 10`
+    characters drawn from a 32-character human-friendly alphabet
+    (`A–Z` minus `I`/`O`, plus `2–9`; no ambiguous `0`/`1`). It encodes no lot,
+    date or sequence, so the population cannot be enumerated; uniqueness is
+    enforced by the database, with the value generated by
+    `apps/bookings/references.generate_reference` as the field's `default`.
+  - **`reference` is the stored field name** (not `ticket_code`); a printed
+    ticket or QR just presents this value. It is `editable=False` (server-only;
+    a client cannot set or spoof it) and exposed on the authenticated read
+    serializer.
+  - **Exposure: A (minimal).** 4.6 stores the field and reports it on
+    `GET /api/bookings/`; it adds **no** public lookup endpoint and **no**
+    single-booking detail route. The unauthenticated QR/gate lookup arrives with
+    the walk-in/gate flow that defines its response, and
+    `GET /api/bookings/{id}/` stays in 4.9.
+
+- **Rationale:** A walk-in has no login, so the receipt/QR needs a bearer key
+  that works without an account; the same key serves a consumer's digital
+  receipt. Randomness is the security property — a structured code
+  (`BLR-20261006-0007`) is guessable and would leak the booking. Storing it at
+  creation, before any walk-in flow exists, means no later backfill migration.
+
+- **Consequence:** `Booking.reference` (`CharField(max_length=12, unique=True,
+  editable=False, default=generate_reference)`) plus migration
+  `bookings/0003_booking_reference.py`, written as three operations (add
+  nullable → data-backfill existing rows → tighten to unique/non-null) so a
+  non-empty table migrates safely. No new state. The public lookup and detail
+  endpoints remain deferred.
+
+- **Status:** Accepted (2026-10-06).
+
+---
+
 ## Increment 4.4 implementation decisions (accepted 2026-10-06)
 
 Recorded while delivering 4.4; they refine D47–D49, D41 and D44, not replace
@@ -797,6 +895,71 @@ options are retained here so the reasoning can be re-read later.
 
 ---
 
+## 4.6 decision worksheet (resolved 2026-10-06 — kept for the record)
+
+Increment 4.6 is the **confirmation seam** plus the walk-in `reference` deferred
+by D47/Q4. It consumes 4.4's create path and 4.5's effective reads. The
+questions below were decided with the human; the answers are recorded as
+**D51** (confirmation) and **D52** (reference). Every question took the
+recommended option.
+
+> Clarification recorded at decision time: `BOOKING_NOT_CONFIRMABLE` and
+> `BOOKING_NOT_FOUND` are **refusal codes** — the stable string in the §33
+> `{"error": "CODE", ...}` response — not booking states. The seven states in
+> `models.py` are unchanged. A lapsed hold needs no code of its own because the
+> in-lock sweep turns it into the existing `EXPIRED` state.
+
+### Q1 — How is confirmation triggered?
+
+- **Options:** **A** internal service function only (Phase 5 calls it);
+  **B** add an HTTP endpoint now as a stand-in.
+- **Trade-offs:** B would let an unpaid booking be confirmed by its owner, since
+  Phase 4 has no payment to gate it. A keeps Phase 4 out of payment processing.
+- **Recommendation/answer:** **A** (`services.confirm_booking`).
+
+### Q2 — What may be confirmed, and how is a refusal labelled?
+
+- **Options:** **A** only a live `PENDING_PAYMENT`; already-`CONFIRMED` is an
+  idempotent success; everything else is one new refusal code
+  `BOOKING_NOT_CONFIRMABLE` (the lapsed hold having become `EXPIRED`);
+  **B** no new code at all (return the current state); **C** two codes
+  (`BOOKING_HOLD_EXPIRED` + `BOOKING_NOT_CONFIRMABLE`).
+- **Recommendation/answer:** **A**, corrected from the earlier draft that
+  proposed C. One code is enough, and it is an error code, not a state.
+
+### Q3 — Does confirmation take the slot lock and re-check the window?
+
+- **Options:** **A** yes, mirror creation (lock → sweep → re-check → write);
+  **B** plain status transition, no lock.
+- **Recommendation/answer:** **A** — Invariant 1 must hold for the second writer
+  that can store `CONFIRMED`.
+
+### Q4 — What happens to the hold?
+
+- **Options:** **A** clear `hold_expires_at` and reuse the lazy sweep; **B**
+  keep it as history.
+- **Recommendation/answer:** **A**. A refused attempt rolls back (atomicity), so
+  the sweep persists only on success.
+
+### Q5 — Which bookings get a `reference`, in what format?
+
+- **Options:** scope (everyone / walk-ins only); format (random short code /
+  structured enumerable code / UUID).
+- **Recommendation/answer:** **everyone**, as a **random, unguessable ~10-char**
+  code; it is a bearer key, so it must not be enumerable.
+
+### Q6 — Do 4.6's extra endpoints land now?
+
+- **Options:** **A** neither the public reference lookup nor the booking detail
+  route; **B** public lookup only; **C** both.
+- **Trade-offs:** the public lookup returns booking data to anyone holding the
+  code, so its response belongs with the walk-in/gate flow; the detail route is
+  4.9.
+- **Recommendation/answer:** **A** — store and expose the reference; defer both
+  routes.
+
+---
+
 ## Open questions carried to later increments
 
 Each will be surfaced as its own decision when its increment is opened.
@@ -807,8 +970,10 @@ Each will be surfaced as its own decision when its increment is opened.
 | Remaining temporary-hold semantics (effective expiry reads, early release) | ✅ done in 4.5 (D50); early release deferred to 4.7 |
 | `BusinessRule.cancellation_cutoff_minutes` (§19 default 30) | 4.7 |
 | `BusinessRule.overstay_multiplier` (§19 default 1.5) | Phase 6 |
-| Confirmation seam in Phase 4 vs deferring to Phase 5's gateway | 4.6 |
-| Walk-in public `reference`/`ticket_code` (unguessable bearer key) | 4.6 (deferred by D47/Q4) |
+| Confirmation seam in Phase 4 vs deferring to Phase 5's gateway | ✅ done in 4.6 (D51) |
+| Walk-in public `reference`/`ticket_code` (unguessable bearer key) | ✅ done in 4.6 (D52); field stored + exposed |
+| Public reference lookup endpoint (QR/gate, unauthenticated) | walk-in/gate flow (deferred by D52) |
+| Single-booking read `GET /api/bookings/{id}/` | 4.9 |
 | Extension charge seam (Phase 5 payment handoff) | 4.8 |
 | Whether `CANCELLED` and `TERMINATED` need distinct refusal messages | 4.7 |
 | `Idempotency-Key` on booking create | Phase 10 (deferred by D49/Q9) |

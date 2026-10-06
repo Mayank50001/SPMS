@@ -6,10 +6,10 @@ from .models import Booking
 class BookingAdmin(admin.ModelAdmin):
     """Read-mostly admin view for inspecting bookings during development."""
     list_display = (
-        "id", "slot", 'vehicle', 'status', 'start_time', 'end_time', 'base_amount', 'user',
+        "id", "reference", "slot", 'vehicle', 'status', 'start_time', 'end_time', 'base_amount', 'user',
     )
     list_filter = ("status", "slot_type")
-    search_fields = ("vehicle_plate", "user__email")
+    search_fields = ("reference", "vehicle_plate", "user__email")
     date_hierarchy = "start_time"
     # raw_id_fields keeps these FKs as id inputs instead of huge <select>s.
     raw_id_fields = ("user", "created_by", "vehicle", "slot", "cancelled_by")

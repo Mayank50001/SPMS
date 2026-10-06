@@ -74,6 +74,25 @@ place, so this can be added without a redesign (D42, PROJECT.md §47).
 
 ---
 
+## Walk-in / gate lookup by booking reference
+
+The public, unauthenticated lookup that lets a walk-in (no account) or a
+barrier/QR scanner retrieve a booking from its `reference`. The field itself is
+already stored and exposed on the authenticated read (D52, increment 4.6); only
+the endpoint is deferred.
+
+**Scope when picked up:** an unauthenticated `GET` by reference, the exact
+response subset (a bearer key must return no more than the gate/reception needs),
+rate-limiting against enumeration, and how it composes with the manager walk-in
+flow and Phase 6 occupancy. The authenticated single-booking read
+`GET /api/bookings/{id}/` is separately scheduled for increment 4.9.
+
+**Why deferred:** the response shape is a function of the walk-in/gate feature
+that will consume it; inventing it before that feature exists would guess the
+contract (D52/§47).
+
+---
+
 ## Repository hygiene
 
 - `requirements.txt` pins `redis==8.1.0` and `pillow==12.3.0`, neither of which

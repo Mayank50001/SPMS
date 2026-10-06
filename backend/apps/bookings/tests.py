@@ -20,11 +20,16 @@ from apps.parking.models import BusinessRule, City, ParkingLot, ParkingSlot, Tar
 
 from apps.bookings.models import Booking
 
+from apps.bookings.references import (
+    REFERENCE_ALPHABET, REFERENCE_LENGTH, generate_reference,
+)
+
 from apps.bookings.services import (
-    BookingConflictError, InvalidWindowError, LotNotBookableError,
+    BookingConflictError, BookingNotConfirmableError, BookingNotFoundError,
+    InvalidWindowError, LotNotBookableError,
     MaxDurationExceededError, MinDurationNotMetError, NoTariffError,
     SlotNotFoundError, SlotUnavailableError, WindowInPastError,
-    available_slots, blocking_window_q, create_booking,
+    available_slots, blocking_window_q, confirm_booking, create_booking,
     effective_status, expire_stale_holds, hours_between, is_hold_live,
     quote_booking, validate_duration, validate_window,
 )
@@ -1032,5 +1037,208 @@ class CreateBookingApiTests(TestCase):
         # The reader sees EXPIRED; the row is untouched (D43, 4.5-Q4).
         self.assertEqual(response.data[0]["effective_status"], Booking.Status.EXPIRED)
         self.assertEqual(response.data[0]["status"], Booking.Status.PENDING_PAYMENT)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.PENDING_PAYMENT)
+
+    # ---- public reference (increment 4.6, D52) ----------------------------
+
+    def test_create_response_includes_a_generated_reference(self):
+        self.client.force_authenticate(self.consumer)
+        start, end = self._window()
+        response = self.client.post("/api/bookings/", self._payload(start, end), format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        reference = response.data["reference"]
+        self.assertEqual(len(reference), REFERENCE_LENGTH)
+        self.assertTrue(all(ch in REFERENCE_ALPHABET for ch in reference))
+
+    def test_client_cannot_choose_the_reference(self):
+        # The reference is server-generated; a client-supplied value is ignored
+        # (it is not a field of BookingCreateSerializer).
+        self.client.force_authenticate(self.consumer)
+        start, end = self._window()
+        response = self.client.post(
+            "/api/bookings/",
+            self._payload(start, end, reference="MINE123456"),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertNotEqual(response.data["reference"], "MINE123456")
+
+class ReferenceTests(TestCase):
+    """The public reference code (increment 4.6, D52)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(lot=cls.lot, number="A-01")
+
+    def _booking(self, offset_hours=2):
+        now = timezone.now()
+        return Booking.objects.create(
+            slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=now + timedelta(hours=offset_hours),
+            end_time=now + timedelta(hours=offset_hours + 2),
+            billed_hours=2,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("40.00"),
+            vehicle_plate="KA01AB1234",
+        )
+
+    def test_generate_reference_shape(self):
+        code = generate_reference()
+        self.assertEqual(len(code), REFERENCE_LENGTH)
+        self.assertTrue(all(ch in REFERENCE_ALPHABET for ch in code))
+
+    def test_booking_gets_a_reference_on_save(self):
+        booking = self._booking()
+        self.assertEqual(len(booking.reference), REFERENCE_LENGTH)
+        self.assertTrue(all(ch in REFERENCE_ALPHABET for ch in booking.reference))
+
+    def test_references_are_unique(self):
+        codes = {self._booking(offset_hours=h).reference for h in (2, 6, 10, 14)}
+        self.assertEqual(len(codes), 4)
+
+    def test_reference_is_not_editable(self):
+        # D52: generated server-side; ``editable=False`` keeps it out of forms
+        # and write serializers (the read serializer still reports it).
+        self.assertFalse(Booking._meta.get_field("reference").editable)
+
+class ConfirmBookingServiceTests(TestCase):
+    """The confirmation seam ``confirm_booking`` (increment 4.6, D51)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=cls.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        Tariff.objects.create(
+            lot=cls.lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.vehicle = Vehicle.objects.create(
+            owner=cls.consumer, registration_number="KA01AB1234",
+        )
+        BusinessRule.load()
+
+    def _window(self, start_hours=2, end_hours=4):
+        now = timezone.now()
+        return now + timedelta(hours=start_hours), now + timedelta(hours=end_hours)
+
+    def _pending(self, *, start_hours=2, end_hours=4, hold_minutes=5):
+        start, end = self._window(start_hours, end_hours)
+        booking = create_booking(
+            slot_id=self.slot.id,
+            start_time=start,
+            end_time=end,
+            user=self.consumer,
+            vehicle=self.vehicle,
+        )
+        if hold_minutes is not None:
+            Booking.objects.filter(pk=booking.pk).update(
+                hold_expires_at=timezone.now() + timedelta(minutes=hold_minutes)
+            )
+            booking.refresh_from_db()
+        return booking
+
+    def test_confirm_live_pending_sets_confirmed_and_clears_hold(self):
+        booking = self._pending()
+        confirmed = confirm_booking(booking_id=booking.pk)
+        self.assertEqual(confirmed.status, Booking.Status.CONFIRMED)
+        self.assertIsNone(confirmed.hold_expires_at)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+        self.assertIsNone(booking.hold_expires_at)
+
+    def test_successful_confirmation_sweeps_other_stale_holds(self):
+        # Reusing the one expiry sweep (D43) inside the lock means a successful
+        # confirmation also retires any other lapsed hold on the slot, and this
+        # time it commits.
+        now = timezone.now()
+        stale = Booking.objects.create(
+            slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=now + timedelta(hours=10),
+            end_time=now + timedelta(hours=12),
+            billed_hours=2,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("40.00"),
+            status=Booking.Status.PENDING_PAYMENT,
+            hold_expires_at=now - timedelta(minutes=1),
+            vehicle_plate="KA05XY9999",
+        )
+        live = self._pending()
+        confirm_booking(booking_id=live.pk)
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, Booking.Status.EXPIRED)
+
+    def test_repeat_confirmation_is_idempotent(self):
+        # Payment gateways retry callbacks; a second confirmation must not fail.
+        booking = self._pending()
+        first = confirm_booking(booking_id=booking.pk)
+        second = confirm_booking(booking_id=booking.pk)
+        self.assertEqual(second.pk, first.pk)
+        self.assertEqual(second.status, Booking.Status.CONFIRMED)
+
+    def test_lapsed_hold_is_refused(self):
+        booking = self._pending(hold_minutes=-1)
+        with self.assertRaises(BookingNotConfirmableError) as caught:
+            confirm_booking(booking_id=booking.pk)
+        self.assertEqual(caught.exception.code, "BOOKING_NOT_CONFIRMABLE")
+        # The attempt is atomic: a refusal rolls the in-lock sweep back, leaving
+        # the stored row as-is. That is harmless -- a lapsed hold no longer
+        # blocks (D41) and reads already report it as EXPIRED (D50) -- and the
+        # next write sweeps it.
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.PENDING_PAYMENT)
+        self.assertEqual(effective_status(booking), Booking.Status.EXPIRED)
+
+    def test_cancelled_booking_is_refused(self):
+        booking = self._pending()
+        Booking.objects.filter(pk=booking.pk).update(
+            status=Booking.Status.CANCELLED
+        )
+        with self.assertRaises(BookingNotConfirmableError):
+            confirm_booking(booking_id=booking.pk)
+
+    def test_unknown_booking_is_refused(self):
+        with self.assertRaises(BookingNotFoundError):
+            confirm_booking(booking_id=999999)
+
+    def test_confirmation_refuses_when_the_window_was_taken(self):
+        # Force the race the slot lock guards: booking A is still pending/live,
+        # but another confirmed booking already overlaps its window (created
+        # directly, bypassing the service). Confirmation must refuse rather than
+        # create a second confirmed overlap (Invariant 1).
+        booking = self._pending(hold_minutes=30)
+        now = timezone.now()
+        Booking.objects.create(
+            slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=now + timedelta(hours=2),
+            end_time=now + timedelta(hours=4),
+            billed_hours=2,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("40.00"),
+            status=Booking.Status.CONFIRMED,
+            vehicle_plate="KA05XY9999",
+        )
+        with self.assertRaises(BookingConflictError):
+            confirm_booking(booking_id=booking.pk)
         booking.refresh_from_db()
         self.assertEqual(booking.status, Booking.Status.PENDING_PAYMENT)

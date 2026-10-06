@@ -39,6 +39,7 @@ class BookingSerializer(serializers.ModelSerializer):
         model = Booking
         fields = [
             "id",
+            "reference",
             "status",
             "effective_status",
             "slot",

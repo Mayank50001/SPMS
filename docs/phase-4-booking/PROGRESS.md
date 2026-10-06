@@ -3,13 +3,13 @@
 > **Scope (PROJECT.md §36):** the booking domain — model, states, availability
 > query, creation, temporary hold, confirmation, cancellation, extension and
 > booking history. This is described as "the most important backend phase".
-> Decisions are in [`DECISIONS.md`](DECISIONS.md) (D39–D50 accepted; D39 revised
+> Decisions are in [`DECISIONS.md`](DECISIONS.md) (D39–D52 accepted; D39 revised
 > in 4.2).
 > Working conventions and the reading protocol: [`../README.md`](../README.md).
 > Phase 3 context (parking catalogue, slots, tariffs): 
 > [`../phase-3-parking/PROGRESS.md`](../phase-3-parking/PROGRESS.md).
 
-Last updated: 2026-10-06 · **Increments 4.1–4.5 are complete; 4.6 is next.**
+Last updated: 2026-10-06 · **Increments 4.1–4.6 are complete; 4.7 is next.**
 4.1 delivered the `Booking` model + state enum (D39–D41). 4.2 delivered the
 booking rule layer whole: the tariff quote (`quote_booking`, the single pricing
 seam), the D41 conflict predicate, lazy hold expiry, the **stored `base_amount`
@@ -24,9 +24,11 @@ under the lock and assigns the §19 hold (D47–D49) — verified by a two-threa
 concurrency test. 4.5 delivered the **temporary-hold presentation** (D50): a
 read-only, computed `effective_status` that reports a lapsed `PENDING_PAYMENT`
 as `EXPIRED` with no write, so a GET never shows a dead hold as live (no schema
-change).
-**Next: 4.6, the confirmation seam** (Phase 5 wires the gateway) plus the walk-in
-`reference` decided in D47/Q4; its decisions are still open.
+change). 4.6 delivered the **confirmation seam** (D51) and the public
+**`reference`** (D52): a slot-locked, idempotent `confirm_booking` that Phase 5's
+gateway calls, plus a random unguessable receipt/QR code on every booking.
+**Next: 4.7, cancellation** (the §19 cutoff and refund eligibility); its
+decisions are still open.
 
 ---
 
@@ -34,14 +36,14 @@ change).
 
 1. [`../README.md`](../README.md) — conventions + reading protocol.
 2. This file — the increment plan, what is delivered, and what is next.
-3. [`DECISIONS.md`](DECISIONS.md) — D39–D50 (accepted; D39 revised in 4.2), and
+3. [`DECISIONS.md`](DECISIONS.md) — D39–D52 (accepted; D39 revised in 4.2), and
    the open questions carried to later increments.
 4. Only if a task touches it: the "Dependencies on earlier phases" table below.
 
-**Next session starts here:** increment **4.6 — confirmation seam** (Phase 5
-wires the gateway) and the walk-in `reference`/`ticket_code` deferred by D47/Q4.
-It consumes the `PENDING_PAYMENT` → `CONFIRMED` transition from D40 and the
-`create_booking` path from 4.4; its decisions have not been opened yet.
+**Next session starts here:** increment **4.7 — cancellation** (the §19
+30-minute cutoff, refund eligibility and `BusinessRule.cancellation_cutoff_minutes`).
+It consumes the `CONFIRMED`/`PENDING_PAYMENT` states and the confirmation seam
+from 4.6; its decisions have not been opened yet.
 
 ---
 
@@ -54,8 +56,8 @@ It consumes the `PENDING_PAYMENT` → `CONFIRMED` transition from D40 and the
 | 4.3 | Time-window availability query (D46) | ✅ Done |
 | 4.4 | Booking creation + concurrency (D3/D41) | ✅ Done |
 | 4.5 | Effective status for a lapsed hold (D50) | ✅ Done |
-| 4.6 | Confirmation seam (Phase 5 wires the gateway) + walk-in `reference` | ⚪ Next |
-| 4.7 | Cancellation | ⚪ Not started |
+| 4.6 | Confirmation seam (D51) + public `reference` (D52) | ✅ Done |
+| 4.7 | Cancellation | ⚪ Next |
 | 4.8 | Extension | ⚪ Not started |
 | 4.9 | Booking history / listing | ⚪ Not started |
 
@@ -478,6 +480,98 @@ spot-check: a pending booking whose `hold_expires_at` has passed returns
 - **No single-booking read** — `BookingDetailView` is still 4.9 unless an earlier
   increment needs it.
 - **No confirmation** — `PENDING_PAYMENT → CONFIRMED` is 4.6.
+- **No pagination** (Phase 10).
+
+---
+
+## Increment 4.6 — confirmation seam + public `reference` ✅
+
+### What it delivers
+
+The doorway from `PENDING_PAYMENT` to `CONFIRMED` and the unguessable code a
+receipt or QR carries. Phase 4 still does **not** process a payment (§26/§36
+boundary): the confirmation is an internal service that Phase 5's gateway calls
+when a payment succeeds. The `reference` is generated for every booking at
+creation (consumer and walk-in alike), so no later backfill is needed.
+
+### Files
+
+| File | State |
+|------|-------|
+| `apps/bookings/references.py` | **created** — `generate_reference`, `REFERENCE_ALPHABET`, `REFERENCE_LENGTH` |
+| `apps/bookings/models.py` | **extended** — `Booking.reference` (`unique`, `editable=False`, `default=generate_reference`) |
+| `apps/bookings/migrations/0003_booking_reference.py` | generated — add nullable → backfill → tighten |
+| `apps/bookings/services.py` | **extended** — `confirm_booking(*, booking_id, now=None)` + `BookingNotFoundError`/`BOOKING_NOT_FOUND`, `BookingNotConfirmableError`/`BOOKING_NOT_CONFIRMABLE` |
+| `apps/bookings/serializers.py` | **extended** — `reference` on the read serializer |
+| `apps/bookings/admin.py` | **extended** — `reference` in list display / search |
+| `apps/bookings/tests.py` | **extended** — `ReferenceTests`, `ConfirmBookingServiceTests`, 2 reference API tests |
+
+Suggested commit (PROJECT.md §43):
+`feat(bookings): add confirmation seam and public reference`
+
+### Backend flow
+
+```text
+Phase 5 gateway ── payment success ──> services.confirm_booking(booking_id=…)
+                                          (transaction.atomic)
+   ├── read booking → find its slot
+   ├── select_for_update(of=("self",)) slot row      (D51/Q3)
+   ├── expire_stale_holds(slot=…)                     (D43, the one sweep)
+   ├── re-read booking: CONFIRMED → return (idempotent)
+   │                    not PENDING → BOOKING_NOT_CONFIRMABLE
+   ├── re-check blocking_window_q (excluding self) → BOOKING_CONFLICT
+   └── status = CONFIRMED, hold_expires_at = NULL
+```
+
+### Decisions realized in the code
+
+- **D51** — service-only transition (no endpoint); only a live
+  `PENDING_PAYMENT` confirms; already-`CONFIRMED` is an idempotent success;
+  the slot lock + sweep + window re-check mirror `create_booking` (D49), so
+  Invariant 1 holds for this second writer. `hold_expires_at` is cleared on
+  success.
+- **D52** — every booking carries a random, unguessable `reference`
+  (10 chars, 32-char unambiguous alphabet), unique, `editable=False`, generated
+  by `references.generate_reference`; exposed on the authenticated read. No
+  public lookup / detail endpoint (deferred to the walk-in/gate flow and 4.9).
+
+### Migration note (PROJECT.md §42)
+
+- **Model change:** `Booking.reference` — `CharField(max_length=12, unique=True,
+  editable=False, default=generate_reference)`.
+- **Expected DB change:** `ALTER TABLE bookings_booking ADD COLUMN reference
+  varchar(12)` (nullable) → backfill → `SET NOT NULL` + unique index.
+- **Data implications:** existing bookings are each assigned a freshly generated
+  unique code by the data migration; no other column changes. The dev database
+  held **0** bookings, so the backfill was a no-op there, but it is written to be
+  safe on a non-empty table.
+
+### Verification
+
+```bash
+cd backend
+../env/bin/python manage.py makemigrations --check
+../env/bin/python manage.py migrate
+../env/bin/python manage.py check
+../env/bin/python manage.py test
+```
+
+Result: `makemigrations --check` reports no changes; `check` is clean;
+**261 tests OK** (was 248). New coverage: `ReferenceTests` (shape, per-booking
+generation, uniqueness, non-editable), `ConfirmBookingServiceTests` (confirm +
+clear hold, idempotent repeat, lapsed hold refused, cancelled refused, unknown
+refused, taken-window conflict, success sweeps other stale holds) and two
+reference API tests (generated on create, client cannot choose it).
+
+### Known, deliberate gaps from 4.6
+
+- **No confirmation endpoint** — the seam is called internally; Phase 5 supplies
+  the trigger (D51/Q1).
+- **No payment** — `confirm_booking` performs no charge and records no
+  `Payment`; that is Phase 5 (§26).
+- **No public reference lookup** — the unauthenticated QR/gate lookup is deferred
+  to the walk-in/gate flow (D52).
+- **No single-booking read** — `BookingDetailView` is 4.9.
 - **No pagination** (Phase 10).
 
 ---

@@ -80,6 +80,21 @@ class BookingConflictError(BookingRuleError):
 
     code = "BOOKING_CONFLICT"
 
+class BookingNotFoundError(BookingRuleError):
+    """No booking with the requested id exists."""
+
+    code = "BOOKING_NOT_FOUND"
+
+class BookingNotConfirmableError(BookingRuleError):
+    """The booking is not a live pending one, so it cannot be confirmed (D51).
+
+    A lapsed hold reaches this too: confirmation sweeps stale holds first, so an
+    over-due ``PENDING_PAYMENT`` has already become ``EXPIRED`` -- the same
+    answer as a cancelled or terminated booking: this one cannot be confirmed.
+    """
+
+    code = "BOOKING_NOT_CONFIRMABLE"
+
 class BookingQuote(NamedTuple):
     """The priced result of a window, ready to snapshot onto a ``Booking``."""
 
@@ -313,3 +328,78 @@ def create_booking(*, slot_id, start_time, end_time, user, vehicle):
         status=Booking.Status.PENDING_PAYMENT,
         hold_expires_at=now + timedelta(minutes=hold_minutes),
     )
+
+@transaction.atomic
+def confirm_booking(*, booking_id, now=None):
+    """Move a live ``PENDING_PAYMENT`` booking to ``CONFIRMED`` (4.6, D51).
+
+    This is the **confirmation seam**: Phase 5's payment gateway calls it when a
+    payment succeeds. Phase 4 does not process a payment -- it only performs the
+    state transition -- and it only confirms a booking whose hold is still live,
+    so a late callback cannot resurrect a slot that has since been freed.
+
+    The ordering mirrors :func:`create_booking` and is the point of the function:
+
+    * the **slot** row is locked first (not the booking row), so confirmation is
+      serialized with creation and with other confirmations for the same slot;
+    * the lazy expiry sweep runs inside the lock (D43), so the decision uses
+      authoritative state: a lapsed hold is treated as ``EXPIRED`` and refused.
+      The attempt is atomic, so a refusal rolls the sweep back and leaves the
+      row untouched -- harmless, because a lapsed hold no longer blocks (D41)
+      and reads already report it as ``EXPIRED`` (D50);
+    * the window is re-checked for *other* blocking bookings before committing,
+      so Invariant 1 holds even in the narrow race after a hold lapses.
+
+    A repeat confirmation of an already-``CONFIRMED`` booking returns it
+    unchanged (payment gateways retry callbacks). Any other state is refused
+    with ``BOOKING_NOT_CONFIRMABLE``.
+    """
+
+    now = now or timezone.now()
+
+    # A booking's slot never changes, so this unlocked read only finds the row to
+    # lock; the authoritative status is re-read after the lock is held.
+    slot_id = (
+        Booking.objects.filter(pk=booking_id)
+        .values_list("slot_id", flat=True)
+        .first()
+    )
+    if slot_id is None:
+        raise BookingNotFoundError("No booking with this id exists.")
+
+    # D39 makes ``Booking.slot`` PROTECT, so the locked slot always exists.
+    slot = (
+        ParkingSlot.objects.select_for_update(of=("self",))
+        .filter(pk=slot_id)
+        .first()
+    )
+
+    # D43: the same single sweep creation uses. It runs inside the lock, so the
+    # state re-read below is authoritative.
+    expire_stale_holds(slot=slot, now=now)
+    booking = Booking.objects.get(pk=booking_id)
+
+    if booking.status == Booking.Status.CONFIRMED:
+        return booking
+    if booking.status != Booking.Status.PENDING_PAYMENT:
+        raise BookingNotConfirmableError(
+            f"A {booking.status} booking cannot be confirmed."
+        )
+
+    conflict = (
+        Booking.objects.filter(slot=slot)
+        .exclude(pk=booking.pk)
+        .filter(blocking_window_q(booking.start_time, booking.end_time, now))
+        .exists()
+    )
+    if conflict:
+        raise BookingConflictError(
+            "This booking's slot has since been taken by another booking."
+        )
+
+    # The hold exists only to protect a pending booking; confirmation retires it.
+    booking.status = Booking.Status.CONFIRMED
+    booking.hold_expires_at = None
+    booking.updated_at = now
+    booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
+    return booking

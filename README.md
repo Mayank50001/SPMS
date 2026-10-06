@@ -19,10 +19,11 @@ D39–D41), **4.2** (the booking rule layer: `quote_booking`, the D41 conflict
 predicate, lazy hold expiry, the stored **`base_amount`** snapshot — D39 revised
 — and the per-slot duration policy **D45**) and **4.3** (the read-only, derived
 time-window availability query, D46), **4.4** (booking creation — the first write
-path — with the D3/D41 slot-locked concurrency guard, D47–D49) and **4.5**
+path — with the D3/D41 slot-locked concurrency guard, D47–D49), **4.5**
 (effective status for a lapsed hold: a read-only, computed `effective_status`,
-D50); its lifecycle lands increment by increment, next **4.6**, the confirmation
-seam (Phase 5 wires the gateway) and the walk-in `reference`. The authoritative
+D50) and **4.6** (the confirmation seam for Phase 5's payment gateway, and a
+random, unguessable public `reference` on every booking — D51/D52); its lifecycle
+lands increment by increment, next **4.7**, cancellation. The authoritative
 specification is [`PROJECT.md`](PROJECT.md). Documentation is split per phase —
 start at [`docs/README.md`](docs/README.md), the navigation entry point, phase
 tracker and reading protocol.
@@ -56,7 +57,7 @@ ParkingManagementSystem/
 │   ├── foundation/         # phases 0-1 + cross-cutting decisions (D1-D10)
 │   ├── phase-2-authentication/
 │   ├── phase-3-parking/
-│   └── phase-4-booking/    # booking model, rules, duration policy (D39-D45; D39 revised in 4.2)
+│   └── phase-4-booking/    # booking model, rules, duration policy (D39-D52; D39 revised in 4.2)
 ├── backend/
 │   ├── manage.py
 │   ├── .env                # local secrets (git-ignored)
@@ -405,7 +406,7 @@ unbounded state owned by Phase 6. A backwards or empty window is a `400`
 `INVALID_WINDOW`; the lot follows the usual nested-read scoping, so a consumer
 gets a `404` for an inactive lot while its Manager may still address it (D38).
 
-### Bookings (Phase 4, increments 4.4–4.5)
+### Bookings (Phase 4, increments 4.4–4.6)
 
 A Consumer creates a booking for one of their own vehicles and a slot window;
 the backend prices it, protects the slot against overlapping bookings and holds
@@ -427,6 +428,7 @@ duration, `hold_expires_at` is `now + BusinessRule.hold_minutes` (default 5):
 ```json
 {
   "id": 1,
+  "reference": "7GQ4M2XK9P",
   "status": "PENDING_PAYMENT",
   "effective_status": "PENDING_PAYMENT",
   "vehicle_plate": "KA01AB1234",
@@ -449,5 +451,18 @@ booking is `PENDING_PAYMENT`, a lapsed hold is reported as
 `"effective_status": "EXPIRED"` **without** changing the stored `status` — expiry
 is lazy and reads never write (D6/D43/D50). Clients should render
 `effective_status`; `status` and `hold_expires_at` stay in the payload for
-transparency. Confirmation (`PENDING_PAYMENT → CONFIRMED`) arrives with Phase 5's
-payment gateway in increment 4.6.
+transparency.
+
+Every booking also carries a random, unguessable **`reference`** (D52) — the
+bearer code a receipt or QR ticket presents, so a walk-in with no login can be
+looked up. It is generated server-side (a client cannot set it) and shown on the
+authenticated read. The public QR/gate lookup route arrives with the walk-in
+flow, so it is **not** exposed at an endpoint yet.
+
+Confirmation (`PENDING_PAYMENT → CONFIRMED`) is **implemented as a service seam**
+(D51) that Phase 5's payment gateway will call when a payment succeeds — Phase 4
+itself performs no charge and adds no confirmation endpoint. It confirms only a
+live pending booking, is idempotent if called twice, and takes the same per-slot
+lock as creation; a late or cancelled booking is refused with
+`BOOKING_NOT_CONFIRMABLE` (409), and a window meanwhile taken refuses with
+`BOOKING_CONFLICT` (409).
