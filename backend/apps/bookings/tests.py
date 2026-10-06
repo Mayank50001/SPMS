@@ -3,32 +3,30 @@
 API and lifecycle tests arrive with their increments; this file currently
 covers only persistence, the snapshot rules and the DB constraints (D39-D41).
 """
-
+import threading
 from datetime import timedelta
 from decimal import Decimal
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connections, transaction
 from django.db.models.deletion import ProtectedError
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
-from rest_framework.test import APIClient
-from apps.accounts.models import User, Vehicle
-from apps.parking.models import City, ParkingLot, ParkingSlot, Tariff
 
-from .models import Booking
-from .services import (
-    InvalidWindowError,
-    MaxDurationExceededError,
-    MinDurationNotMetError,
-    NoTariffError,
-    blocking_window_q,
-    expire_stale_holds,
-    hours_between,
-    is_hold_live,
-    quote_booking,
-    validate_duration,
-    validate_window,
-    available_slots,
+from rest_framework import status
+from rest_framework.test import APIClient
+
+from apps.accounts.models import User, Vehicle
+from apps.parking.models import BusinessRule, City, ParkingLot, ParkingSlot, Tariff
+
+from apps.bookings.models import Booking
+
+from apps.bookings.services import (
+    BookingConflictError, InvalidWindowError, LotNotBookableError,
+    MaxDurationExceededError, MinDurationNotMetError, NoTariffError,
+    SlotNotFoundError, SlotUnavailableError, WindowInPastError,
+    available_slots, blocking_window_q, create_booking,
+    expire_stale_holds, hours_between, is_hold_live,
+    quote_booking, validate_duration, validate_window,
 )
 
 
@@ -550,3 +548,386 @@ class AvailabilityQueryTests(TestCase):
         ids = self._available_ids(start, end)
         self.assertNotIn(other_slot.id, ids)
         self.assertIn(self.slot.id, ids)
+
+class CreateBookingServiceTests(TestCase):
+    """``create_booking`` (increment 4.4; D3/D41 and Invariants 1/5/6)."""
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=cls.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        Tariff.objects.create(
+            lot=cls.lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.vehicle = Vehicle.objects.create(
+            owner=cls.consumer, registration_number="KA01AB1234",
+        )
+        # Pre-create the singleton so create's hold read is a plain SELECT.
+        BusinessRule.load()
+
+    def _window(self, start_hours=2, end_hours=4):
+        now = timezone.now()
+        return now + timedelta(hours=start_hours), now + timedelta(hours=end_hours)
+
+    def _create(self, start, end, **overrides):
+        params = {
+            "slot_id": self.slot.id,
+            "start_time": start,
+            "end_time": end,
+            "user": self.consumer,
+            "vehicle": self.vehicle,
+        }
+        params.update(overrides)
+        return create_booking(**params)
+
+    def _existing(self, *args, start, end, status, hold=None):
+        return Booking.objects.create(
+            slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=start,
+            end_time=end,
+            billed_hours=1,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("20.00"),
+            status=status,
+            hold_expires_at=hold,
+            vehicle_plate="KA01AB1234",
+        )
+
+    # ---- happy path -------------------------------------------------------
+
+    def test_create_stores_snapshot_and_pending_state(self):
+        start, end = self._window()
+        booking = self._create(start, end)
+        self.assertEqual(booking.status, Booking.Status.PENDING_PAYMENT)
+        self.assertEqual(booking.user, self.consumer)
+        self.assertEqual(booking.created_by, self.consumer)
+        self.assertEqual(booking.vehicle_plate, "KA01AB1234")
+        self.assertEqual(booking.slot_type, ParkingSlot.SlotType.REGULAR)
+        self.assertEqual(booking.billed_hours, 2)
+        self.assertEqual(booking.hourly_rate, Decimal("20.00"))
+        self.assertEqual(booking.base_amount, Decimal("40.00"))
+        self.assertIsNotNone(booking.hold_expires_at)
+
+    def test_hold_uses_business_rule_minutes(self):
+        BusinessRule.objects.filter(pk=1).update(hold_minutes=15)
+        before = timezone.now()
+        start, end = self._window()
+        booking = self._create(start, end)
+        self.assertGreaterEqual(
+            booking.hold_expires_at, before + timedelta(minutes=15)
+        )
+        self.assertLess(booking.hold_expires_at, before + timedelta(minutes=16))
+
+    # ---- refusals ---------------------------------------------------------
+
+    def test_unknown_slot_is_refused(self):
+        start, end = self._window()
+        with self.assertRaises(SlotNotFoundError):
+            self._create(start, end, slot_id=999999)
+
+    def test_out_of_service_slot_is_refused(self):
+        self.slot.status = ParkingSlot.Status.OUT_OF_SERVICE
+        self.slot.save(update_fields=["status"])
+        start, end = self._window()
+        with self.assertRaises(SlotUnavailableError):
+            self._create(start, end)
+
+    def test_inactive_lot_is_refused(self):
+        self.lot.is_active = False
+        self.lot.save(update_fields=["is_active"])
+        start, end = self._window()
+        with self.assertRaises(LotNotBookableError):
+            self._create(start, end)
+
+    def test_past_window_is_refused(self):
+        now = timezone.now()
+        with self.assertRaises(WindowInPastError):
+            self._create(now - timedelta(hours=3), now - timedelta(hours=1))
+
+    def test_overlapping_live_booking_is_refused(self):
+        start, end = self._window()
+        self._existing(start=start, end=end, status=Booking.Status.CONFIRMED)
+        with self.assertRaises(BookingConflictError):
+            self._create(start, end)
+
+    def test_adjacent_window_is_allowed(self):
+        # The existing booking ends exactly where the new one begins: the
+        # half-open interval (D41) means this is NOT a conflict.
+        start, end = self._window()
+        self._existing(
+            start=start - timedelta(hours=2),
+            end=start,
+            status=Booking.Status.CONFIRMED,
+        )
+        booking = self._create(start, end)
+        self.assertEqual(booking.status, Booking.Status.PENDING_PAYMENT)
+
+    def test_live_pending_hold_blocks(self):
+        start, end = self._window()
+        self._existing(
+            start=start,
+            end=end,
+            status=Booking.Status.PENDING_PAYMENT,
+            hold=timezone.now() + timedelta(minutes=5),
+        )
+        with self.assertRaises(BookingConflictError):
+            self._create(start, end)
+
+    def test_lapsed_hold_is_expired_and_slot_freed(self):
+        start, end = self._window()
+        stale = self._existing(
+            start=start,
+            end=end,
+            status=Booking.Status.PENDING_PAYMENT,
+            hold=timezone.now() - timedelta(minutes=1),
+        )
+        booking = self._create(start, end)
+        self.assertEqual(booking.status, Booking.Status.PENDING_PAYMENT)
+        # D43: creation is the only writer of lazy expiry, so the lapsed hold
+        # is persisted EXPIRED while holding the lock (Invariant 6).
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, Booking.Status.EXPIRED)
+
+    def test_duration_policy_is_enforced(self):
+        self.slot.max_booking_hours = 1
+        self.slot.save(update_fields=["max_booking_hours"])
+        start, end = self._window(2, 4)  # 2 hours > max of 1
+        with self.assertRaises(MaxDurationExceededError):
+            self._create(start, end)
+
+class CreateBookingConcurrencyTests(TransactionTestCase):
+    """Two simultaneous creates for one slot: exactly one may win (D3/D41).
+
+    ``TransactionTestCase`` is required: ``TestCase`` wraps each test in a
+    transaction, so a second thread could never observe the first's committed
+    rows and ``select_for_update`` would not exercise the real race. Each worker
+    thread owns its own connection and must close it. PostgreSQL is mandatory
+    for this to mean anything (D4): SQLite ignores the lock.
+    """
+
+    def setUp(self):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        self.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        self.slot = ParkingSlot.objects.create(
+            lot=self.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        Tariff.objects.create(
+            lot=self.lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+        self.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        self.vehicle = Vehicle.objects.create(
+            owner=self.consumer, registration_number="KA01AB1234",
+        )
+        # Pre-create the singleton so ``load()`` is a read, not a create, in
+        # both threads (avoids a get_or_create race on pk=1).
+        BusinessRule.load()
+
+
+    def test_only_one_concurrent_create_wins(self):
+        start = timezone.now() + timedelta(hours=2)
+        end = start + timedelta(hours=2)
+
+        barrier = threading.Barrier(2)
+        results = []
+        results_lock = threading.Lock()
+
+        def attempt():
+            outcome = "unknown"
+            try:
+                barrier.wait(timeout=5)
+                create_booking(
+                    slot_id=self.slot.id,
+                    start_time=start,
+                    end_time=end,
+                    user=self.consumer,
+                    vehicle=self.vehicle,
+                )
+                outcome = "created"
+            except BookingConflictError:
+                outcome = "conflict"
+            except Exception as exc:  # surfaced through the assertion below
+                outcome = f"error: {exc!r}"
+            finally:
+                connections.close_all()
+            with results_lock:
+                results.append(outcome)
+
+        threads = [threading.Thread(target=attempt) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        self.assertEqual(sorted(results), ["conflict", "created"])
+        self.assertEqual(Booking.objects.filter(slot=self.slot).count(), 1)
+
+class CreateBookingApiTests(TestCase):
+    """``POST /api/bookings/`` and the ownership scope of ``GET`` (4.4)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=cls.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        Tariff.objects.create(
+            lot=cls.lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.other = User.objects.create_user(
+            email="other@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Other",
+        )
+        cls.vehicle = Vehicle.objects.create(
+            owner=cls.consumer, registration_number="KA01AB1234",
+        )
+        cls.other_vehicle = Vehicle.objects.create(
+            owner=cls.other, registration_number="KA05XY9999",
+        )
+        BusinessRule.load()
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _window(self, start_hours=2, end_hours=4):
+        now = timezone.now()
+        return now + timedelta(hours=start_hours), now + timedelta(hours=end_hours)
+
+    def _payload(self, start, end, **overrides):
+        payload = {
+            "slot": self.slot.id,
+            "vehicle": self.vehicle.id,
+            "start_time": start.isoformat(),
+            "end_time": end.isoformat(),
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_anonymous_cannot_create(self):
+        start, end = self._window()
+        response = self.client.post("/api/bookings/", self._payload(start, end), format="json")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_consumer_creates_booking(self):
+        self.client.force_authenticate(self.consumer)
+        start, end = self._window()
+        response = self.client.post("/api/bookings/", self._payload(start, end), format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["status"], Booking.Status.PENDING_PAYMENT)
+        self.assertEqual(response.data["vehicle_plate"], "KA01AB1234")
+        self.assertEqual(response.data["billed_hours"], 2)
+        self.assertIsNotNone(response.data["hold_expires_at"])
+
+    def test_consumer_cannot_use_another_consumers_vehicle(self):
+        self.client.force_authenticate(self.consumer)
+        start, end = self._window()
+        response = self.client.post(
+            "/api/bookings/", 
+            self._payload(start, end, vehicle=self.other_vehicle.id),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("vehicle", response.data)
+
+    def test_overlapping_create_returns_conflict(self):
+        self.client.force_authenticate(self.consumer)
+        start, end = self._window()
+        first = self.client.post("/api/bookings/", self._payload(start, end), format="json")
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+
+        second = self.client.post("/api/bookings/", self._payload(start, end), format="json")
+        self.assertEqual(second.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(second.data["error"], "BOOKING_CONFLICT")
+
+    def test_invalid_window_is_a_400(self):
+        self.client.force_authenticate(self.consumer)
+        start, end = self._window()
+        response = self.client.post(
+            "/api/bookings/", 
+            self._payload(start, end, end_time=start.isoformat()),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_past_window_is_a_400(self):
+        self.client.force_authenticate(self.consumer)
+        now = timezone.now()
+        response = self.client.post(
+            "/api/bookings/", 
+            self._payload(now - timedelta(hours=3), now - timedelta(hours=1)),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["error"], "WINDOW_IN_PAST")
+
+    def test_out_of_service_slot_is_a_409(self):
+        self.slot.status = ParkingSlot.Status.OUT_OF_SERVICE
+        self.slot.save(update_fields=["status"])
+        self.client.force_authenticate(self.consumer)
+        start, end = self._window()
+        response = self.client.post("/api/bookings/", self._payload(start, end), format="json")
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["error"], "SLOT_UNAVAILABLE")
+
+    def test_inactive_lot_is_a_404(self):
+        self.lot.is_active = False
+        self.lot.save(update_fields=["is_active"])
+        self.client.force_authenticate(self.consumer)
+        start, end = self._window()
+        response = self.client.post("/api/bookings/", self._payload(start, end), format="json")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data["error"], "LOT_NOT_BOOKABLE")
+
+    def test_list_returns_only_the_callers_bookings(self):
+        # A booking owned by someone else, created directly.
+        now = timezone.now()
+        Booking.objects.create(
+            user=self.other,
+            created_by=self.other,
+            vehicle=self.other_vehicle,
+            vehicle_plate="",
+            slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=now + timedelta(hours=10),
+            end_time=now + timedelta(hours=12),
+            billed_hours=2,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("40.00"),
+        )
+        self.client.force_authenticate(self.consumer)
+        response = self.client.get("/api/bookings/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])

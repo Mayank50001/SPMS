@@ -3,13 +3,14 @@
 > **Scope (PROJECT.md §36):** the booking domain — model, states, availability
 > query, creation, temporary hold, confirmation, cancellation, extension and
 > booking history. This is described as "the most important backend phase".
-> Decisions are in [`DECISIONS.md`](DECISIONS.md) (D39–D45 accepted; D39 revised
+> Decisions are in [`DECISIONS.md`](DECISIONS.md) (D39–D49 accepted; D39 revised
 > in 4.2).
 > Working conventions and the reading protocol: [`../README.md`](../README.md).
 > Phase 3 context (parking catalogue, slots, tariffs): 
 > [`../phase-3-parking/PROGRESS.md`](../phase-3-parking/PROGRESS.md).
 
-Last updated: 2026-10-05 · **Increments 4.1, 4.2 and 4.3 are complete.**
+Last updated: 2026-10-06 · **Increments 4.1–4.4 are complete; 4.5 is planned and
+its decisions are open.**
 4.1 delivered the `Booking` model + state enum (D39–D41). 4.2 delivered the
 booking rule layer whole: the tariff quote (`quote_booking`, the single pricing
 seam), the D41 conflict predicate, lazy hold expiry, the **stored `base_amount`
@@ -18,7 +19,13 @@ reopened two Phase 3 models once (`ParkingSlot.min/max_booking_hours`,
 `BusinessRule.max_booking_hours`). 4.3 delivered the read-only **time-window
 availability query** (D46): the derived `.../availability/` read, consuming
 `blocking_window_q` (D43) inside a correlated `EXISTS` with no schema change.
-**Next: 4.4, booking creation + concurrency (D3/D41).**
+4.4 delivered the first **write** path: `POST /api/bookings/` and an atomic,
+slot-locked `create_booking` that persists lazy expiry, re-checks the window
+under the lock and assigns the §19 hold (D47–D49) — verified by a two-thread
+concurrency test.
+**Next: 4.5, temporary hold + lazy expiry (D6)** — the remaining hold semantics
+now that 4.4 owns the field and the create-time expiry; its worksheet is at the
+end of [`DECISIONS.md`](DECISIONS.md).
 
 ---
 
@@ -26,16 +33,17 @@ availability query** (D46): the derived `.../availability/` read, consuming
 
 1. [`../README.md`](../README.md) — conventions + reading protocol.
 2. This file — the increment plan, what is delivered, and what is next.
-3. [`DECISIONS.md`](DECISIONS.md) — D39–D45 (accepted; D39 revised in 4.2) plus
-   the open questions carried to later increments.
+3. [`DECISIONS.md`](DECISIONS.md) — D39–D49 (accepted; D39 revised in 4.2), the
+   **4.5 decision worksheet** (open), and the open questions carried to later
+   increments.
 4. Only if a task touches it: the "Dependencies on earlier phases" table below.
 
-**Next session starts here:** increment **4.4 — booking creation and
-concurrency**. It consumes `available_slots` (4.3) / `blocking_window_q` (D43)
-and `quote_booking` (4.2), and is the first *write* path: an atomic,
-slot-locked transaction that re-checks the window before insert (D3/D41). It
-also decides the walk-in public `reference`/`ticket_code` (see the open
-questions in `DECISIONS.md`).
+**Next session starts here:** increment **4.5 — temporary hold + lazy expiry**.
+It consumes the hold already assigned by 4.4 (`create_booking` sets
+`hold_expires_at`; `expire_stale_holds` and `blocking_window_q` implement D6/D43)
+and lands the remaining hold semantics. The plan is in "Increment 4.5" below; the
+choices still owed by the human are the **4.5 decision worksheet** in
+[`DECISIONS.md`](DECISIONS.md).
 
 ---
 
@@ -46,8 +54,8 @@ questions in `DECISIONS.md`).
 | 4.1 | `Booking` model + state enum + migration + model tests | ✅ Done |
 | 4.2 | Pricing / duration / (lazy) expiry helpers + per-slot duration policy (D45) | ✅ Done |
 | 4.3 | Time-window availability query (D46) | ✅ Done |
-| 4.4 | Booking creation + concurrency (D3/D41) | ⚪ Not started |
-| 4.5 | Temporary hold + lazy expiry (D6) | ⚪ Not started |
+| 4.4 | Booking creation + concurrency (D3/D41) | ✅ Done |
+| 4.5 | Temporary hold + lazy expiry (D6) | 🟡 Planned (decision worksheet open) |
 | 4.6 | Confirmation seam (Phase 5 wires the gateway) | ⚪ Not started |
 | 4.7 | Cancellation | ⚪ Not started |
 | 4.8 | Extension | ⚪ Not started |
@@ -279,6 +287,176 @@ A missing `start` / `end`, or `end <= start`, is a `400`.
   only; an annotated `is_available` / `reason` shape is additive if the UI needs
   to grey out slots.
 - **No pagination** (Phase 10).
+
+---
+
+## Increment 4.4 — booking creation + concurrency ✅
+
+### What it delivers
+
+The first *write* path of the booking domain: create a `Booking` for one slot
+and window, atomically. It consumes the 4.2 rule layer (`quote_booking`,
+`blocking_window_q`, `expire_stale_holds`) and 4.3's read semantics, and
+implements D3/D41's concurrency mechanism: one `transaction.atomic`, a
+`select_for_update()` lock on the **slot** row, lazy-expiry persistence and an
+overlap re-check **inside** the transaction before insert (Invariants 1 & 6).
+The only schema change is `BusinessRule.hold_minutes` (D47/Q3), which lets the
+create path assign the §19 hold.
+
+### Files
+
+| File | State |
+|------|-------|
+| `apps/bookings/services.py` | **extended** — `create_booking(...)` (atomic, slot-locked) + refusal classes `SlotNotFoundError`, `LotNotBookableError`, `SlotUnavailableError`, `WindowInPastError`, `BookingConflictError` |
+| `apps/bookings/serializers.py` | **created** — `BookingSerializer` (read) + `BookingCreateSerializer` (write; required slot + vehicle + window) |
+| `apps/bookings/views.py` | **created** — `BookingListCreateView` (`IsConsumer`; `REFUSAL_STATUS` map) |
+| `apps/bookings/urls.py` | **created** — `bookings/` (`booking-list`) |
+| `config/urls.py` | **extended** — `include("apps.bookings.urls")` |
+| `apps/parking/models.py` | **extended** — `BusinessRule.hold_minutes` (+ positive check) |
+| `apps/parking/serializers.py` / `views.py` / `services.py` | **extended** — expose/validate `hold_minutes`; `set_business_rules` writes it |
+| `apps/parking/migrations/0006_businessrule_hold_minutes_and_more.py` | generated |
+| `apps/bookings/tests.py` | **extended** — `CreateBookingServiceTests`, `CreateBookingConcurrencyTests`, `CreateBookingApiTests` |
+| `apps/parking/tests.py` | **extended** — `HoldMinutesRuleTests` |
+
+Suggested commit (PROJECT.md §43):
+`feat(bookings): implement booking creation with slot locking`
+
+### Backend flow
+
+```text
+POST /api/bookings/                          (IsConsumer)
+   ↓
+BookingCreateSerializer   (window shape, slot id, vehicle ownership)
+   ↓
+services.create_booking   (transaction.atomic)
+   ├── validate_window + reject end <= now        (D41/D48)
+   ├── select_for_update(of=("self",)) slot row   (D3)
+   ├── lot active + slot not OUT_OF_SERVICE        (Invariant 5)
+   ├── quote_booking → price snapshot              (4.2)
+   ├── expire_stale_holds(slot=...)                (D6/D43)
+   ├── re-check blocking_window_q inside the lock  → BOOKING_CONFLICT (Invariant 1)
+   └── Booking.objects.create(status=PENDING_PAYMENT, hold_expires_at)
+   ↓
+BookingSerializer (201)
+```
+
+### Decisions realized in the code
+
+- **D47** — consumer self-booking only (`IsConsumer`;
+  `user = created_by = request.user`); always `PENDING_PAYMENT`; 4.4 assigns the
+  hold from `BusinessRule.hold_minutes` (default 5); the walk-in `reference` is
+  deferred to 4.6; `vehicle` is required so the snapshot plate is never blank.
+- **D48** — refusal codes and status map: `BOOKING_CONFLICT` /
+  `SLOT_UNAVAILABLE` / `NO_TARIFF` → `409`,
+  `WINDOW_IN_PAST` / `INVALID_WINDOW` / the duration refusals → `400`,
+  `SLOT_NOT_FOUND` / `LOT_NOT_BOOKABLE` → `404`; §33
+  `{"error", "message"}` shape.
+- **D49** — the service locks the slot by id then checks; `available_slots`
+  stays read-only and is never a correctness guard; no idempotency key (Phase
+  10).
+- **D41/D43** — the lock is scoped with `of=("self",)` so the joined lot row is
+  not locked; `expire_stale_holds` runs inside the lock (the only writer); the
+  conflict re-check uses `blocking_window_q` unchanged, so 4.3 and 4.4 cannot
+  drift.
+
+### Migration note (PROJECT.md §42)
+
+- **Model change:** `BusinessRule.hold_minutes` (`PositiveIntegerField`,
+  default `5`) + `business_rule_hold_minutes_positive` check.
+- **Expected DB change:** `ALTER TABLE parking_businessrule ADD COLUMN
+  hold_minutes integer NOT NULL DEFAULT 5` + the check constraint.
+- **Data implications:** none — the singleton row takes the default; no
+  backfill.
+
+### Verification
+
+Result: `manage.py check` clean; **179 tests OK** across `apps.parking` +
+`apps.bookings`, including `CreateBookingConcurrencyTests` (two threads, one
+slot, exactly one `created` and one `BOOKING_CONFLICT`) and
+`CreateBookingApiTests`.
+
+```bash
+cd backend
+../env/bin/python manage.py makemigrations parking
+../env/bin/python manage.py migrate
+../env/bin/python manage.py check
+../env/bin/python manage.py test apps.parking apps.bookings
+```
+
+Manual spot-check:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/bookings/ \
+  -H "Authorization: Bearer <access>" -H "Content-Type: application/json" \
+  -d '{"slot": 1, "vehicle": 1, "start_time": "2026-10-07T10:00:00Z", "end_time": "2026-10-07T12:00:00Z"}'
+```
+
+A second overlapping request for the same slot returns `409 BOOKING_CONFLICT`;
+an `OUT_OF_SERVICE` slot returns `409 SLOT_UNAVAILABLE`; an inactive lot returns
+`404 LOT_NOT_BOOKABLE`; a wholly-past window returns `400 WINDOW_IN_PAST`.
+
+### Known, deliberate gaps from 4.4
+
+- **No single-booking read** — only `GET /api/bookings/` (list) exists;
+  `BookingDetailView` is 4.9 (history/listing) unless 4.5 needs it.
+- **No state transitions** — confirmation (4.6), cancellation (4.7), extension
+  (4.8) and Phase 6 occupancy own their transitions; 4.4 only creates
+  `PENDING_PAYMENT`.
+- **No public `reference`** — deferred to 4.6 (D47/Q4).
+- **No idempotency key** — Phase 10 (D49/Q9).
+- **Manager walk-ins are not creatable over HTTP** — the model supports them
+  (D8); the API path is a later increment (D47/Q1).
+- **No pagination** (Phase 10).
+
+---
+
+## Increment 4.5 — temporary hold + lazy expiry (D6) 🟡 PLANNED
+
+### What it delivers
+
+The §18 "temporary hold": the rule that a `PENDING_PAYMENT` booking reserves its
+slot only until `hold_expires_at`, after which the slot is free again — evaluated
+**lazily**, with no scheduler (D6). Because D47/Q3 chose to assign the hold and
+add `BusinessRule.hold_minutes` in **4.4**, part of this feature already exists:
+`create_booking` sets `hold_expires_at` and calls `expire_stale_holds` inside its
+slot lock, and `blocking_window_q` (D43) already treats a lapsed hold as
+non-blocking. 4.5 therefore lands the remaining, deliberately-deferred pieces
+(scope to be confirmed by its worksheet) rather than the field itself.
+
+### What already exists (from 4.4)
+
+- `BusinessRule.hold_minutes` (default 5) + migration
+  `parking/0006_businessrule_hold_minutes_and_more.py`.
+- `create_booking` assigns `hold_expires_at = now + hold_minutes` and persists
+  lazy expiry via `expire_stale_holds(slot=...)`.
+- `blocking_window_q` / `is_hold_live` already encode the liveness rule (D43).
+
+### Candidate scope (to be settled)
+
+- Whether reads should report a lapsed `PENDING_PAYMENT` as an *effective*
+  `EXPIRED` (a computed field) without persisting it (D43 keeps reads
+  side-effect-free) — or leave the stored status and let the client infer.
+- Whether a pending booking can be **released/cancelled** by its owner here or in
+  4.7 (cancellation).
+- Whether any endpoint other than creation should persist expiry (D43 currently
+  says no).
+- Whether `BookingDetailView` (a single-booking read) is needed to surface the
+  hold.
+
+### Decisions to be settled before coding
+
+A **4.5 decision worksheet** is at the end of
+[`DECISIONS.md`](DECISIONS.md). It is not coded until those choices are locked.
+
+### Migration note (PROJECT.md §42)
+
+To be determined with the worksheet; the likely answer is **none** (the field
+and its migration already landed in 4.4).
+
+### Verification
+
+To be filled when the increment is delivered; expect a mix of service tests
+(effective status / liveness) and API tests, run against PostgreSQL (D4).
 
 ---
 

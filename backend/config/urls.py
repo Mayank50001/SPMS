@@ -15,6 +15,7 @@ urlpatterns = [
     path("api/health/", health, name="health"),
     path("api/", include("apps.accounts.urls")),
     path("api/", include("apps.parking.urls")),
+    path("api/", include("apps.bookings.urls")),
 ]
 
 # Placeholder for future app API routing (do NOT enable yet):

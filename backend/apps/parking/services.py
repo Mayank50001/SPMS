@@ -94,11 +94,13 @@ def set_tariff(*, lot, slot_type, hourly_rate, instance=None):
     return instance
 
 @transaction.atomic
-def set_business_rules(*, max_hourly_rate=None, max_booking_hours=None):
+def set_business_rules(*, max_hourly_rate=None, max_booking_hours=None, hold_minutes=None):
     """Update the singleton's ceilings, refusing to break an invariant at rest.
 
-    Either argument may be omitted to leave that ceiling unchanged. Both checks
-    run under one lock of the ``BusinessRule`` row (D35, D45).
+    Any argument may be omitted to leave that value unchanged. All checks run
+    under one lock of the ``BusinessRule`` row (D35, D45). ``hold_minutes`` is
+    the §19 hold length used by booking creation (4.4); it has no "below an
+    existing row" invariant -- it is a forward-looking duration only.
     """
 
     rule = _locked_business_rule()
@@ -115,6 +117,10 @@ def set_business_rules(*, max_hourly_rate=None, max_booking_hours=None):
                 "The maximum cannot be lowered below an existing slot's maximum."
             )
         rule.max_booking_hours = max_booking_hours
+
+    if hold_minutes is not None:
+        rule.hold_minutes = hold_minutes
+        
     rule.save()
     return rule
 

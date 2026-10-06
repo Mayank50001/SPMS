@@ -12,11 +12,13 @@ Reads stay side-effect free: availability filters lapsed holds out with
 import math
 from decimal import Decimal
 from typing import NamedTuple
+from datetime import timedelta
 
+from django.db import transaction
 from django.db.models import Q, Exists, OuterRef
 from django.utils import timezone
 
-from apps.parking.models import Tariff, ParkingSlot
+from apps.parking.models import Tariff, ParkingSlot, BusinessRule
 
 from .models import Booking
 
@@ -48,6 +50,35 @@ class NoTariffError(BookingRuleError):
     """The slot's ``(lot, slot_type)`` has no tariff, so it cannot be priced."""
 
     code = "NO_TARIFF"
+
+class SlotNotFoundError(BookingRuleError):
+    """No slot with the requested id exists."""
+
+    code = "SLOT_NOT_FOUND"
+
+
+class LotNotBookableError(BookingRuleError):
+    """The slot's lot is inactive and cannot be booked (D38)."""
+
+    code = "LOT_NOT_BOOKABLE"
+
+
+class SlotUnavailableError(BookingRuleError):
+    """The slot is out of service (Invariant 5)."""
+
+    code = "SLOT_UNAVAILABLE"
+
+
+class WindowInPastError(BookingRuleError):
+    """The requested window is already over (§35, booking in the past)."""
+
+    code = "WINDOW_IN_PAST"
+
+
+class BookingConflictError(BookingRuleError):
+    """Another live booking blocks this window (Invariant 1, D41)."""
+
+    code = "BOOKING_CONFLICT"
 
 class BookingQuote(NamedTuple):
     """The priced result of a window, ready to snapshot onto a ``Booking``."""
@@ -197,4 +228,73 @@ def available_slots(*, lot, start_time, end_time, now=None):
         .annotate(is_booked=Exists(blocking))
         .filter(is_booked=False)
         .select_related("lot")
+    )
+
+@transaction.atomic
+def create_booking(*, slot_id, start_time, end_time, user, vehicle):
+    """Create a PENDING_PAYMENT booking atomically, or refuse (D3/D41).
+
+    The ordering is the whole point: the slot row is locked FIRST and the
+    conflict re-check runs while that lock is held. A check-then-act sequence --
+    even inside ``transaction.atomic`` -- would let two concurrent creates both
+    observe "no conflict" under READ COMMITTED and both insert, breaking
+    Invariant 1. See D41, PROJECT.md §21.
+
+    ``available_slots`` (4.3) is deliberately NOT used for correctness here: it
+    is an unlocked read and would be stale by insert time. It remains a UI hint.
+    """
+
+    now = timezone.now()
+    validate_window(start_time, end_time)
+    if end_time <= now:
+        raise WindowInPastError("The booking window must end in the future.")
+
+    # Lock ONLY the slot row. select_related("lot") is a read convenience for
+    # the active-lot check; ``of=("self",)`` keeps FOR UPDATE off the joined lot
+    # row so bookings in the same lot but different slots do not queue.
+
+    slot = (
+        ParkingSlot.objects.select_for_update(of=("self",)).select_related("lot").filter(pk=slot_id).first()
+    )
+
+    if slot is None:
+        raise SlotNotFoundError("No parking slot with this id exists.")
+    if not slot.lot.is_active:
+        raise LotNotBookableError("This parking lot is not accepting bookings.")
+    if slot.status == ParkingSlot.Status.OUT_OF_SERVICE:
+        raise SlotUnavailableError("This slot is out of service.")
+
+    # Price + duration policy (4.2). May raise INVALID_WINDOW,
+    # MIN_DURATION_NOT_MET, MAX_DURATION_EXCEEDED or NO_TARIFF.
+    quote = quote_booking(slot=slot, start_time=start_time, end_time=end_time)
+
+    # D43: the create path is the only writer of lazy expiry. Called inside the
+    # lock, so the conflict check below sees authoritative state.
+    expire_stale_holds(slot=slot, now=now)
+
+    conflict = Booking.objects.filter(slot=slot).filter(blocking_window_q(start_time, end_time, now)).exists()
+    if conflict:
+        raise BookingConflictError(
+            "This slot is no longer available for the selected window."
+        )
+
+    hold_minutes = BusinessRule.load().hold_minutes
+
+    return Booking.objects.create(
+        user=user,
+        created_by=user,
+        vehicle=vehicle,
+        # ``vehicle_plate`` is blank here on purpose: Booking.save() copies the
+        # registered plate from the vehicle FK (D39/V6), so the snapshot cannot
+        # be spoofed from the request. Walk-ins (later) pass free text instead.
+        vehicle_plate="",
+        slot=slot,
+        slot_type=quote.slot_type,
+        start_time=start_time,
+        end_time=end_time,
+        billed_hours=quote.billed_hours,
+        hourly_rate=quote.hourly_rate,
+        base_amount=quote.base_amount,
+        status=Booking.Status.PENDING_PAYMENT,
+        hold_expires_at=now + timedelta(minutes=hold_minutes),
     )

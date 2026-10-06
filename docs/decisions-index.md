@@ -78,3 +78,10 @@ Full entries: [`phase-4-booking/DECISIONS.md`](phase-4-booking/DECISIONS.md)
 | D44 | Booking helper module layout and refusal contract | Accepted |
 | D45 | Per-slot duration policy + Administrator duration cap (reopens Phase 3 models) | Accepted |
 | D46 | Availability query: derived `.../availability/` endpoint and its bookability rules | Accepted |
+| D47 | Booking creation contract: actor, status, hold assignment, deferred walk-in reference | Accepted |
+| D48 | Booking creation refusals and the HTTP status map | Accepted |
+| D49 | Booking creation locking strategy and idempotency deferral | Accepted |
+
+> Increment **4.5** (temporary hold + lazy expiry) has an **open decision
+> worksheet** appended to that file; its answers become `D50…`.
+> `decision-index` intentionally lists only *accepted* decisions.

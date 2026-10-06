@@ -309,6 +309,15 @@ class BusinessRule(models.Model):
         validators=[MinValueValidator(1)],
     )
 
+    # D6/§19: how long a PENDING_PAYMENT booking holds its slot before a lazy
+    # query treats it as expired. Introduced in 4.4 because a pending booking
+    # that never expires (hold_expires_at=NULL) would block its slot forever.
+    hold_minutes = models.PositiveIntegerField(
+        default=5,
+        validators=[MinValueValidator(1)],
+        help_text="Minutes a PENDING_PAYMENT booking holds its slot (PROJECT.md §19).",
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -323,6 +332,10 @@ class BusinessRule(models.Model):
                 condition=models.Q(max_booking_hours__gt=0),
                 name="business_rule_max_booking_hours_positive",
             ),
+            models.CheckConstraint(
+                condition=models.Q(hold_minutes__gt=0),
+                name="business_rule_hold_minutes_positive",
+            )
         ]
 
     def __str__(self):

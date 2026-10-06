@@ -1,6 +1,6 @@
 # Phase 4 decisions — Booking
 
-Status as of **2026-10-05**:
+Status as of **2026-10-06**:
 
 - **Accepted:** D39 (persistence, relationships, snapshot — **revised in 4.2**,
   see below), D40 (state model), D41 (conflict window and concurrency) —
@@ -10,8 +10,16 @@ Status as of **2026-10-05**:
   semantics) — increment 4.3, also **delivered** (availability is a read-only,
   derived query; the phase's `apps.parking` + `apps.bookings` suite covers the
   conflict, liveness, out-of-service and duration-policy cases).
-- **Open:** nothing blocking. Later increments add their own decisions (see
-  "Open questions carried to later increments" at the end).
+- **Accepted (4.4, 2026-10-06):** D47 (creation contract: actor, status, hold
+  assignment, deferred walk-in reference), D48 (creation refusals and the HTTP
+  status map), D49 (creation locking strategy and idempotency deferral) —
+  increment 4.4, **delivered** (creation is the first write path; the
+  `apps.bookings` suite includes a two-thread concurrency test proving
+  Invariant 1 under the slot lock).
+- **Open:** nothing blocking 4.1–4.4. Increment **4.5** (temporary hold + lazy
+  expiry) has its own **worksheet** — see "4.5 decision worksheet (open)" at the
+  end; it is not coded until those choices are locked. Later increments add
+  their own decisions (see "Open questions carried to later increments").
 
 > A "Decision" below is the human's, not the agent's. Rationale/Consequence
 > record why, so the choice can be defended later.
@@ -357,16 +365,402 @@ The time-window availability read (increment 4.3). All questions decided.
 
 ---
 
+## D47 — Booking creation contract: actor, status, hold and reference (accepted 2026-10-06)
+
+Increment 4.4 is the first **write** path. This entry settles the worksheet's
+Q1–Q4; the options as originally presented are kept below for the record.
+
+- **Decision:**
+  - **Q1 — actor: A.** `POST /api/bookings/` is **Consumer self-booking only**
+    (`IsConsumer`). The acting account is attached as
+    `user = created_by = request.user`. Manager walk-ins are their own later
+    increment; D8 already keeps the model ready (`user`/`vehicle` nullable,
+    free-text `vehicle_plate`).
+  - **Q2 — status: A.** A successful create always writes `PENDING_PAYMENT`.
+    Confirmation (4.6, wired to Phase 5's gateway) moves it to `CONFIRMED`;
+    nothing in 4.4 marks a booking paid.
+  - **Q3 — hold: A.** 4.4 assigns the hold:
+    `hold_expires_at = now + BusinessRule.hold_minutes` (§19 default **5**), and
+    introduces `BusinessRule.hold_minutes` on the existing singleton (positive
+    check, migration `parking/0006_businessrule_hold_minutes_and_more.py`). The
+    field is exposed on the read/update serializers and written by
+    `set_business_rules`. A `PENDING_PAYMENT` with no deadline never expires
+    (D43), so the hold must be assigned with the booking; the 4.5 increment then
+    owns the remaining expiry semantics.
+  - **Q4 — reference: A (defer).** No public `reference`/`ticket_code` column in
+    4.4. The walk-in/receipt identifier's shape is a function of its
+    presentation (QR, printed ticket) and is decided in **4.6**. The surrogate
+    `id` is the internal key and is not exposed as a bearer key.
+  - **`vehicle` is required on the create request** (implementation choice made
+    while coding 4.4). The booking's authoritative plate is the `vehicle_plate`
+    snapshot copied from the registered vehicle (D39/V6); requiring the FK keeps
+    that snapshot non-blank without accepting free text on the consumer path.
+    Walk-in free-text plates arrive with the walk-in flow.
+
+- **Rationale:** A is the smallest coherent write path and keeps 4.4 reviewable;
+  it matches §36's ordering (creation first, walk-in flows later). Assigning the
+  hold in 4.4 avoids the foot-gun of a pending booking that reserves its slot
+  forever (a `NULL` hold is live under D43), and `hold_minutes` is a one-line
+  addition to the singleton already used for the D45 cap. Always
+  `PENDING_PAYMENT` keeps 4.4/4.5/4.6 honest: the slot is protected by the hold,
+  lazy expiry frees it (D6), and only Phase 5's payment confirms it. Deferring
+  the reference avoids committing a public identifier format before the receipt
+  contract exists.
+
+- **Consequence:** `create_booking` writes `PENDING_PAYMENT` with a non-null
+  `hold_expires_at`; `apps.parking` gains one field and one migration; the
+  consumer path never accepts a client-supplied plate or price. The remaining
+  §18 hold behaviour (how a lapsed hold is *presented*, early release) is 4.5.
+
+- **Status:** Accepted (2026-10-06).
+
+---
+
+## D48 — Booking creation refusals and the HTTP status map (accepted 2026-10-06)
+
+Settles worksheet Q5–Q7 and Q10. Every refusal keeps the §33
+`{"error": "CODE", "message": ...}` shape.
+
+- **Decision:**
+  - **Q5 — in-lock overlap: A.** `409 BOOKING_CONFLICT`. The in-transaction
+    conflict is a *state* refusal, not a shape error, so it is not a `400`.
+  - **Q6 — past window: A.** A window already over (`end_time <= now`) is
+    `400 WINDOW_IN_PAST`, distinct from the shape error `INVALID_WINDOW`
+    (`end <= start`). "Starts in the past, ends in the future" is deliberately
+    **not** refused here; that is the walk-in case and belongs to the walk-in
+    increment.
+  - **Q7 — target not bookable: A.** Inactive lot → `404 LOT_NOT_BOOKABLE`
+    (unaddressable, consistent with the `LotScopedMixin` reads); `OUT_OF_SERVICE`
+    slot → `409 SLOT_UNAVAILABLE` (a real, actionable state).
+  - **Q10 — full map: A.**
+    - `400` (shape/client): `INVALID_WINDOW`, `WINDOW_IN_PAST`,
+      `MIN_DURATION_NOT_MET`, `MAX_DURATION_EXCEEDED`
+    - `404` (absent target): `SLOT_NOT_FOUND`, `LOT_NOT_BOOKABLE`
+    - `409` (state/config): `SLOT_UNAVAILABLE`, `BOOKING_CONFLICT`, `NO_TARIFF`
+
+- **Rationale:** A lets a client tell "fix your request" (`400`) from
+  "retry / pick another slot" (`409`) from "that target is gone" (`404`), exactly
+  how the existing parking writes (`RATE_ABOVE_MAXIMUM`, `MAX_DURATION_*`) and
+  §33 already behave. Keeping `WINDOW_IN_PAST` distinct from `INVALID_WINDOW`
+  lets a UI explain the two different problems.
+
+- **Consequence:** `apps/bookings/views.py` holds a `REFUSAL_STATUS` map from
+  stable code → status; the service raises the D44-family exceptions and never
+  knows HTTP.
+
+- **Status:** Accepted (2026-10-06).
+
+---
+
+## D49 — Creation locking strategy and idempotency (accepted 2026-10-06)
+
+Settles worksheet Q8–Q9.
+
+- **Decision:**
+  - **Q8 — locking: A.** `create_booking` takes the lock itself:
+    `ParkingSlot.objects.select_for_update(of=("self",))` on the addressed slot
+    row, then checks lot-active / in-service / duration / conflict under that
+    lock. `available_slots` (4.3) stays a read and is **never** used as a
+    correctness guard: an unlocked pre-read deciding a write is TOCTOU — another
+    request can take the slot between the read and the lock.
+  - **Q9 — idempotency: A (defer).** No `Idempotency-Key` in 4.4; it stays a
+    Phase 10 hardening candidate (D41). A duplicate must ultimately be caught at
+    Phase 5's confirmation/payment seam anyway.
+
+- **Rationale:** The lock must be taken before the check to satisfy Invariant 1
+  under READ COMMITTED; there is no cheaper correct ordering. The lock is scoped
+  to one slot (`of=("self",)` keeps `FOR UPDATE` off the joined lot row), so only
+  same-slot contenders queue — for a re-check plus an insert, with no I/O inside
+  the transaction.
+
+- **Consequence:** The correctness of 4.4 rests on a single ordering: lock →
+  expire → re-check → insert. `CreateBookingConcurrencyTests`
+  (`TransactionTestCase`, two threads, PostgreSQL) is the test that fails if
+  that order is broken; every other test still passes if the lock moves after the
+  check.
+
+- **Status:** Accepted (2026-10-06).
+
+---
+
+## Increment 4.4 implementation decisions (accepted 2026-10-06)
+
+Recorded while delivering 4.4; they refine D47–D49, D41 and D44, not replace
+them.
+
+- **`create_booking` shape (D49)** — in `apps/bookings/services.py`, decorated
+  `@transaction.atomic`, keyword-only
+  (`*, slot_id, start_time, end_time, user, vehicle`). It calls
+  `validate_window`, refuses `end_time <= now`, locks the slot row with
+  `select_for_update(of=("self",))`, checks lot-active / in-service, calls
+  `quote_booking` for the snapshot, calls
+  `expire_stale_holds(slot=slot, now=now)` (the only writer of lazy expiry, D43),
+  re-checks `blocking_window_q` under the lock, then inserts.
+- **Refusal classes (D44/D48)** — `SlotNotFoundError`/`SLOT_NOT_FOUND`,
+  `LotNotBookableError`/`LOT_NOT_BOOKABLE`,
+  `SlotUnavailableError`/`SLOT_UNAVAILABLE`,
+  `WindowInPastError`/`WINDOW_IN_PAST`,
+  `BookingConflictError`/`BOOKING_CONFLICT`, all subclasses of
+  `BookingRuleError`.
+- **`BusinessRule.hold_minutes` (D47/Q3)** — `PositiveIntegerField` default `5`
+  with `business_rule_hold_minutes_positive`; migration
+  `parking/0006_businessrule_hold_minutes_and_more.py`; exposed by
+  `BusinessRuleSerializer` / `BusinessRuleUpdateSerializer` and written by
+  `set_business_rules`. No backfill.
+- **API surface (D47/D48)** — `apps/bookings/serializers.py`
+  (`BookingSerializer` read, `BookingCreateSerializer` write with required
+  `slot`, `vehicle`, `start_time`, `end_time` and an owner check on `vehicle`),
+  `apps/bookings/views.py` (`BookingListCreateView`, `IsConsumer`, queryset
+  scoped to `request.user`, `REFUSAL_STATUS`), `apps/bookings/urls.py`
+  (`bookings/`), and `config/urls.py` includes it. `GET` lists only the caller's
+  bookings (Invariant 2).
+- **Tests (D7)** — `CreateBookingServiceTests`, `CreateBookingApiTests` and
+  `CreateBookingConcurrencyTests` (`TransactionTestCase`, two threads, exactly
+  one winner; requires PostgreSQL, D4) in `apps/bookings/tests.py`, and
+  `HoldMinutesRuleTests` in `apps/parking/tests.py`. Combined `apps.parking` +
+  `apps.bookings` run: **179 tests OK**.
+
+---
+
+## 4.4 decision worksheet (resolved 2026-10-06 — kept for the record)
+
+Increment 4.4 is the first **write** path. PROJECT.md §9/§21 required the
+consequential choices below to be decided *with* the human before coding. Every
+question was answered with the recommended option; the answers are recorded as
+**D47**, **D48** and **D49** above. The options are retained here so the
+reasoning can be re-read later.
+
+### Q1 — Who may create a booking, and how is ownership set?
+
+- **Decision:** which callers reach `POST /api/bookings/`, and how the acting
+  account is attached.
+- **Options:**
+  - **A — Consumer self-booking only.** `IsConsumer`; `user = created_by =
+    request.user`. Walk-ins arrive in a later increment.
+  - **B — Consumer self + Manager walk-in in the same increment.** `IsConsumer`
+    for a self-booking; `IsManager` may post on behalf of a lot they manage with
+    `user=null`, `created_by=request.user`, `vehicle_plate` free text.
+- **Trade-offs:** A is the smallest coherent write path and matches §36's
+  ordering (creation 4.4, walk-in flows later); it keeps 4.4 reviewable. B closes
+  the Manager-walk-in use case now but drags in Invariant 3 (is this manager
+  assigned to *that* lot?) and the walk-in identity question (Q4) at the same
+  time, roughly doubling the surface.
+- **Recommendation:** **A.** A manager walk-in is its own coherent increment
+  (it is a distinct §3.1 "Parking Manager Features" slice), and D8 already
+  keeps the model ready. State the eventual walk-in behaviour now, implement it
+  when its increment opens.
+
+### Q2 — What status does a new booking have, and who confirms it?
+
+- **Decision:** the status a successful create writes, and the lifecycle until
+  Phase 5.
+- **Options:**
+  - **A — `PENDING_PAYMENT` always**, with `hold_expires_at` set. Confirmation
+    (4.6) moves it to `CONFIRMED` when Phase 5's gateway says paid.
+  - **B — `CONFIRMED` immediately** for the create path, bypassing the hold.
+- **Trade-offs:** A is exactly §17/§19 and keeps 4.4, 4.5 (hold) and 4.6
+  (confirmation) separate and honest; the slot is protected by the hold, and
+  lazy expiry (D6) frees it. B would make 4.4 instantly "booked" but then 4.5
+  has nothing to model and payments would confirm something already confirmed —
+  it collapses the §18 hold/reservation distinction.
+- **Recommendation:** **A.**
+
+### Q3 — Does 4.4 assign the hold, or does 4.5?
+
+- **Decision:** where `hold_expires_at` is set on creation.
+- **Options:**
+  - **A — 4.4 sets `hold_expires_at = now + hold_minutes`** and adds
+    `BusinessRule.hold_minutes` (the §19 5-minute default) now.
+  - **B — 4.4 creates `PENDING_PAYMENT` with `hold_expires_at = NULL`**;
+    4.5 owns the hold duration, the `hold_minutes` field and its tests.
+- **Trade-offs:** A gives a fully working "slot frees itself after 5 minutes"
+  in one increment, but introduces the one schema change (Q4 aside) and a §19
+  number inside 4.4. B keeps 4.4 a pure create+conflict increment and lets the
+  "temporary hold" feature land whole in 4.5, exactly as §36 sequences it — but a
+  `NULL` hold never expires (D43 treats it as live), so between 4.4 and 4.5 a
+  pending booking holds forever. That is acceptable only if 4.5 lands next.
+- **Recommendation:** **A**, with the field introduced as its own tiny decision
+  — a pending booking that never expires is a foot-gun, and `hold_minutes` is a
+  one-line addition to the existing `BusinessRule` singleton (D6/D45 pattern
+  already established). Keep the 4.5 increment for the *expiry sweeps/reporting*
+  and edge cases.
+
+### Q4 — Walk-in public identifier (`reference` / `ticket_code`)
+
+- **Decision:** by what identifier a walk-in (and a booked consumer) is looked
+  up when there is no login — the unguessable bearer key that a QR/receipt will
+  carry.
+- **Options:**
+  - **A — defer entirely to 4.6** (no new field in 4.4; the surrogate `id` is
+    not exposed as a public key).
+  - **B — add a stored, unique `reference` now** (short, unguessable, e.g. a
+    random token) on every booking, used by walk-in lookup and receipts.
+- **Trade-offs:** A keeps 4.4 schema-free and avoids inventing a public
+  identifier before the confirmation/receipt contract (4.6, Phase 5) exists —
+  the identifier's shape is a function of how it is presented (QR, printed
+  ticket). B makes the booking externally referenceable immediately but commits a
+  format early; changing it later is a migration.
+- **Recommendation:** **A — defer, and record the deferral here.** The core 4.4
+  path needs no public identifier; D39 already establishes the surrogate `id` as
+  the internal key and §22 does not require a human-facing code until receipts.
+
+### Q5 — How is a window conflict refused?
+
+- **Decision:** the code and status when the in-lock re-check finds an overlap.
+- **Options:**
+  - **A — `409 BOOKING_CONFLICT`** with the §33 `{"error", "message"}` shape,
+    matching `RATE_ABOVE_MAXIMUM` / `MAX_DURATION_*` / `LAST_ADMINISTRATOR`.
+  - **B — `400` as a serializer validation error.**
+- **Trade-offs:** A is consistent with every other conflict-shaped refusal in
+  the project and lets the frontend branch on a stable code; B is simpler but
+  conflates "your payload is malformed" with "the world changed while you were
+  deciding", which are different recovery paths for the client.
+- **Recommendation:** **A.** The in-transaction conflict is a *state* refusal,
+  not a *shape* refusal — same reasoning as D44 and §33.
+
+### Q6 — Is a window entirely in the past refused?
+
+- **Decision:** does 4.4 reject `end_time <= now`, or only `end_time <=
+  start_time` (the D41 shape rule)?
+- **Options:**
+  - **A — refuse past windows** with a stable code (`INVALID_WINDOW` or a
+    distinct `WINDOW_IN_PAST`) — §35 lists "booking in the past" as an edge
+    case.
+  - **B — allow them**, treating the shape rule as the only window rule.
+- **Trade-offs:** A prevents nonsense bookings and matches §35, but needs a
+  policy for the clock boundary and a decision whether the *start* may be in the
+  past with a future *end* (e.g. a walk-in that started 5 minutes ago). B is the
+  minimal rule but stores records that can never be honoured.
+- **Recommendation:** **A**, refusing only when `end_time <= now` (a booking
+  whose window is wholly over), leaving "starts in the past, ends in the future"
+  to the walk-in increment — that is the only legitimate case for it. Choose the
+  code now (`WINDOW_IN_PAST` keeps it distinct from the shape error).
+
+### Q7 — Inactive lot / out-of-service slot: status and code
+
+- **Decision:** the refusal when the target cannot be booked.
+- **Options:**
+  - **A — `404` for an inactive lot** (not addressable, consistent with the
+    `LotScopedMixin` reads) and **`409 SLOT_UNAVAILABLE`** for an
+    `OUT_OF_SERVICE` slot.
+  - **B — `409` for both.**
+- **Trade-offs:** A reuses the established "unaddressable ⇒ 404" rule for the
+  lot and reserves `409` for a real, actionable state conflict; B is uniform but
+  leaks the existence of cancelled lots.
+- **Recommendation:** **A.**
+
+### Q8 — Where does the generic bookable-slot lookup live?
+
+- **Decision:** how the create path turns `slot` + window into a locked row.
+- **Options:**
+  - **A — the service locks the slot by id, then checks lot-active /
+    in-service / available itself.**
+  - **B — the view resolves the slot through `available_slots(...)` first, then
+    the service locks.** 
+- **Trade-offs:** A is the honest D3 shape: the lock is taken on the slot row
+  *before* the check, so the check cannot go stale. B is a pre-filter only —
+  using it as the guard would be TOCTOU: another request can take the slot
+  between the read and the lock. A costs one `select_for_update` regardless of
+  availability; B would save nothing because the lock is still needed.
+- **Recommendation:** **A.** `available_slots` stays a *read* (4.3); creation
+  never relies on it for correctness, only, optionally, for a friendly
+  pre-message.
+
+### Q9 — Idempotency key for create
+
+- **Decision:** guard against a double-submitted create (retry, double-click).
+- **Options:**
+  - **A — defer to Phase 10** (D41 already names it a hardening candidate).
+  - **B — require/accept an `Idempotency-Key` header now.**
+- **Trade-offs:** A keeps 4.4 focused; the danger is a user charged twice in
+  Phase 5, but Phase 5's confirmation path is where a duplicate must be caught
+  anyway. B adds a store and a contract.
+- **Recommendation:** **A — defer**, recorded as a Phase 10 candidate (D41).
+
+### Q10 — Refusal → HTTP status map
+
+- **Decision:** the status each service refusal becomes (the §33 `{"error",
+  "message"}` codes are stable either way).
+- **Options:**
+  - **A — shape/client errors are `400`; state/config conflicts are `409`:**
+    `INVALID_WINDOW` → 400, `WINDOW_IN_PAST` → 400, `MIN_DURATION_NOT_MET` → 400,
+    `MAX_DURATION_EXCEEDED` → 400, `SLOT_NOT_FOUND` → 404, `SLOT_UNAVAILABLE` →
+    409, `BOOKING_CONFLICT` → 409, `NO_TARIFF` → 409.
+  - **B — every booking refusal is `409`**, reserving `400` for malformed JSON
+    and field types only.
+- **Trade-offs:** A lets the client treat "fix your request" (400) differently
+  from "retry/try another slot" (409), which is how the existing parking writes
+  already behave; B is uniform but tells the client nothing about recovery.
+- **Recommendation:** **A.** It matches the `RATE_ABOVE_MAXIMUM` /
+  `MAX_DURATION_*` / `LAST_ADMINISTRATOR` precedent (409 for state, 400 for
+  shape) and §33.
+
+---
+
+## 4.5 decision worksheet (open)
+
+Increment 4.5 is the §18 **temporary hold**. Because D47/Q3 pulled the hold
+assignment and `BusinessRule.hold_minutes` into 4.4, the field, the create-time
+expiry write and the liveness predicate already exist; 4.5 is now the remaining
+hold semantics. PROJECT.md §9/§21 require the choices below to be decided *with*
+the human before they are coded. **Nothing here is accepted yet**; answers become
+`D50…`.
+
+### Q1 — What is the remaining scope of 4.5?
+
+- **Decision:** what 4.5 builds now that 4.4 assigns and expires holds.
+- **Options:**
+  - **A — "effective expiry" reads + hold reporting.** Make the read side honest:
+    a lapsed `PENDING_PAYMENT` is presented as its effective state (e.g. a
+    computed `EXPIRED`) **without** persisting it (D43 keeps reads
+    side-effect-free). Tightest change that closes the "dead hold looks live"
+    gap.
+  - **B — fold 4.5 into 4.7 (cancellation).** Keep only 4.4's create-time
+    expiry; let release/cancel land in 4.7 and mark 4.5 absorbed.
+  - **C — add a sweep endpoint/command.** Rejected by D6 (lazy, no scheduler)
+    unless a concrete need appears.
+- **Recommendation:** **A**, scoped by Q2–Q4.
+
+### Q2 — Should reads report a logically-expired pending booking as `EXPIRED`?
+
+- **Options:**
+  - **A — yes, a computed `effective_status`** in the read serializer
+    (`EXPIRED` when `status == PENDING_PAYMENT` and `hold_expires_at <= now`,
+    with no write).
+  - **B — no; expose only the stored status and `hold_expires_at`** and document
+    that the client must compare.
+- **Recommendation:** **A** — a client must never render a dead hold as live;
+  the computation keeps D43 intact.
+
+### Q3 — Can a consumer release a `PENDING_PAYMENT` booking early?
+
+- **Options:**
+  - **A — yes, in 4.5** (owner sets `CANCELLED`, freeing the slot immediately).
+  - **B — defer to 4.7 cancellation** so there is one cancellation path.
+- **Recommendation:** **B** — one owner of the transition; 4.5 stays read-side.
+
+### Q4 — Should any endpoint other than creation persist expiry?
+
+- **Options:**
+  - **A — no; keep D43** (creation is the only writer).
+  - **B — add a lazy sweep on list/detail.**
+- **Recommendation:** **A** — preserving "GETs do not mutate" is worth more than
+  a tidy stored status; effective reads (Q2) cover presentation.
+
+---
+
 ## Open questions carried to later increments
 
 Each will be surfaced as its own decision when its increment is opened.
 
 | Question | Lands in |
 |----------|----------|
-| `BusinessRule.hold_minutes` (temporary hold length, §19 default 5) | 4.5 |
+| `BusinessRule.hold_minutes` (temporary hold length, §19 default 5) | ✅ done in 4.4 (D47/Q3) |
+| Remaining temporary-hold semantics (effective expiry reads, early release) | 4.5 |
 | `BusinessRule.cancellation_cutoff_minutes` (§19 default 30) | 4.7 |
 | `BusinessRule.overstay_multiplier` (§19 default 1.5) | Phase 6 |
 | Confirmation seam in Phase 4 vs deferring to Phase 5's gateway | 4.6 |
-| Walk-in public `reference`/`ticket_code` (unguessable bearer key) | 4.4 / 4.6 |
+| Walk-in public `reference`/`ticket_code` (unguessable bearer key) | 4.6 (deferred by D47/Q4) |
 | Extension charge seam (Phase 5 payment handoff) | 4.8 |
 | Whether `CANCELLED` and `TERMINATED` need distinct refusal messages | 4.7 |
+| `Idempotency-Key` on booking create | Phase 10 (deferred by D49/Q9) |

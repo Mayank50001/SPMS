@@ -1255,3 +1255,27 @@ class AvailabilityApiTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data, [])
+
+class HoldMinutesRuleTests(TestCase):
+    """D6/§19: the hold length is part of the BusinessRule singleton (4.4)."""
+    def setUp(self):
+        BusinessRule.objects.all().delete()
+        self.admin = User.objects.create_user(
+            email="admin@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Admin",
+            role=User.Role.ADMIN,
+        )
+        self.client = APIClient()
+
+    def test_default_is_five_minutes(self):
+        self.assertEqual(BusinessRule.load().hold_minutes, 5)
+
+    def test_admin_can_update_hold_minutes(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(
+            "/api/business-rules/", {"hold_minutes": 10}, format="json"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["hold_minutes"], 10)
+        self.assertEqual(BusinessRule.load().hold_minutes, 10)
