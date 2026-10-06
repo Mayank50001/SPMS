@@ -25,7 +25,7 @@ from apps.bookings.services import (
     MaxDurationExceededError, MinDurationNotMetError, NoTariffError,
     SlotNotFoundError, SlotUnavailableError, WindowInPastError,
     available_slots, blocking_window_q, create_booking,
-    expire_stale_holds, hours_between, is_hold_live,
+    effective_status, expire_stale_holds, hours_between, is_hold_live,
     quote_booking, validate_duration, validate_window,
 )
 
@@ -426,6 +426,72 @@ class BookingServicesTests(TestCase):
         self.assertTrue(is_hold_live(live, now))
         self.assertFalse(is_hold_live(lapsed, now))
         self.assertFalse(is_hold_live(confirmed, now))
+
+class EffectiveStatusTests(TestCase):
+    """Lazy-hold presentation: a lapsed hold reads as EXPIRED (increment 4.5, D50)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(lot=cls.lot, number="A-01")
+
+    def _booking(self, *, status, hold="unset"):
+        now = timezone.now()
+        if hold == "unset":
+            hold = None
+        return Booking.objects.create(
+            slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=now + timedelta(hours=2),
+            end_time=now + timedelta(hours=4),
+            billed_hours=2,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("40.00"),
+            status=status,
+            hold_expires_at=hold,
+            vehicle_plate="KA01AB1234",
+        )
+
+    def test_live_pending_hold_reads_as_pending(self):
+        now = timezone.now()
+        booking = self._booking(
+            status=Booking.Status.PENDING_PAYMENT, hold=now + timedelta(minutes=5)
+        )
+        self.assertEqual(effective_status(booking, now), Booking.Status.PENDING_PAYMENT)
+
+    def test_lapsed_pending_hold_reads_as_expired(self):
+        now = timezone.now()
+        booking = self._booking(
+            status=Booking.Status.PENDING_PAYMENT, hold=now - timedelta(seconds=1)
+        )
+        self.assertEqual(effective_status(booking, now), Booking.Status.EXPIRED)
+
+    def test_pending_without_deadline_never_expires(self):
+        now = timezone.now()
+        booking = self._booking(status=Booking.Status.PENDING_PAYMENT, hold=None)
+        self.assertEqual(effective_status(booking, now), Booking.Status.PENDING_PAYMENT)
+
+    def test_non_pending_status_is_returned_unchanged(self):
+        now = timezone.now()
+        booking = self._booking(
+            status=Booking.Status.CONFIRMED, hold=now - timedelta(hours=1)
+        )
+        self.assertEqual(effective_status(booking, now), Booking.Status.CONFIRMED)
+
+    def test_effective_status_does_not_persist(self):
+        # D43/4.5-Q4: reading the effective state must not write. The stored
+        # status stays PENDING_PAYMENT even though a reader sees EXPIRED.
+        now = timezone.now()
+        booking = self._booking(
+            status=Booking.Status.PENDING_PAYMENT, hold=now - timedelta(seconds=1)
+        )
+        self.assertEqual(effective_status(booking, now), Booking.Status.EXPIRED)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.PENDING_PAYMENT)
 
 class AvailabilityQueryTests(TestCase):
     """The time-window availability selector (increment 4.3, D46)."""
@@ -931,3 +997,40 @@ class CreateBookingApiTests(TestCase):
         response = self.client.get("/api/bookings/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data, [])
+
+    # ---- effective status (increment 4.5, D50) ----------------------------
+
+    def test_create_response_reports_a_live_effective_status(self):
+        self.client.force_authenticate(self.consumer)
+        start, end = self._window()
+        response = self.client.post("/api/bookings/", self._payload(start, end), format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["status"], Booking.Status.PENDING_PAYMENT)
+        self.assertEqual(response.data["effective_status"], Booking.Status.PENDING_PAYMENT)
+
+    def test_list_reports_a_lapsed_hold_as_expired_without_persisting(self):
+        now = timezone.now()
+        booking = Booking.objects.create(
+            user=self.consumer,
+            created_by=self.consumer,
+            vehicle=self.vehicle,
+            vehicle_plate="",
+            slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=now + timedelta(hours=10),
+            end_time=now + timedelta(hours=12),
+            billed_hours=2,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("40.00"),
+            status=Booking.Status.PENDING_PAYMENT,
+            hold_expires_at=now - timedelta(minutes=1),
+        )
+        self.client.force_authenticate(self.consumer)
+        response = self.client.get("/api/bookings/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        # The reader sees EXPIRED; the row is untouched (D43, 4.5-Q4).
+        self.assertEqual(response.data[0]["effective_status"], Booking.Status.EXPIRED)
+        self.assertEqual(response.data[0]["status"], Booking.Status.PENDING_PAYMENT)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.PENDING_PAYMENT)

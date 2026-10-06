@@ -18,8 +18,11 @@ Phase 4 has delivered increments **4.1** (the `Booking` model and state enum,
 D39–D41), **4.2** (the booking rule layer: `quote_booking`, the D41 conflict
 predicate, lazy hold expiry, the stored **`base_amount`** snapshot — D39 revised
 — and the per-slot duration policy **D45**) and **4.3** (the read-only, derived
-time-window availability query, D46); its lifecycle lands increment by increment,
-next **4.4**, booking creation with the D3/D41 concurrency guard. The authoritative
+time-window availability query, D46), **4.4** (booking creation — the first write
+path — with the D3/D41 slot-locked concurrency guard, D47–D49) and **4.5**
+(effective status for a lapsed hold: a read-only, computed `effective_status`,
+D50); its lifecycle lands increment by increment, next **4.6**, the confirmation
+seam (Phase 5 wires the gateway) and the walk-in `reference`. The authoritative
 specification is [`PROJECT.md`](PROJECT.md). Documentation is split per phase —
 start at [`docs/README.md`](docs/README.md), the navigation entry point, phase
 tracker and reading protocol.
@@ -188,6 +191,8 @@ npm run build
 | GET    | `/api/business-rules/` | Public     | The max-hourly-rate singleton    |
 | PATCH  | `/api/business-rules/` | Admin      | Change the max hourly rate / max booking hours |
 | GET    | `/api/parking-lots/{lot}/availability/` | Public | Slots bookable for `?start=&end=` (4.3) |
+| GET    | `/api/bookings/`       | Consumer   | List the caller's own bookings (4.4) |
+| POST   | `/api/bookings/`       | Consumer   | Create a booking (4.4) |
 
 > Authorisation is enforced server-side on every request (D15, D18). `Admin`
 > above means the authenticated account's `role` must be `ADMIN`; a `403` is
@@ -399,3 +404,50 @@ rule). `OCCUPIED` is deliberately **not** excluded — it is a physical, time-
 unbounded state owned by Phase 6. A backwards or empty window is a `400`
 `INVALID_WINDOW`; the lot follows the usual nested-read scoping, so a consumer
 gets a `404` for an inactive lot while its Manager may still address it (D38).
+
+### Bookings (Phase 4, increments 4.4–4.5)
+
+A Consumer creates a booking for one of their own vehicles and a slot window;
+the backend prices it, protects the slot against overlapping bookings and holds
+it while payment is pending. The price, status, hold and plate snapshot are
+computed server-side — the client never supplies them (D47, §45/§46).
+
+```text
+POST /api/bookings/
+```
+
+```json
+{ "slot": 1, "vehicle": 1,
+  "start_time": "2026-10-07T10:00:00Z", "end_time": "2026-10-07T12:00:00Z" }
+```
+
+Response `201` (excerpt) — `base_amount` is the agreed price of the booked
+duration, `hold_expires_at` is `now + BusinessRule.hold_minutes` (default 5):
+
+```json
+{
+  "id": 1,
+  "status": "PENDING_PAYMENT",
+  "effective_status": "PENDING_PAYMENT",
+  "vehicle_plate": "KA01AB1234",
+  "billed_hours": 2,
+  "hourly_rate": "20.00",
+  "base_amount": "40.00",
+  "hold_expires_at": "2026-10-06T10:05:00Z"
+}
+```
+
+Creation refusals use the §33 `{"error": "CODE", "message": ...}` shape (D48):
+`400` `INVALID_WINDOW` / `WINDOW_IN_PAST` / `MIN_DURATION_NOT_MET` /
+`MAX_DURATION_EXCEEDED`; `404` `SLOT_NOT_FOUND` / `LOT_NOT_BOOKABLE`; `409`
+`SLOT_UNAVAILABLE` / `BOOKING_CONFLICT` / `NO_TARIFF`. The window conflict is
+re-checked under a per-slot row lock, so two simultaneous requests cannot both
+win the same slot (Invariant 1, D41).
+
+`GET /api/bookings/` lists only the caller's own bookings (Invariant 2). While a
+booking is `PENDING_PAYMENT`, a lapsed hold is reported as
+`"effective_status": "EXPIRED"` **without** changing the stored `status` — expiry
+is lazy and reads never write (D6/D43/D50). Clients should render
+`effective_status`; `status` and `hold_expires_at` stay in the payload for
+transparency. Confirmation (`PENDING_PAYMENT → CONFIRMED`) arrives with Phase 5's
+payment gateway in increment 4.6.

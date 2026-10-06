@@ -3,14 +3,13 @@
 > **Scope (PROJECT.md §36):** the booking domain — model, states, availability
 > query, creation, temporary hold, confirmation, cancellation, extension and
 > booking history. This is described as "the most important backend phase".
-> Decisions are in [`DECISIONS.md`](DECISIONS.md) (D39–D49 accepted; D39 revised
+> Decisions are in [`DECISIONS.md`](DECISIONS.md) (D39–D50 accepted; D39 revised
 > in 4.2).
 > Working conventions and the reading protocol: [`../README.md`](../README.md).
 > Phase 3 context (parking catalogue, slots, tariffs): 
 > [`../phase-3-parking/PROGRESS.md`](../phase-3-parking/PROGRESS.md).
 
-Last updated: 2026-10-06 · **Increments 4.1–4.4 are complete; 4.5 is planned and
-its decisions are open.**
+Last updated: 2026-10-06 · **Increments 4.1–4.5 are complete; 4.6 is next.**
 4.1 delivered the `Booking` model + state enum (D39–D41). 4.2 delivered the
 booking rule layer whole: the tariff quote (`quote_booking`, the single pricing
 seam), the D41 conflict predicate, lazy hold expiry, the **stored `base_amount`
@@ -22,10 +21,12 @@ availability query** (D46): the derived `.../availability/` read, consuming
 4.4 delivered the first **write** path: `POST /api/bookings/` and an atomic,
 slot-locked `create_booking` that persists lazy expiry, re-checks the window
 under the lock and assigns the §19 hold (D47–D49) — verified by a two-thread
-concurrency test.
-**Next: 4.5, temporary hold + lazy expiry (D6)** — the remaining hold semantics
-now that 4.4 owns the field and the create-time expiry; its worksheet is at the
-end of [`DECISIONS.md`](DECISIONS.md).
+concurrency test. 4.5 delivered the **temporary-hold presentation** (D50): a
+read-only, computed `effective_status` that reports a lapsed `PENDING_PAYMENT`
+as `EXPIRED` with no write, so a GET never shows a dead hold as live (no schema
+change).
+**Next: 4.6, the confirmation seam** (Phase 5 wires the gateway) plus the walk-in
+`reference` decided in D47/Q4; its decisions are still open.
 
 ---
 
@@ -33,17 +34,14 @@ end of [`DECISIONS.md`](DECISIONS.md).
 
 1. [`../README.md`](../README.md) — conventions + reading protocol.
 2. This file — the increment plan, what is delivered, and what is next.
-3. [`DECISIONS.md`](DECISIONS.md) — D39–D49 (accepted; D39 revised in 4.2), the
-   **4.5 decision worksheet** (open), and the open questions carried to later
-   increments.
+3. [`DECISIONS.md`](DECISIONS.md) — D39–D50 (accepted; D39 revised in 4.2), and
+   the open questions carried to later increments.
 4. Only if a task touches it: the "Dependencies on earlier phases" table below.
 
-**Next session starts here:** increment **4.5 — temporary hold + lazy expiry**.
-It consumes the hold already assigned by 4.4 (`create_booking` sets
-`hold_expires_at`; `expire_stale_holds` and `blocking_window_q` implement D6/D43)
-and lands the remaining hold semantics. The plan is in "Increment 4.5" below; the
-choices still owed by the human are the **4.5 decision worksheet** in
-[`DECISIONS.md`](DECISIONS.md).
+**Next session starts here:** increment **4.6 — confirmation seam** (Phase 5
+wires the gateway) and the walk-in `reference`/`ticket_code` deferred by D47/Q4.
+It consumes the `PENDING_PAYMENT` → `CONFIRMED` transition from D40 and the
+`create_booking` path from 4.4; its decisions have not been opened yet.
 
 ---
 
@@ -55,8 +53,8 @@ choices still owed by the human are the **4.5 decision worksheet** in
 | 4.2 | Pricing / duration / (lazy) expiry helpers + per-slot duration policy (D45) | ✅ Done |
 | 4.3 | Time-window availability query (D46) | ✅ Done |
 | 4.4 | Booking creation + concurrency (D3/D41) | ✅ Done |
-| 4.5 | Temporary hold + lazy expiry (D6) | 🟡 Planned (decision worksheet open) |
-| 4.6 | Confirmation seam (Phase 5 wires the gateway) | ⚪ Not started |
+| 4.5 | Effective status for a lapsed hold (D50) | ✅ Done |
+| 4.6 | Confirmation seam (Phase 5 wires the gateway) + walk-in `reference` | ⚪ Next |
 | 4.7 | Cancellation | ⚪ Not started |
 | 4.8 | Extension | ⚪ Not started |
 | 4.9 | Booking history / listing | ⚪ Not started |
@@ -410,53 +408,77 @@ an `OUT_OF_SERVICE` slot returns `409 SLOT_UNAVAILABLE`; an inactive lot returns
 
 ---
 
-## Increment 4.5 — temporary hold + lazy expiry (D6) 🟡 PLANNED
+## Increment 4.5 — effective status for a lapsed hold ✅
 
 ### What it delivers
 
-The §18 "temporary hold": the rule that a `PENDING_PAYMENT` booking reserves its
-slot only until `hold_expires_at`, after which the slot is free again — evaluated
-**lazily**, with no scheduler (D6). Because D47/Q3 chose to assign the hold and
-add `BusinessRule.hold_minutes` in **4.4**, part of this feature already exists:
-`create_booking` sets `hold_expires_at` and calls `expire_stale_holds` inside its
-slot lock, and `blocking_window_q` (D43) already treats a lapsed hold as
-non-blocking. 4.5 therefore lands the remaining, deliberately-deferred pieces
-(scope to be confirmed by its worksheet) rather than the field itself.
+The presentation half of the §18 "temporary hold": a `PENDING_PAYMENT` booking
+reports its **effective** state at read time, so a hold that has lapsed reads as
+`EXPIRED` even though its stored `status` is untouched. Because D47/Q3 pulled the
+hold assignment, `BusinessRule.hold_minutes` and the create-time expiry write
+into 4.4, 4.5 is a small, read-side increment: no new storage, no new endpoint,
+no migration, and the single-writer rule is preserved (D43/D50).
 
-### What already exists (from 4.4)
+### Files
 
-- `BusinessRule.hold_minutes` (default 5) + migration
-  `parking/0006_businessrule_hold_minutes_and_more.py`.
-- `create_booking` assigns `hold_expires_at = now + hold_minutes` and persists
-  lazy expiry via `expire_stale_holds(slot=...)`.
-- `blocking_window_q` / `is_hold_live` already encode the liveness rule (D43).
+| File | State |
+|------|-------|
+| `apps/bookings/services.py` | **extended** — `effective_status(booking, now=None)` reusing `is_hold_live` |
+| `apps/bookings/serializers.py` | **extended** — read-only `effective_status` `SerializerMethodField` on `BookingSerializer` |
+| `apps/bookings/tests.py` | **extended** — `EffectiveStatusTests` (5 service tests) + 2 API tests |
 
-### Candidate scope (to be settled)
+Suggested commit (PROJECT.md §43):
+`feat(bookings): report effective expiry for lapsed holds`
 
-- Whether reads should report a lapsed `PENDING_PAYMENT` as an *effective*
-  `EXPIRED` (a computed field) without persisting it (D43 keeps reads
-  side-effect-free) — or leave the stored status and let the client infer.
-- Whether a pending booking can be **released/cancelled** by its owner here or in
-  4.7 (cancellation).
-- Whether any endpoint other than creation should persist expiry (D43 currently
-  says no).
-- Whether `BookingDetailView` (a single-booking read) is needed to surface the
-  hold.
+### Backend flow
 
-### Decisions to be settled before coding
+```text
+GET /api/bookings/                (IsConsumer; caller's bookings only)
+   ↓
+BookingSerializer
+   ├── status            (stored, unchanged)
+   ├── effective_status  → services.effective_status(booking)   (D50)
+   └── hold_expires_at   (stored)
+```
 
-A **4.5 decision worksheet** is at the end of
-[`DECISIONS.md`](DECISIONS.md). It is not coded until those choices are locked.
+### Decisions realized in the code
+
+- **D50 (Q1/Q2)** — `effective_status` returns `EXPIRED` when the stored status
+  is `PENDING_PAYMENT` and its hold is not live; otherwise the stored status. It
+  reuses `is_hold_live`, so the presented state and `blocking_window_q` share one
+  definition (D43).
+- **D50 (Q4)** — the helper computes only; the serializer does not persist. The
+  stored `status` stays `PENDING_PAYMENT` after a read (asserted by a test).
+- **D50 (Q3)** — early release of a pending booking is deliberately **not** here;
+  it belongs to 4.7 cancellation.
 
 ### Migration note (PROJECT.md §42)
 
-To be determined with the worksheet; the likely answer is **none** (the field
-and its migration already landed in 4.4).
+- **Model change:** none.
+- **Expected DB change:** none — read-only increment.
+- **Data implications:** none.
 
 ### Verification
 
-To be filled when the increment is delivered; expect a mix of service tests
-(effective status / liveness) and API tests, run against PostgreSQL (D4).
+```bash
+cd backend
+../env/bin/python manage.py check
+../env/bin/python manage.py test apps.parking apps.bookings
+```
+
+Result: no check issues; **186 tests OK** (`apps.parking` 112, `apps.bookings`
+74), including the new effective-status service and API tests. Manual
+spot-check: a pending booking whose `hold_expires_at` has passed returns
+`"effective_status": "EXPIRED"` and `"status": "PENDING_PAYMENT"` from
+`GET /api/bookings/`.
+
+### Known, deliberate gaps from 4.5
+
+- **No early release** — cancelling a pending booking is 4.7 (D50/Q3).
+- **No single-booking read** — `BookingDetailView` is still 4.9 unless an earlier
+  increment needs it.
+- **No confirmation** — `PENDING_PAYMENT → CONFIRMED` is 4.6.
+- **No pagination** (Phase 10).
 
 ---
 

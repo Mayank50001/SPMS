@@ -178,6 +178,21 @@ def is_hold_live(booking, now):
         return True
     return booking.hold_expires_at > now
 
+def effective_status(booking, now=None):
+    """The status a reader should see, reporting a lapsed hold as EXPIRED (4.5).
+
+    Expiry is lazy (D6): the stored ``status`` stays ``PENDING_PAYMENT`` and this
+    function computes the *effective* state at read time, so a client never
+    renders a dead hold as live. Reads never persist it (D43) -- ``expire_stale_holds``
+    remains the only writer, called inside creation's slot lock. A pending
+    booking with no deadline is live and never expires, matching
+    :func:`is_hold_live`; every non-pending status is returned unchanged.
+    """
+    now = now or timezone.now()
+    if booking.status == Booking.Status.PENDING_PAYMENT and not is_hold_live(booking, now):
+        return Booking.Status.EXPIRED
+    return booking.status
+
 def expire_stale_holds(*, slot=None, now=None):
     """Mark lapsed PENDING_PAYMENT holds EXPIRED; return how many changed (D6).
 

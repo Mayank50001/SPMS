@@ -16,10 +16,13 @@ Status as of **2026-10-06**:
   increment 4.4, **delivered** (creation is the first write path; the
   `apps.bookings` suite includes a two-thread concurrency test proving
   Invariant 1 under the slot lock).
-- **Open:** nothing blocking 4.1–4.4. Increment **4.5** (temporary hold + lazy
-  expiry) has its own **worksheet** — see "4.5 decision worksheet (open)" at the
-  end; it is not coded until those choices are locked. Later increments add
-  their own decisions (see "Open questions carried to later increments").
+- **Accepted (4.5, 2026-10-06):** D50 (effective-status reads for a lapsed hold;
+  no early release; no extra expiry writer) — increment 4.5, **delivered** (the
+  read side now reports a lapsed `PENDING_PAYMENT` as `EXPIRED` with no write;
+  the stored status is unchanged).
+- **Open:** nothing blocking 4.1–4.5. Increment **4.6** (confirmation seam +
+  walk-in `reference`) and 4.7 (cancellation) will add their own decisions (see
+  "Open questions carried to later increments").
 
 > A "Decision" below is the human's, not the agent's. Rationale/Consequence
 > record why, so the choice can be defended later.
@@ -483,6 +486,50 @@ Settles worksheet Q8–Q9.
 
 ---
 
+## D50 — Effective status for a lapsed hold, and read-only expiry (accepted 2026-10-06)
+
+Increment 4.5 is the §18 **temporary hold**. Because D47/Q3 pulled the hold
+assignment and `BusinessRule.hold_minutes` into 4.4, the field, the create-time
+expiry write and the liveness predicate already existed; 4.5 settles the
+remaining, presentation-side semantics. This entry records the answers to the
+4.5 worksheet.
+
+- **Decision:**
+  - **Q1 — scope: A.** 4.5 lands *effective-expiry reads* and hold reporting:
+    the read side must never show a dead hold as live. It adds no new storage
+    and no new endpoint.
+  - **Q2 — reads report a lapsed pending booking as `EXPIRED`: A.** A computed
+    `effective_status` is exposed on the booking read serializer
+    (`EXPIRED` when `status == PENDING_PAYMENT` and `hold_expires_at <= now`;
+    otherwise the stored status). It is computed by
+    `services.effective_status`, which reuses `is_hold_live` so reads and the
+    conflict predicate cannot drift (D43).
+  - **Q3 — consumer early release: B.** A consumer may **not** release a
+    `PENDING_PAYMENT` booking in 4.5; that is **4.7 cancellation**, so there is
+    one owner of the transition. 4.5 stays read-side.
+  - **Q4 — other endpoints persist expiry: A (no).** Only the creation path
+    writes expiry (`expire_stale_holds`, inside the slot lock). Reads —
+    including `GET /api/bookings/` — remain side-effect-free (D43); effective
+    reads (Q2) cover presentation.
+
+- **Rationale:** A computed `effective_status` closes the only real gap left by
+  4.4 — a client that trusts the raw `status` could treat an expired hold as a
+  live reservation — while preserving the project's "GETs do not mutate"
+  guarantee (D43) and the single-writer rule. Deferring early release to 4.7
+  keeps cancellation's rules (cutoff, refund eligibility, `cancelled_by`) in one
+  increment instead of splitting them across two.
+
+- **Consequence:** `BookingSerializer` gains the read-only `effective_status`
+  field; the stored `status` and `hold_expires_at` stay in the payload for
+  transparency. No model change ⇒ **no migration**. `services.effective_status`
+  is the single definition of the presented state; tests cover the live,
+  lapsed, no-deadline and non-pending cases, and prove the read does not
+  persist.
+
+- **Status:** Accepted (2026-10-06).
+
+---
+
 ## Increment 4.4 implementation decisions (accepted 2026-10-06)
 
 Recorded while delivering 4.4; they refine D47–D49, D41 and D44, not replace
@@ -697,14 +744,15 @@ reasoning can be re-read later.
 
 ---
 
-## 4.5 decision worksheet (open)
+## 4.5 decision worksheet (resolved 2026-10-06 — kept for the record)
 
 Increment 4.5 is the §18 **temporary hold**. Because D47/Q3 pulled the hold
 assignment and `BusinessRule.hold_minutes` into 4.4, the field, the create-time
-expiry write and the liveness predicate already exist; 4.5 is now the remaining
-hold semantics. PROJECT.md §9/§21 require the choices below to be decided *with*
-the human before they are coded. **Nothing here is accepted yet**; answers become
-`D50…`.
+expiry write and the liveness predicate already existed; 4.5 became the
+remaining hold semantics. PROJECT.md §9/§21 required the choices below to be
+decided *with* the human before they were coded. Every question was answered
+with the recommended option; the answers are recorded as **D50** above. The
+options are retained here so the reasoning can be re-read later.
 
 ### Q1 — What is the remaining scope of 4.5?
 
@@ -756,7 +804,7 @@ Each will be surfaced as its own decision when its increment is opened.
 | Question | Lands in |
 |----------|----------|
 | `BusinessRule.hold_minutes` (temporary hold length, §19 default 5) | ✅ done in 4.4 (D47/Q3) |
-| Remaining temporary-hold semantics (effective expiry reads, early release) | 4.5 |
+| Remaining temporary-hold semantics (effective expiry reads, early release) | ✅ done in 4.5 (D50); early release deferred to 4.7 |
 | `BusinessRule.cancellation_cutoff_minutes` (§19 default 30) | 4.7 |
 | `BusinessRule.overstay_multiplier` (§19 default 1.5) | Phase 6 |
 | Confirmation seam in Phase 4 vs deferring to Phase 5's gateway | 4.6 |

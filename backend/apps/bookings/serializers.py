@@ -13,6 +13,7 @@ from apps.accounts.models import Vehicle
 from apps.parking.models import ParkingSlot
 
 from .models import Booking
+from .services import effective_status as compute_effective_status
 
 class BookingSerializer(serializers.ModelSerializer):
     """Read representation of a booking (D39).
@@ -20,16 +21,26 @@ class BookingSerializer(serializers.ModelSerializer):
     ``slot_number`` and ``lot_code`` are derived for display so a client can
     render "BLR-001 / A-01" without a second request. The price/plate fields are
     the stored snapshots, not live values.
+
+    ``effective_status`` (increment 4.5, D50) reports a lapsed ``PENDING_PAYMENT``
+    hold as ``EXPIRED`` without changing the stored ``status`` -- expiry is lazy
+    (D6) and reads do not write (D43). Clients should render ``effective_status``;
+    the raw ``status`` and ``hold_expires_at`` remain for transparency.
     """
 
     slot_number = serializers.CharField(source="slot.number", read_only=True)
     lot_code = serializers.CharField(source="slot.lot.code", read_only=True)
+    effective_status = serializers.SerializerMethodField()
+
+    def get_effective_status(self, obj):
+        return compute_effective_status(obj)
 
     class Meta:
         model = Booking
         fields = [
             "id",
             "status",
+            "effective_status",
             "slot",
             "slot_number",
             "lot_code",
