@@ -12,8 +12,13 @@ from rest_framework.response import Response
 from apps.accounts.permissions import IsConsumer
 
 from .models import Booking
-from .serializers import BookingCreateSerializer, BookingSerializer
-from .services import BookingRuleError, cancel_booking, create_booking
+from .serializers import (
+    BookingCreateSerializer,
+    BookingSerializer,
+    ExtensionQuoteQuerySerializer,
+    ExtensionQuoteSerializer,
+)
+from .services import BookingRuleError, cancel_booking, create_booking, quote_extension
 
 #: Stable refusal code -> HTTP status (Q10). Shape/client errors are 400,
 #: state/config conflicts are 409, an unaddressable target is 404.
@@ -29,6 +34,8 @@ REFUSAL_STATUS = {
     "NO_TARIFF": status.HTTP_409_CONFLICT,
     "BOOKING_NOT_FOUND": status.HTTP_404_NOT_FOUND,
     "BOOKING_NOT_CANCELLABLE": status.HTTP_409_CONFLICT,
+    "BOOKING_NOT_EXTENDABLE": status.HTTP_409_CONFLICT,
+    "INVALID_EXTENSION": status.HTTP_400_BAD_REQUEST,
 }
 
 class BookingListCreateView(generics.ListCreateAPIView):
@@ -105,4 +112,44 @@ class BookingCancelView(generics.GenericAPIView):
             )
         return Response(BookingSerializer(booking).data)
 
+class BookingExtensionQuoteView(generics.GenericAPIView):
+    """Price extending the caller's booking, without changing it (4.8, D54).
 
+    ``GET /api/bookings/{id}/extension-quote/?end_time=...`` -> the added hours
+    and amount Phase 5 will charge. Read-only, so it is safe to call while the
+    consumer decides; the write itself is ``services.extend_booking``, which
+    Phase 5's gateway calls after the payment succeeds.
+    """
+
+    permission_classes = [IsConsumer]
+    serializer_class = ExtensionQuoteSerializer
+
+    def get(self, request, *args, **kwargs):
+        booking = (
+            Booking.objects.filter(user=request.user)
+            .select_related("slot")
+            .filter(pk=kwargs["pk"])
+            .first()
+        )
+        if booking is None:
+            return Response(
+                {
+                    "error": "BOOKING_NOT_FOUND",
+                    "message": "No booking with this id exists.",
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        window = ExtensionQuoteQuerySerializer(data=request.query_params)
+        window.is_valid(raise_exception=True)
+
+        try:
+            quote = quote_extension(
+                booking=booking, new_end_time=window.validated_data["end_time"]
+            )
+        except BookingRuleError as exc:
+            return Response(
+                {"error": exc.code, "message": str(exc)},
+                status=REFUSAL_STATUS.get(exc.code, status.HTTP_400_BAD_REQUEST),
+            )
+        return Response(ExtensionQuoteSerializer(quote).data)

@@ -22,10 +22,12 @@ time-window availability query, D46), **4.4** (booking creation — the first wr
 path — with the D3/D41 slot-locked concurrency guard, D47–D49), **4.5**
 (effective status for a lapsed hold: a read-only, computed `effective_status`,
 D50), **4.6** (the confirmation seam for Phase 5's payment gateway, and a
-random, unguessable public `reference` on every booking — D51/D52) and **4.7**
+random, unguessable public `reference` on every booking — D51/D52), **4.7**
 (cancellation: the §19 refund cutoff, the stored `refund_due_amount` snapshot
-and `POST /api/bookings/{id}/cancel/` — D53); its lifecycle lands increment by
-increment, next **4.8**, extension. The authoritative
+and `POST /api/bookings/{id}/cancel/` — D53) and **4.8** (extension: a read-only
+quote and the slot-locked `extend_booking` seam for Phase 5's charge — D54; no
+migration); its lifecycle lands increment by increment, next **4.9**, booking
+history/detail. The authoritative
 specification is [`PROJECT.md`](PROJECT.md). Documentation is split per phase —
 start at [`docs/README.md`](docs/README.md), the navigation entry point, phase
 tracker and reading protocol.
@@ -59,7 +61,7 @@ ParkingManagementSystem/
 │   ├── foundation/         # phases 0-1 + cross-cutting decisions (D1-D10)
 │   ├── phase-2-authentication/
 │   ├── phase-3-parking/
-│   └── phase-4-booking/    # booking model, rules, duration policy (D39-D52; D39 revised in 4.2)
+│   └── phase-4-booking/    # booking model, rules, duration policy (D39-D54; D39 revised in 4.2)
 ├── backend/
 │   ├── manage.py
 │   ├── .env                # local secrets (git-ignored)
@@ -197,6 +199,7 @@ npm run build
 | GET    | `/api/bookings/`       | Consumer   | List the caller's own bookings (4.4) |
 | POST   | `/api/bookings/`       | Consumer   | Create a booking (4.4) |
 | POST   | `/api/bookings/{id}/cancel/` | Consumer | Cancel an own booking, recording the refund due (4.7) |
+| GET    | `/api/bookings/{id}/extension-quote/` | Consumer | Price extending an own booking's end time (4.8) |
 
 > Authorisation is enforced server-side on every request (D15, D18). `Admin`
 > above means the authenticated account's `role` must be `ADMIN`; a `403` is
@@ -506,3 +509,41 @@ same per-slot lock as creation and confirmation (D49/D51), so a cancel cannot
 race the payment-success that confirms the same booking. `BusinessRule`'s
 `cancellation_cutoff_minutes` is exposed at `/api/business-rules/` and is
 Administrator-only to change.
+
+### Extension (Phase 4, increment 4.8)
+
+A Consumer prices lengthening one of their own live bookings and — once Phase 5
+has charged it — the booking's `end_time` moves later. As with confirmation,
+Phase 4 performs **no charge** and adds **no apply endpoint**: `extend_booking`
+is a **service seam** Phase 5's gateway calls after payment, so `base_amount`
+only ever reflects money actually charged. Pricing is a read, so a client can
+show the cost first:
+
+```text
+GET /api/bookings/1/extension-quote/?end_time=2026-10-07T14:00:00Z
+```
+
+Response `200` (excerpt) — the extra the extension would cost:
+
+```json
+{
+  "added_hours": 1,
+  "extension_amount": "20.00",
+  "new_billed_hours": 3,
+  "new_base_amount": "60.00",
+  "hourly_rate": "20.00",
+  "new_end_time": "2026-10-07T14:00:00Z"
+}
+```
+
+Only a `CONFIRMED` or `IN_PROGRESS` booking can be extended; the new `end_time`
+must be strictly later than the current one and in the future (otherwise `400`
+`INVALID_EXTENSION`). The **whole** window is re-priced
+(`hours_between(start, new_end)`), not the rounded slice, so `billed_hours` stays
+consistent (D42); the new total is re-checked against the slot's
+`min_booking_hours` / `max_booking_hours` (`400` `MAX_DURATION_EXCEEDED`). Any
+other state is `409 BOOKING_NOT_EXTENDABLE`, and another consumer's booking is a
+`404 BOOKING_NOT_FOUND`, never a `403` (Invariant 2). The seam takes the same
+per-slot lock as creation, confirmation and cancellation and re-checks the added
+window, so an extension cannot collide with another booking (`409
+BOOKING_CONFLICT`); re-sending the same `end_time` is an idempotent no-op.

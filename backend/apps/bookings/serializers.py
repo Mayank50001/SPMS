@@ -103,3 +103,22 @@ class BookingCreateSerializer(serializers.Serializer):
                 {"end_time": "end_time must be after start_time."}
             )
         return attrs
+
+class ExtensionQuoteQuerySerializer(serializers.Serializer):
+    """Validates the ``?end_time=`` of the extension quote read (D54).
+
+    DRF parses offset-aware ISO-8601 and normalises to UTC (D5), so the service
+    always compares aware values; a malformed value is a field-shaped ``400``.
+    """
+
+    end_time = serializers.DateTimeField()
+
+class ExtensionQuoteSerializer(serializers.Serializer):
+    """Read shape for the extension quote (D54): the cost before Phase 5 charges."""
+
+    added_hours = serializers.IntegerField()
+    extension_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    new_billed_hours = serializers.IntegerField()
+    new_base_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    hourly_rate = serializers.DecimalField(max_digits=8, decimal_places=2)
+    new_end_time = serializers.DateTimeField()

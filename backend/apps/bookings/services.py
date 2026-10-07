@@ -12,7 +12,7 @@ Reads stay side-effect free: availability filters lapsed holds out with
 import math
 from decimal import Decimal
 from typing import NamedTuple
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 from django.db import transaction
 from django.db.models import Q, Exists, OuterRef
@@ -105,6 +105,35 @@ class BookingNotCancellableError(BookingRuleError):
     """
 
     code = "BOOKING_NOT_CANCELLABLE"
+
+class BookingNotExtendableError(BookingRuleError):
+    """The booking is not in a state a consumer may extend (D54).
+
+    Only the two "paid, not finished" states -- ``CONFIRMED`` and
+    ``IN_PROGRESS`` -- can be extended. A ``PENDING_PAYMENT`` must be paid (or
+    cancelled and rebooked) first; ``COMPLETED``/``CANCELLED``/``EXPIRED``/
+    ``TERMINATED`` are past the point of extension.
+    """
+
+    code = "BOOKING_NOT_EXTENDABLE"
+
+class InvalidExtensionError(BookingRuleError):
+    """The requested end time does not lengthen the booking (D54)."""
+
+    code = "INVALID_EXTENSION"
+
+class ExtensionQuote(NamedTuple):
+    """The priced result of extending a booking to a later end time (D54)."""
+
+    added_hours: int
+    extension_amount: Decimal
+    new_billed_hours: int
+    new_base_amount: Decimal
+    hourly_rate: Decimal
+    new_end_time: datetime
+
+#: The states a consumer may extend: the paid, not-yet-finished pair (D54).
+EXTENDABLE_STATUSES = (Booking.Status.CONFIRMED, Booking.Status.IN_PROGRESS)
 
 class BookingQuote(NamedTuple):
     """The priced result of a window, ready to snapshot onto a ``Booking``."""
@@ -495,5 +524,115 @@ def cancel_booking(*, booking_id, user, now=None):
             "refund_due_amount",
             "updated_at",
         ]
+    )
+    return booking
+
+def quote_extension(*, booking, new_end_time, now=None):
+    """Price lengthening ``booking`` to ``new_end_time`` (D54, §19).
+
+    Read-only, so a client can be shown the cost before Phase 5 charges; it is
+    therefore an *unlocked hint* for conflicts, like ``available_slots``.
+    ``extend_booking`` re-runs this under the slot lock before writing.
+
+    The window must strictly lengthen (``new_end_time > booking.end_time``) and
+    end in the future. Billing recomputes the **whole** window, not the rounded
+    slice: ``new_billed = hours_between(start, new_end)`` and the charge is the
+    difference, so ``billed_hours`` always equals "whole hours of
+    ``[start, end)``" (D42). The slot's per-bay duration policy is re-applied
+    through the shared ``validate_duration``, so the new total still satisfies
+    **both** its minimum and maximum (D45/D54).
+    """
+    now = now or timezone.now()
+
+    if new_end_time <= booking.end_time:
+        raise InvalidExtensionError(
+            "The new end time must be after the booking's current end time."
+        )
+    if new_end_time <= now:
+        raise InvalidExtensionError("The new end time must be in the future.")
+
+    new_billed_hours = hours_between(booking.start_time, new_end_time)
+    # D45: the same per-bay min/max rule creation uses. Lengthening only grows
+    # ``billed_hours``, so the minimum can never be broken -- but the maximum
+    # very much can, and one shared rule enforces both ends.
+    validate_duration(booking.slot, new_billed_hours)
+
+    added_hours = new_billed_hours - booking.billed_hours
+    extension_amount = booking.hourly_rate * added_hours
+    return ExtensionQuote(
+        added_hours=added_hours,
+        extension_amount=extension_amount,
+        new_billed_hours=new_billed_hours,
+        new_base_amount=booking.base_amount + extension_amount,
+        hourly_rate=booking.hourly_rate,
+        new_end_time=new_end_time,
+    )
+
+@transaction.atomic
+def extend_booking(*, booking_id, user, new_end_time, now=None):
+    """Apply a (paid) extension to the caller's own booking (4.8, D54).
+
+    This is the **extension seam**: Phase 5's gateway calls it once it has
+    charged the amount ``quote_extension`` returned. Phase 4 charges nothing and
+    records nothing extra -- it only moves ``end_time``/``billed_hours``/
+    ``base_amount`` forward -- so ``base_amount`` never includes unpaid money.
+    That is what keeps 4.7's "refund the full ``base_amount``" rule correct for
+    an extended booking.
+
+    Ordering mirrors the other write paths (D49/D51/D53): lock the **slot** row
+    first, re-read the booking, check its state, re-price and re-check the added
+    window ``[old_end, new_end)`` for conflicts, then write. A gateway retry
+    that sends the same ``new_end_time`` is a no-op success.
+    """
+    now = now or timezone.now()
+
+    # Scope to the caller so a foreign id is BOOKING_NOT_FOUND (Invariant 2).
+    slot_id = (
+        Booking.objects.filter(pk=booking_id, user=user)
+        .values_list("slot_id", flat=True)
+        .first()
+    )
+    if slot_id is None:
+        raise BookingNotFoundError("No booking with this id exists.")
+
+    # D49/D51/D53: the same first lock every booking write takes.
+    slot = (
+        ParkingSlot.objects.select_for_update(of=("self",))
+        .filter(pk=slot_id)
+        .first()
+    )
+
+    booking = Booking.objects.get(pk=booking_id)
+
+    if booking.status not in EXTENDABLE_STATUSES:
+        raise BookingNotExtendableError(
+            f"A {booking.status} booking cannot be extended."
+        )
+
+    # Gateway retry: the extension is already in place.
+    if new_end_time == booking.end_time:
+        return booking
+
+    # Re-price and re-apply the duration policy under the lock. May raise
+    # INVALID_EXTENSION or MAX_DURATION_EXCEEDED.
+    quote = quote_extension(booking=booking, new_end_time=new_end_time, now=now)
+
+    # D41/D43: the *added* window must be free. The booking itself cannot match
+    # (its end is the left edge of a half-open interval), but exclude it anyway.
+    conflict = (
+        Booking.objects.filter(slot=slot)
+        .exclude(pk=booking.pk)
+        .filter(blocking_window_q(booking.end_time, new_end_time, now))
+        .exists()
+    )
+    if conflict:
+        raise BookingConflictError("The time after this booking is already taken.")
+
+    booking.end_time = new_end_time
+    booking.billed_hours = quote.new_billed_hours
+    booking.base_amount = quote.new_base_amount
+    booking.updated_at = now
+    booking.save(
+        update_fields=["end_time", "billed_hours", "base_amount", "updated_at"]
     )
     return booking

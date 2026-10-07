@@ -3,13 +3,13 @@
 > **Scope (PROJECT.md §36):** the booking domain — model, states, availability
 > query, creation, temporary hold, confirmation, cancellation, extension and
 > booking history. This is described as "the most important backend phase".
-> Decisions are in [`DECISIONS.md`](DECISIONS.md) (D39–D52 accepted; D39 revised
+> Decisions are in [`DECISIONS.md`](DECISIONS.md) (D39–D54 accepted; D39 revised
 > in 4.2).
 > Working conventions and the reading protocol: [`../README.md`](../README.md).
 > Phase 3 context (parking catalogue, slots, tariffs): 
 > [`../phase-3-parking/PROGRESS.md`](../phase-3-parking/PROGRESS.md).
 
-Last updated: 2026-10-07 · **Increments 4.1–4.7 are complete; 4.8 is next.**
+Last updated: 2026-10-07 · **Increments 4.1–4.8 are complete; 4.9 is next.**
 4.1 delivered the `Booking` model + state enum (D39–D41). 4.2 delivered the
 booking rule layer whole: the tariff quote (`quote_booking`, the single pricing
 seam), the D41 conflict predicate, lazy hold expiry, the **stored `base_amount`
@@ -30,9 +30,12 @@ gateway calls, plus a random unguessable receipt/QR code on every booking.
 4.7 delivered **cancellation** (D53): the §19 refund cutoff on the
 `BusinessRule` singleton, a slot-locked, idempotent `cancel_booking` that stores
 the **`refund_due_amount`** snapshot, and `POST /api/bookings/{id}/cancel/` —
-Phase 5's gateway performs the actual refund.
-**Next: 4.8, extension** (extending a booking's end time; its decisions are
-still open).
+Phase 5's gateway performs the actual refund. 4.8 delivered **extension** (D54):
+a read-only quote that prices a later end time and a slot-locked
+`extend_booking` **seam** Phase 5 calls after charging — whole-window pricing
+re-checked against the slot's min/max, with **no new field and no migration**.
+**Next: 4.9, booking history** (a single-booking read and the caller's
+history/detail; its decisions are still open).
 
 ---
 
@@ -40,14 +43,14 @@ still open).
 
 1. [`../README.md`](../README.md) — conventions + reading protocol.
 2. This file — the increment plan, what is delivered, and what is next.
-3. [`DECISIONS.md`](DECISIONS.md) — D39–D52 (accepted; D39 revised in 4.2), and
+3. [`DECISIONS.md`](DECISIONS.md) — D39–D54 (accepted; D39 revised in 4.2), and
    the open questions carried to later increments.
 4. Only if a task touches it: the "Dependencies on earlier phases" table below.
 
-**Next session starts here:** increment **4.8 — extension** (extending a
-`CONFIRMED` booking's end time: the slot re-check, the incremental price and the
-Phase 5 charge handoff). It consumes the `CONFIRMED` state, `quote_booking`
-(4.2) and the confirmation seam (4.6); its decisions have not been opened yet.
+**Next session starts here:** increment **4.9 — booking history / detail** (a
+single-booking read and the caller's booking history, deferred here by 4.4 and
+4.6). It consumes the existing `BookingSerializer` read and the caller-scoped
+queryset; its decisions have not been opened yet.
 
 ---
 
@@ -62,8 +65,8 @@ Phase 5 charge handoff). It consumes the `CONFIRMED` state, `quote_booking`
 | 4.5 | Effective status for a lapsed hold (D50) | ✅ Done |
 | 4.6 | Confirmation seam (D51) + public `reference` (D52) | ✅ Done |
 | 4.7 | Cancellation (D53) | ✅ Done |
-| 4.8 | Extension | ⚪ Next |
-| 4.9 | Booking history / listing | ⚪ Not started |
+| 4.8 | Extension (D54) | ✅ Done |
+| 4.9 | Booking history / listing | ⚪ Next |
 
 ---
 
@@ -692,6 +695,123 @@ non-cancellable states, foreign/unknown booking) and `CancelBookingApiTests`
 - **No cancel-vs-confirm concurrency test** — the shared slot lock is the
   argument (documented in D53/Q5); a deterministic two-writer test is a Phase 10
   hardening candidate.
+
+---
+
+## Increment 4.8 — extension ✅
+
+### What it delivers
+
+The §19/§35 "extend" path: a Consumer lengthens one of their own live bookings
+by moving its `end_time` later. Phase 4 still does **not** move money (§26
+boundary): the increment prices the change (a read-only quote) and provides the
+slot-locked `extend_booking` **seam** that Phase 5's gateway calls after it has
+charged the extra. `base_amount` is bumped only by the seam, so an unpaid
+extension can never inflate a later cancellation refund. Because the extra is
+priced by recomputing the **whole** window and re-checking the shared duration
+policy, `billed_hours` stays exactly "whole hours of `[start, end)`" and the
+booking still honours the slot's `min_booking_hours` / `max_booking_hours`.
+**No schema change, so no migration.**
+
+### Files
+
+| File | State |
+|------|-------|
+| `apps/bookings/services.py` | **extended** — `quote_extension(...)` (read-only, duration-checked), `extend_booking(...)` (atomic, slot-locked, idempotent seam), `ExtensionQuote`, `EXTENDABLE_STATUSES`, `BookingNotExtendableError`/`BOOKING_NOT_EXTENDABLE`, `InvalidExtensionError`/`INVALID_EXTENSION` |
+| `apps/bookings/serializers.py` | **extended** — `ExtensionQuoteQuerySerializer` (`?end_time=`) + `ExtensionQuoteSerializer` (read shape) |
+| `apps/bookings/views.py` | **extended** — `BookingExtensionQuoteView` (`IsConsumer`, owner-scoped); `BOOKING_NOT_EXTENDABLE`/`INVALID_EXTENSION` added to `REFUSAL_STATUS` |
+| `apps/bookings/urls.py` | **extended** — `bookings/<int:pk>/extension-quote/` |
+| `apps/bookings/tests.py` | **extended** — `ExtensionQuoteTests`, `ExtendBookingServiceTests`, `ExtensionQuoteApiTests` |
+
+Suggested commit (PROJECT.md §43):
+`feat(bookings): add booking extension quote and seam`
+
+### Backend flow
+
+```text
+GET /api/bookings/{id}/extension-quote/?end_time=…      (IsConsumer)
+   ↓
+BookingExtensionQuoteView → services.quote_extension(booking, new_end_time)
+   ├── owner-scoped lookup → BOOKING_NOT_FOUND (Invariant 2)
+   ├── new_end > end_time and > now, else INVALID_EXTENSION
+   ├── new_billed = hours_between(start, new_end)         (whole window, D42)
+   ├── validate_duration(slot, new_billed)                (D45 min/max)
+   └── quote: added_hours, extension_amount, new_base_amount
+        ↓
+ExtensionQuoteSerializer (200)
+
+Phase 5 gateway ── charge the quote ──> services.extend_booking(booking_id, user, new_end_time)
+                                          (transaction.atomic)
+   ├── owner-scoped lookup → BOOKING_NOT_FOUND
+   ├── select_for_update(of=("self",)) slot row          (D49/D51/D53)
+   ├── state in CONFIRMED/IN_PROGRESS, else BOOKING_NOT_EXTENDABLE
+   ├── same end_time → return unchanged (idempotent)
+   ├── re-price + validate_duration
+   ├── re-check blocking_window_q [old_end, new_end) → BOOKING_CONFLICT
+   └── end_time, billed_hours, base_amount updated
+```
+
+### Decisions realized in the code
+
+- **D54 (Q1/Q2)** — Consumer self-extension only; `CONFIRMED` and `IN_PROGRESS`
+  are extendable; `PENDING_PAYMENT`/`COMPLETED`/`CANCELLED`/`EXPIRED`/
+  `TERMINATED` are refused. A foreign booking is `404 BOOKING_NOT_FOUND`, never
+  `403` (Invariant 2).
+- **D54 (Q3/Q4)** — the request carries the new `end_time`; the charge is the
+  whole-window difference `(hours_between(start, new_end) − billed_hours) ×
+  hourly_rate`, using the D39 snapshot rate, so `billed_hours` cannot drift.
+- **D54 (Q5)** — the new total is re-checked with the shared `validate_duration`
+  (D45), so the slot's minimum **and** maximum both hold.
+- **D54 (Q6/Q7)** — no charge and no apply endpoint: a read-only quote prices
+  the change, and `extend_booking` is the seam Phase 5 calls after paying.
+- **D54 (Q8)** — the shared first **slot** lock, a `blocking_window_q` re-check
+  of the added window, and an idempotent same-`end_time` retry.
+
+### Migration note (PROJECT.md §42)
+
+- **Model change:** none.
+- **Expected DB change:** none — extension reuses `end_time`, `billed_hours` and
+  `base_amount`.
+- **Data implications:** none.
+
+### Verification
+
+```bash
+cd backend
+../env/bin/python manage.py makemigrations --check
+../env/bin/python manage.py check
+../env/bin/python manage.py test apps.parking apps.bookings
+```
+
+Result: `makemigrations --check` reports no changes; `check` is clean; all tests
+pass. New coverage: `ExtensionQuoteTests` (whole-window recompute, exact-hour,
+non-lengthening, past end, above-max, below-min), `ExtendBookingServiceTests`
+(confirmed + in-progress apply, every refused state, adjacent-booking conflict,
+idempotent retry, shrink refused, max exceeded, foreign/unknown booking, and a
+post-extension cancellation refunding the new total) and `ExtensionQuoteApiTests`
+(auth, owner quote, foreign 404, non-lengthening 400, manager 403). Manual
+spot-check:
+
+```bash
+curl "http://127.0.0.1:8000/api/bookings/1/extension-quote/?end_time=2026-10-07T14:00:00Z" \
+  -H "Authorization: Bearer <access>"
+```
+
+### Known, deliberate gaps from 4.8
+
+- **No money movement** — `extend_booking` is a recorded seam; Phase 5 charges
+  the quote and calls it (D54/Q6, §26).
+- **No apply endpoint** — deliberately omitted so an extension cannot be applied
+  before payment (D54/Q6).
+- **`IN_PROGRESS` is extendable but not written here** — Phase 6 produces that
+  state; 4.8 only accepts it.
+- **No manager/admin override** — a manager removing or altering a booking is a
+  later phase.
+- **No cancel-vs-extend or extend-vs-confirm concurrency test** — the shared
+  slot lock is the argument (D54/Q8); a deterministic two-writer test is a
+  Phase 10 hardening candidate.
+- **No booking detail / history route** — `BookingDetailView` is 4.9.
+- **No pagination** (Phase 10).
 
 ---
 

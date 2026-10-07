@@ -26,13 +26,14 @@ from apps.bookings.references import (
 
 from apps.bookings.services import (
     BookingConflictError, BookingNotCancellableError, BookingNotConfirmableError,
-    BookingNotFoundError, InvalidWindowError, LotNotBookableError,
+    BookingNotExtendableError, BookingNotFoundError, InvalidExtensionError,
+    InvalidWindowError, LotNotBookableError,
     MaxDurationExceededError, MinDurationNotMetError, NoTariffError,
     SlotNotFoundError, SlotUnavailableError, WindowInPastError,
     available_slots, blocking_window_q, cancel_booking, confirm_booking,
-    create_booking, effective_status, expire_stale_holds, hours_between,
-    is_hold_live, quote_booking, refund_due_for, validate_duration,
-    validate_window,
+    create_booking, effective_status, expire_stale_holds, extend_booking,
+    hours_between, is_hold_live, quote_booking, quote_extension, refund_due_for,
+    validate_duration, validate_window,
 )
 
 
@@ -1557,3 +1558,387 @@ class CancelBookingApiTests(TestCase):
         response = self.client.post("/api/bookings/999999/cancel/")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(response.data["error"], "BOOKING_NOT_FOUND")
+
+class ExtensionQuoteTests(TestCase):
+    """``quote_extension``: the §19 whole-window recompute (increment 4.8, D54)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=cls.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        Tariff.objects.create(
+            lot=cls.lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.vehicle = Vehicle.objects.create(
+            owner=cls.consumer, registration_number="KA01AB1234",
+        )
+        BusinessRule.load()
+
+    def _confirmed(self, *, start_hours=2, end_hours=4):
+        now = timezone.now()
+        booking = create_booking(
+            slot_id=self.slot.id,
+            start_time=now + timedelta(hours=start_hours),
+            end_time=now + timedelta(hours=end_hours),
+            user=self.consumer,
+            vehicle=self.vehicle,
+        )
+        confirm_booking(booking_id=booking.pk)
+        booking.refresh_from_db()
+        return booking
+
+    def test_recomputes_the_whole_window(self):
+        # 2h booked; extend to 3.5h total -> the whole-window ceil is 4h, so the
+        # charge is 2 extra hours, not the 1.5h slice rounded up.
+        booking = self._confirmed()  # now+2h .. now+4h, 2h @ 20 = 40
+        quote = quote_extension(
+            booking=booking,
+            new_end_time=booking.end_time + timedelta(hours=1, minutes=30),
+        )
+        self.assertEqual(quote.new_billed_hours, 4)
+        self.assertEqual(quote.added_hours, 2)
+        self.assertEqual(quote.extension_amount, Decimal("40.00"))
+        self.assertEqual(quote.new_base_amount, Decimal("80.00"))
+
+    def test_an_exact_hour_extension_adds_one_hour(self):
+        booking = self._confirmed()
+        quote = quote_extension(
+            booking=booking, new_end_time=booking.end_time + timedelta(hours=1)
+        )
+        self.assertEqual(quote.added_hours, 1)
+        self.assertEqual(quote.extension_amount, Decimal("20.00"))
+        self.assertEqual(quote.new_base_amount, Decimal("60.00"))
+
+    def test_refuses_a_time_that_does_not_lengthen(self):
+        booking = self._confirmed()
+        with self.assertRaises(InvalidExtensionError):
+            quote_extension(booking=booking, new_end_time=booking.end_time)
+
+    def test_refuses_an_end_time_that_is_still_in_the_past(self):
+        now = timezone.now()
+        booking = Booking(
+            status=Booking.Status.CONFIRMED,
+            slot=self.slot,
+            start_time=now - timedelta(hours=5),
+            end_time=now - timedelta(hours=3),
+            billed_hours=2,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("40.00"),
+        )
+        with self.assertRaises(InvalidExtensionError):
+            quote_extension(booking=booking, new_end_time=now - timedelta(hours=1))
+
+    def test_refuses_beyond_the_slot_maximum(self):
+        booking = self._confirmed()
+        with self.assertRaises(MaxDurationExceededError):
+            quote_extension(
+                booking=booking,
+                new_end_time=booking.start_time + timedelta(hours=30),
+            )
+
+    def test_enforces_the_slot_minimum(self):
+        # A booking below the bay's minimum cannot be produced by creation, but
+        # the shared rule still rejects it -- proving both ends are enforced.
+        self.slot.min_booking_hours = 3
+        self.slot.save(update_fields=["min_booking_hours"])
+        now = timezone.now()
+        booking = Booking(
+            status=Booking.Status.CONFIRMED,
+            slot=self.slot,
+            start_time=now + timedelta(hours=2),
+            end_time=now + timedelta(hours=3),
+            billed_hours=1,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("20.00"),
+        )
+        with self.assertRaises(MinDurationNotMetError):
+            quote_extension(
+                booking=booking,
+                new_end_time=now + timedelta(hours=3, minutes=30),
+            )
+
+class ExtendBookingServiceTests(TestCase):
+    """``extend_booking``: the paid-extension seam (increment 4.8, D54)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=cls.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        Tariff.objects.create(
+            lot=cls.lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.other = User.objects.create_user(
+            email="other@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Other",
+        )
+        cls.vehicle = Vehicle.objects.create(
+            owner=cls.consumer, registration_number="KA01AB1234",
+        )
+        cls.other_vehicle = Vehicle.objects.create(
+            owner=cls.other, registration_number="KA05XY9999",
+        )
+        BusinessRule.load()
+
+    def _create(self, *, owner=None, vehicle=None, start_hours=2, end_hours=4):
+        owner = owner or self.consumer
+        vehicle = vehicle or self.vehicle
+        now = timezone.now()
+        return create_booking(
+            slot_id=self.slot.id,
+            start_time=now + timedelta(hours=start_hours),
+            end_time=now + timedelta(hours=end_hours),
+            user=owner,
+            vehicle=vehicle,
+        )
+
+    def _confirmed(self, **kwargs):
+        booking = self._create(**kwargs)
+        confirm_booking(booking_id=booking.pk)
+        booking.refresh_from_db()
+        return booking
+
+    def test_extends_a_confirmed_booking(self):
+        booking = self._confirmed()
+        new_end = booking.end_time + timedelta(hours=1)
+        extended = extend_booking(
+            booking_id=booking.pk, user=self.consumer, new_end_time=new_end
+        )
+        self.assertEqual(extended.end_time, new_end)
+        self.assertEqual(extended.billed_hours, 3)
+        self.assertEqual(extended.base_amount, Decimal("60.00"))
+        self.assertEqual(extended.status, Booking.Status.CONFIRMED)
+
+    def test_extends_an_in_progress_booking(self):
+        booking = self._confirmed()
+        Booking.objects.filter(pk=booking.pk).update(
+            status=Booking.Status.IN_PROGRESS
+        )
+        new_end = booking.end_time + timedelta(hours=1)
+        extended = extend_booking(
+            booking_id=booking.pk, user=self.consumer, new_end_time=new_end
+        )
+        self.assertEqual(extended.billed_hours, 3)
+        self.assertEqual(extended.base_amount, Decimal("60.00"))
+
+    def test_refuses_a_pending_booking(self):
+        booking = self._create()  # PENDING_PAYMENT
+        with self.assertRaises(BookingNotExtendableError) as caught:
+            extend_booking(
+                booking_id=booking.pk,
+                user=self.consumer,
+                new_end_time=booking.end_time + timedelta(hours=1),
+            )
+        self.assertEqual(caught.exception.code, "BOOKING_NOT_EXTENDABLE")
+
+    def test_refuses_every_other_state(self):
+        for state in (
+            Booking.Status.COMPLETED,
+            Booking.Status.CANCELLED,
+            Booking.Status.EXPIRED,
+            Booking.Status.TERMINATED,
+        ):
+            with self.subTest(state=state):
+                booking = self._confirmed()
+                Booking.objects.filter(pk=booking.pk).update(status=state)
+                with self.assertRaises(BookingNotExtendableError):
+                    extend_booking(
+                        booking_id=booking.pk,
+                        user=self.consumer,
+                        new_end_time=booking.end_time + timedelta(hours=1),
+                    )
+
+    def test_extension_conflicts_with_the_next_booking(self):
+        booking = self._confirmed()
+        # Adjacent booking: starts exactly when the first ends, so creation is
+        # allowed (half-open windows, D41) -- but it blocks the extension.
+        self._create(start_hours=4, end_hours=6)
+        with self.assertRaises(BookingConflictError):
+            extend_booking(
+                booking_id=booking.pk,
+                user=self.consumer,
+                new_end_time=booking.end_time + timedelta(hours=1),
+            )
+
+    def test_retrying_the_same_extension_is_a_no_op(self):
+        booking = self._confirmed()
+        new_end = booking.end_time + timedelta(hours=1)
+        first = extend_booking(
+            booking_id=booking.pk, user=self.consumer, new_end_time=new_end
+        )
+        second = extend_booking(
+            booking_id=booking.pk, user=self.consumer, new_end_time=new_end
+        )
+        self.assertEqual(second.billed_hours, first.billed_hours)
+        self.assertEqual(second.base_amount, first.base_amount)
+
+    def test_shrinking_is_refused(self):
+        booking = self._confirmed()
+        with self.assertRaises(InvalidExtensionError):
+            extend_booking(
+                booking_id=booking.pk,
+                user=self.consumer,
+                new_end_time=booking.end_time - timedelta(hours=1),
+            )
+
+    def test_refuses_beyond_the_slot_maximum(self):
+        booking = self._confirmed()
+        with self.assertRaises(MaxDurationExceededError):
+            extend_booking(
+                booking_id=booking.pk,
+                user=self.consumer,
+                new_end_time=booking.start_time + timedelta(hours=30),
+            )
+
+    def test_another_consumers_booking_is_not_found(self):
+        booking = self._create(owner=self.other, vehicle=self.other_vehicle)
+        with self.assertRaises(BookingNotFoundError):
+            extend_booking(
+                booking_id=booking.pk,
+                user=self.consumer,
+                new_end_time=booking.end_time + timedelta(hours=1),
+            )
+
+    def test_unknown_booking_is_not_found(self):
+        with self.assertRaises(BookingNotFoundError):
+            extend_booking(
+                booking_id=999999,
+                user=self.consumer,
+                new_end_time=timezone.now() + timedelta(hours=5),
+            )
+
+    def test_a_full_refund_after_extension_uses_the_new_total(self):
+        # The seam only bumps base_amount once the extension is paid, so a later
+        # cancellation refunds what was actually paid (D54/D53).
+        booking = self._confirmed()
+        extend_booking(
+            booking_id=booking.pk,
+            user=self.consumer,
+            new_end_time=booking.end_time + timedelta(hours=1),
+        )
+        cancelled = cancel_booking(booking_id=booking.pk, user=self.consumer)
+        self.assertEqual(cancelled.base_amount, Decimal("60.00"))
+        self.assertEqual(cancelled.refund_due_amount, Decimal("60.00"))
+
+class ExtensionQuoteApiTests(TestCase):
+    """``GET /api/bookings/{id}/extension-quote/`` (increment 4.8, D54)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=cls.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        Tariff.objects.create(
+            lot=cls.lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.other = User.objects.create_user(
+            email="other@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Other",
+        )
+        cls.vehicle = Vehicle.objects.create(
+            owner=cls.consumer, registration_number="KA01AB1234",
+        )
+        BusinessRule.load()
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _confirmed(self, *, owner=None, vehicle=None):
+        owner = owner or self.consumer
+        vehicle = vehicle or self.vehicle
+        now = timezone.now()
+        booking = create_booking(
+            slot_id=self.slot.id,
+            start_time=now + timedelta(hours=2),
+            end_time=now + timedelta(hours=4),
+            user=owner,
+            vehicle=vehicle,
+        )
+        confirm_booking(booking_id=booking.pk)
+        booking.refresh_from_db()
+        return booking
+
+    def _get(self, booking, new_end):
+        return self.client.get(
+            f"/api/bookings/{booking.pk}/extension-quote/",
+            {"end_time": new_end.isoformat()},
+        )
+
+    def test_anonymous_cannot_quote(self):
+        booking = self._confirmed()
+        response = self._get(booking, booking.end_time + timedelta(hours=1))
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_owner_gets_the_quote(self):
+        booking = self._confirmed()
+        self.client.force_authenticate(self.consumer)
+        response = self._get(booking, booking.end_time + timedelta(hours=1))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["added_hours"], 1)
+        self.assertEqual(response.data["extension_amount"], "20.00")
+        self.assertEqual(response.data["new_base_amount"], "60.00")
+
+    def test_another_consumers_booking_is_a_404(self):
+        booking = self._confirmed()
+        self.client.force_authenticate(self.other)
+        response = self._get(booking, booking.end_time + timedelta(hours=1))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data["error"], "BOOKING_NOT_FOUND")
+
+    def test_non_lengthening_end_time_is_a_400(self):
+        booking = self._confirmed()
+        self.client.force_authenticate(self.consumer)
+        response = self._get(booking, booking.end_time)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["error"], "INVALID_EXTENSION")
+
+    def test_manager_cannot_quote(self):
+        booking = self._confirmed()
+        manager = User.objects.create_user(
+            email="manager@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Manager",
+            role=User.Role.MANAGER,
+        )
+        self.client.force_authenticate(manager)
+        response = self._get(booking, booking.end_time + timedelta(hours=1))
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

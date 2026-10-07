@@ -30,8 +30,12 @@ Status as of **2026-10-07**:
   shared slot lock and the endpoint) — increment 4.7, **delivered** (a consumer
   can cancel a pending or confirmed booking; the refund rule is recorded, the
   money movement stays Phase 5).
-- **Open:** nothing blocking 4.1–4.7. Increment **4.8** (extension) will add its
-  own decisions (see "Open questions carried to later increments").
+- **Accepted (4.8, 2026-10-07):** D54 (extension contract: consumer-owned quote,
+  the whole-window price recompute, the slot-locked `extend_booking` seam and the
+  duration-policy re-check) — increment 4.8, **delivered** (a consumer can price
+  an extension; Phase 5 charges it and calls the seam — **no migration**).
+- **Open:** nothing blocking 4.1–4.8. Increment **4.9** (booking history) will
+  add its own decisions (see "Open questions carried to later increments").
 
 > A "Decision" below is the human's, not the agent's. Rationale/Consequence
 > record why, so the choice can be defended later.
@@ -699,6 +703,82 @@ movement stays Phase 5 (§26 boundary).
 
 ---
 
+## D54 — Extension: end-time lengthening, whole-window pricing and the charge seam (accepted 2026-10-07)
+
+Increment 4.8 is the §19/§35 "extension" path and the last piece of the D40
+state machine Phase 4 owns. It lengthens an existing booking's `end_time`. The
+**money movement is Phase 5** (§26 boundary), so Phase 4 exposes a read-only
+quote plus a service seam and performs no charge. This entry settles the 4.8
+worksheet's Q1–Q8.
+
+- **Decision:**
+  - **Q1 — actor: A.** Extension is **Consumer-only** (`IsConsumer`) and the
+    lookup is scoped to the caller's own bookings. A foreign booking id is
+    `BOOKING_NOT_FOUND` (404), never `403` (Invariant 2). A manager/admin
+    override is not part of 4.8.
+  - **Q2 — extensible states: A.** The two "paid, not finished" states —
+    `CONFIRMED` and `IN_PROGRESS` — may be extended. Every other state
+    (`PENDING_PAYMENT`, `COMPLETED`, `CANCELLED`, `EXPIRED`, `TERMINATED`) is
+    refused with the new code `BOOKING_NOT_EXTENDABLE` (409). A
+    `PENDING_PAYMENT` must be paid (or cancelled and rebooked) first; extending
+    an unpaid contract would rewrite a price nobody agreed to.
+  - **Q3 — request shape: A.** The client sends the **new `end_time`** (a later
+    instant), not an hour count, matching the create window's wall-clock shape.
+    It must be strictly after the current `end_time` and in the future, else
+    `INVALID_EXTENSION` (400).
+  - **Q4 — pricing: A (whole-window recompute).** Billing recomputes the whole
+    window, `new_billed = hours_between(start, new_end)`, and the charge is
+    `(new_billed − billed_hours) × hourly_rate` using the D39 snapshot rate. The
+    rounded *slice* is deliberately not used: whole-window recompute keeps
+    `billed_hours == ceil([start, end))` exact (D42) and avoids double-rounding.
+    `base_amount` grows by the difference.
+  - **Q5 — duration policy: A.** The new **total** is re-checked with the shared
+    `validate_duration` (D45), so the booking still satisfies the slot's
+    `min_booking_hours` **and** `max_booking_hours`. Lengthening can only grow
+    the duration, so the minimum can never break; the maximum is the binding cap
+    → `MAX_DURATION_EXCEEDED` (400).
+  - **Q6 — money / seam: A (seam, no apply endpoint).** Phase 4 performs no
+    charge. `services.extend_booking` is an internal **seam**: Phase 5's gateway
+    charges the quote's amount and then calls it, exactly as confirmation (D51)
+    is a seam. `base_amount` is bumped **only** by the seam, so the 4.7 rule
+    "a cancellation refunds the full `base_amount`" stays correct — an unpaid
+    extension can never inflate a refund. A live consumer "apply" endpoint is
+    deliberately **not** added: with no Phase 5 charge it would let a consumer
+    extend for free.
+  - **Q7 — read surface: A.** `GET /api/bookings/{id}/extension-quote/?end_time=…`
+    (`IsConsumer`, own booking) prices the change without writing, so a client
+    can show the cost before paying. It validates the shape and the duration
+    policy, but — like `available_slots` (D46) — it is an **unlocked hint** for
+    conflicts; `extend_booking` re-checks under the slot lock.
+  - **Q8 — concurrency and retry: A.** `extend_booking` takes the same first
+    lock as creation/confirmation/cancellation —
+    `select_for_update(of=("self",))` on the **slot** row (D49/D51/D53) — then
+    re-reads the booking, checks the state, re-prices and re-checks the *added*
+    window `[old_end, new_end)` with `blocking_window_q` (a taken window →
+    `BOOKING_CONFLICT`, 409). A gateway retry that sends the current `end_time`
+    is a no-op success (idempotent).
+- **Rationale:** A is the smallest extension that keeps the project's two
+  guarantees: the price snapshot continues to mean "what was agreed and paid"
+  (so cancellation stays correct), and the one slot-lock mechanism serializes
+  this writer against creation/confirmation (Invariant 1). Reusing
+  `validate_duration` means availability, creation and extension share a single
+  duration rule and cannot drift (the D43/D45 pattern).
+- **Rejected:** incrementally rounding the added slice (breaks the
+  `billed_hours` invariant and can over-charge); a consumer apply endpoint
+  (would apply an unpaid extension and corrupt refunds); storing a separate
+  `extension_amount` column (unnecessary — Phase 5 owns the `Payment` record and
+  `base_amount` is the contract price); extending a `PENDING_PAYMENT` (unpaid
+  contract).
+- **Consequence:** **no schema change, no migration** — `end_time`,
+  `billed_hours` and `base_amount` already exist. The new refusal codes are
+  `BOOKING_NOT_EXTENDABLE` (409) and `INVALID_EXTENSION` (400); `BOOKING_CONFLICT`
+  and `MAX_DURATION_EXCEEDED` are reused. `extend_booking` joins the slot-lock
+  users (D49/D51/D53). `IN_PROGRESS` extension is reachable in tests by setting
+  the status; Phase 6 will produce that state normally.
+- **Status:** Accepted (2026-10-07).
+
+---
+
 ## Increment 4.4 implementation decisions (accepted 2026-10-06)
 
 Recorded while delivering 4.4; they refine D47–D49, D41 and D44, not replace
@@ -1104,6 +1184,86 @@ recommended option.
 
 ---
 
+## 4.8 decision worksheet (resolved 2026-10-07 — kept for the record)
+
+Increment 4.8 is extension. D40 already defines the lengthening of a live
+booking, and the deferred-features note names an "extension charge seam" for
+Phase 5. The questions below were decided with the human; the answers are
+recorded as **D54**. Every question took the recommended option.
+
+### Q1 — Who may extend, and whose bookings?
+
+- **Options:** **A** Consumer-only, scoped to the caller's own bookings;
+  **B** Consumer + the lot's Manager + Admin.
+- **Trade-offs:** A keeps the consumer endpoint free of a manager authority
+  transition; B reopens Invariant 3 and a second actor for no §19 need.
+- **Recommendation/answer:** **A.** A foreign booking id is `404`, not `403`
+  (Invariant 2).
+
+### Q2 — Which states may be extended?
+
+- **Options:** **A** `CONFIRMED` and `IN_PROGRESS` (the paid, unfinished pair);
+  **B** `CONFIRMED` only, deferring `IN_PROGRESS` to Phase 6.
+- **Trade-offs:** A matches the real "I'm parked longer" case and needs one
+  rule; B avoids touching a state Phase 6 writes but leaves the most likely
+  extension unsupported.
+- **Recommendation/answer:** **A.** Everything else is `BOOKING_NOT_EXTENDABLE`
+  (409); a `PENDING_PAYMENT` must be cancelled and rebooked.
+
+### Q3 — Does the client send an end time or an hour count?
+
+- **Options:** **A** the new `end_time` instant; **B** an `extra_hours` integer.
+- **Trade-offs:** A mirrors the create window and supports "until 14:30"; B is
+  simpler but cannot express a wall-clock target and complicates the duration
+  check.
+- **Recommendation/answer:** **A.**
+
+### Q4 — Is the extra priced on the slice or the whole window?
+
+- **Options:** **A** recompute `hours_between(start, new_end)` and charge the
+  difference; **B** round up the added slice alone.
+- **Trade-offs:** A keeps `billed_hours` exactly equal to the whole-window
+  ceiling (D42) and never double-rounds; B can charge more than the whole window
+  would and breaks the stored invariant.
+- **Recommendation/answer:** **A** (whole-window recompute).
+
+### Q5 — How is the duration policy applied?
+
+- **Options:** **A** re-run the shared `validate_duration` on the new total;
+  **B** cap the extension delta separately.
+- **Trade-offs:** A consumes the D45 fields as-is and keeps one definition; B
+  introduces a second duration rule that can drift.
+- **Recommendation/answer:** **A** — the booking must stay within the slot's
+  **min and max**; only the maximum can bite when lengthening.
+
+### Q6 — Where does the money movement live?
+
+- **Options:** **A** seam-only: Phase 5 charges, then calls `extend_booking`,
+  so `base_amount` only reflects paid money; **B** a consumer apply endpoint
+  that extends first and records the amount due.
+- **Trade-offs:** A preserves the confirmation (D51) boundary and keeps
+  cancellation refunds correct; B is user-visible now but lets an unpaid
+  extension inflate a later refund, and Phase 4 has no charge to gate it.
+- **Recommendation/answer:** **A** (no apply endpoint; quote + seam).
+
+### Q7 — How is the extension priced for the client?
+
+- **Options:** **A** a read-only quote endpoint
+  (`.../extension-quote/?end_time=`); **B** no quote — Phase 5 derives it.
+- **Trade-offs:** A lets the UI show the cost before paying and reuses the
+  pricing seam; B hides the price from the client.
+- **Recommendation/answer:** **A.**
+
+### Q8 — How does it lock and retry?
+
+- **Options:** **A** the shared **slot** lock, re-check the added window, and
+  treat a same-`end_time` retry as a no-op; **B** lock the booking row only,
+  which cannot serialize with confirmation.
+- **Recommendation/answer:** **A** — the D49/D51/D53 first lock, plus a
+  `blocking_window_q` re-check of `[old_end, new_end)`.
+
+---
+
 ## Open questions carried to later increments
 
 Each will be surfaced as its own decision when its increment is opened.
@@ -1118,6 +1278,8 @@ Each will be surfaced as its own decision when its increment is opened.
 | Walk-in public `reference`/`ticket_code` (unguessable bearer key) | ✅ done in 4.6 (D52); field stored + exposed |
 | Public reference lookup endpoint (QR/gate, unauthenticated) | walk-in/gate flow (deferred by D52) |
 | Single-booking read `GET /api/bookings/{id}/` | 4.9 |
-| Extension charge seam (Phase 5 payment handoff) | 4.8 |
+| Extension charge seam (Phase 5 payment handoff) | ✅ done in 4.8 (D54): read-only quote + slot-locked `extend_booking` seam, no apply endpoint |
+| Extension payment/charge endpoint (calls `extend_booking` after charging) | Phase 5 |
+| Overstay vs extension boundary (§19 1.5× multiplier) | Phase 6 |
 | Whether `CANCELLED` and `TERMINATED` need distinct refusal messages | ✅ resolved in 4.7 (D53): one `BOOKING_NOT_CANCELLABLE` code; `TERMINATED` is a later phase |
 | `Idempotency-Key` on booking create | Phase 10 (deferred by D49/Q9) |
