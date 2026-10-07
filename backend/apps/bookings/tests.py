@@ -25,13 +25,14 @@ from apps.bookings.references import (
 )
 
 from apps.bookings.services import (
-    BookingConflictError, BookingNotConfirmableError, BookingNotFoundError,
-    InvalidWindowError, LotNotBookableError,
+    BookingConflictError, BookingNotCancellableError, BookingNotConfirmableError,
+    BookingNotFoundError, InvalidWindowError, LotNotBookableError,
     MaxDurationExceededError, MinDurationNotMetError, NoTariffError,
     SlotNotFoundError, SlotUnavailableError, WindowInPastError,
-    available_slots, blocking_window_q, confirm_booking, create_booking,
-    effective_status, expire_stale_holds, hours_between, is_hold_live,
-    quote_booking, validate_duration, validate_window,
+    available_slots, blocking_window_q, cancel_booking, confirm_booking,
+    create_booking, effective_status, expire_stale_holds, hours_between,
+    is_hold_live, quote_booking, refund_due_for, validate_duration,
+    validate_window,
 )
 
 
@@ -1242,3 +1243,317 @@ class ConfirmBookingServiceTests(TestCase):
             confirm_booking(booking_id=booking.pk)
         booking.refresh_from_db()
         self.assertEqual(booking.status, Booking.Status.PENDING_PAYMENT)
+
+class RefundDueTests(TestCase):
+    """The §19 refund rule ``refund_due_for`` (increment 4.7, D53)."""
+
+    def _booking(self, *, status, start_delta):
+        now = timezone.now()
+        return Booking(
+            status=status,
+            base_amount=Decimal("40.00"),
+            start_time=now + start_delta,
+        )
+
+    def test_pending_booking_owes_no_refund(self):
+        now = timezone.now()
+        booking = self._booking(
+            status=Booking.Status.PENDING_PAYMENT, start_delta=timedelta(hours=2)
+        )
+        self.assertEqual(
+            refund_due_for(booking, now=now, cutoff_minutes=30), Decimal("0.00")
+        )
+
+    def test_confirmed_before_the_cutoff_is_fully_refunded(self):
+        now = timezone.now()
+        booking = self._booking(
+            status=Booking.Status.CONFIRMED, start_delta=timedelta(hours=2)
+        )
+        self.assertEqual(
+            refund_due_for(booking, now=now, cutoff_minutes=30), Decimal("40.00")
+        )
+
+    def test_confirmed_exactly_at_the_cutoff_is_refunded(self):
+        # "at least 30 minutes before" includes the boundary: the same ``now``
+        # is used for both the booking and the rule, so this is deterministic.
+        now = timezone.now()
+        booking = Booking(
+            status=Booking.Status.CONFIRMED,
+            base_amount=Decimal("40.00"),
+            start_time=now + timedelta(minutes=30),
+        )
+        self.assertEqual(
+            refund_due_for(booking, now=now, cutoff_minutes=30), Decimal("40.00")
+        )
+
+    def test_confirmed_inside_the_cutoff_is_not_refunded(self):
+        now = timezone.now()
+        booking = Booking(
+            status=Booking.Status.CONFIRMED,
+            base_amount=Decimal("40.00"),
+            start_time=now + timedelta(minutes=29),
+        )
+        self.assertEqual(
+            refund_due_for(booking, now=now, cutoff_minutes=30), Decimal("0.00")
+        )
+
+    def test_confirmed_after_start_is_not_refunded(self):
+        now = timezone.now()
+        booking = Booking(
+            status=Booking.Status.CONFIRMED,
+            base_amount=Decimal("40.00"),
+            start_time=now - timedelta(minutes=5),
+        )
+        self.assertEqual(
+            refund_due_for(booking, now=now, cutoff_minutes=30), Decimal("0.00")
+        )
+
+class CancelBookingServiceTests(TestCase):
+    """``cancel_booking`` (increment 4.7, D53 and §19)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=cls.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        Tariff.objects.create(
+            lot=cls.lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.other = User.objects.create_user(
+            email="other@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Other",
+        )
+        cls.vehicle = Vehicle.objects.create(
+            owner=cls.consumer, registration_number="KA01AB1234",
+        )
+        cls.other_vehicle = Vehicle.objects.create(
+            owner=cls.other, registration_number="KA05XY9999",
+        )
+        BusinessRule.load()
+
+    def _window(self, start_hours=2, end_hours=4):
+        now = timezone.now()
+        return now + timedelta(hours=start_hours), now + timedelta(hours=end_hours)
+
+    def _create(self, *, owner=None, vehicle=None, start_hours=2, end_hours=4):
+        owner = owner or self.consumer
+        vehicle = vehicle or self.vehicle
+        start, end = self._window(start_hours, end_hours)
+        return create_booking(
+            slot_id=self.slot.id,
+            start_time=start,
+            end_time=end,
+            user=owner,
+            vehicle=vehicle,
+        )
+
+    def test_cancel_pending_sets_cancelled_and_frees_the_slot(self):
+        booking = self._create()
+        cancelled = cancel_booking(booking_id=booking.pk, user=self.consumer)
+        self.assertEqual(cancelled.status, Booking.Status.CANCELLED)
+        self.assertIsNotNone(cancelled.cancelled_at)
+        self.assertEqual(cancelled.cancelled_by, self.consumer)
+        self.assertEqual(cancelled.refund_due_amount, Decimal("0.00"))
+        # The slot is usable again: cancellation removes the blocking booking.
+        again = self._create()
+        self.assertEqual(again.status, Booking.Status.PENDING_PAYMENT)
+
+    def test_cancel_lapsed_pending_is_allowed_with_no_refund(self):
+        # 4.5 reported a lapsed hold as EXPIRED; 4.7 owns the actual release, so
+        # the owner may still cancel it and free the slot. No payment, no refund.
+        booking = self._create()
+        Booking.objects.filter(pk=booking.pk).update(
+            hold_expires_at=timezone.now() - timedelta(minutes=1)
+        )
+        cancelled = cancel_booking(booking_id=booking.pk, user=self.consumer)
+        self.assertEqual(cancelled.status, Booking.Status.CANCELLED)
+        self.assertEqual(cancelled.refund_due_amount, Decimal("0.00"))
+
+    def test_cancel_confirmed_before_cutoff_refunds_the_base_amount(self):
+        booking = self._create()
+        confirm_booking(booking_id=booking.pk)
+        cancelled = cancel_booking(booking_id=booking.pk, user=self.consumer)
+        self.assertEqual(cancelled.status, Booking.Status.CANCELLED)
+        self.assertEqual(cancelled.refund_due_amount, Decimal("40.00"))
+
+    def test_cancel_confirmed_inside_cutoff_is_not_refunded(self):
+        booking = self._create()
+        confirm_booking(booking_id=booking.pk)
+        Booking.objects.filter(pk=booking.pk).update(
+            start_time=timezone.now() + timedelta(minutes=10)
+        )
+        cancelled = cancel_booking(booking_id=booking.pk, user=self.consumer)
+        self.assertEqual(cancelled.refund_due_amount, Decimal("0.00"))
+
+    def test_cutoff_comes_from_the_business_rule(self):
+        BusinessRule.objects.filter(pk=1).update(cancellation_cutoff_minutes=240)
+        booking = self._create()  # 2 hours away
+        confirm_booking(booking_id=booking.pk)
+        cancelled = cancel_booking(booking_id=booking.pk, user=self.consumer)
+        self.assertEqual(cancelled.refund_due_amount, Decimal("0.00"))
+
+    def test_in_progress_booking_is_refused(self):
+        booking = self._create()
+        Booking.objects.filter(pk=booking.pk).update(
+            status=Booking.Status.IN_PROGRESS
+        )
+        with self.assertRaises(BookingNotCancellableError) as caught:
+            cancel_booking(booking_id=booking.pk, user=self.consumer)
+        self.assertEqual(caught.exception.code, "BOOKING_NOT_CANCELLABLE")
+
+    def test_completed_booking_is_refused(self):
+        booking = self._create()
+        Booking.objects.filter(pk=booking.pk).update(status=Booking.Status.COMPLETED)
+        with self.assertRaises(BookingNotCancellableError):
+            cancel_booking(booking_id=booking.pk, user=self.consumer)
+
+    def test_repeat_cancel_is_idempotent(self):
+        booking = self._create()
+        first = cancel_booking(booking_id=booking.pk, user=self.consumer)
+        second = cancel_booking(booking_id=booking.pk, user=self.consumer)
+        self.assertEqual(second.pk, first.pk)
+        self.assertEqual(second.status, Booking.Status.CANCELLED)
+        self.assertEqual(second.cancelled_at, first.cancelled_at)
+
+    def test_another_consumers_booking_is_not_found(self):
+        booking = self._create(owner=self.other, vehicle=self.other_vehicle)
+        with self.assertRaises(BookingNotFoundError):
+            cancel_booking(booking_id=booking.pk, user=self.consumer)
+
+    def test_unknown_booking_is_not_found(self):
+        with self.assertRaises(BookingNotFoundError):
+            cancel_booking(booking_id=999999, user=self.consumer)
+
+class CancelBookingApiTests(TestCase):
+    """``POST /api/bookings/{id}/cancel/`` (increment 4.7, D53)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=cls.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        Tariff.objects.create(
+            lot=cls.lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.other = User.objects.create_user(
+            email="other@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Other",
+        )
+        cls.vehicle = Vehicle.objects.create(
+            owner=cls.consumer, registration_number="KA01AB1234",
+        )
+        cls.other_vehicle = Vehicle.objects.create(
+            owner=cls.other, registration_number="KA05XY9999",
+        )
+        BusinessRule.load()
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _create(self, *, owner=None, vehicle=None, start_hours=2, end_hours=4):
+        owner = owner or self.consumer
+        vehicle = vehicle or self.vehicle
+        now = timezone.now()
+        return create_booking(
+            slot_id=self.slot.id,
+            start_time=now + timedelta(hours=start_hours),
+            end_time=now + timedelta(hours=end_hours),
+            user=owner,
+            vehicle=vehicle,
+        )
+
+    def _url(self, booking):
+        return f"/api/bookings/{booking.pk}/cancel/"
+
+    def test_anonymous_cannot_cancel(self):
+        booking = self._create()
+        response = self.client.post(self._url(booking))
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_consumer_cancels_own_pending_booking(self):
+        booking = self._create()
+        self.client.force_authenticate(self.consumer)
+        response = self.client.post(self._url(booking))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], Booking.Status.CANCELLED)
+        self.assertEqual(response.data["refund_due_amount"], "0.00")
+        self.assertIsNotNone(response.data["cancelled_at"])
+
+    def test_cancel_confirmed_returns_the_refund_due(self):
+        booking = self._create()
+        confirm_booking(booking_id=booking.pk)
+        self.client.force_authenticate(self.consumer)
+        response = self.client.post(self._url(booking))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], Booking.Status.CANCELLED)
+        self.assertEqual(response.data["refund_due_amount"], "40.00")
+
+    def test_another_consumers_booking_is_a_404(self):
+        booking = self._create(owner=self.other, vehicle=self.other_vehicle)
+        self.client.force_authenticate(self.consumer)
+        response = self.client.post(self._url(booking))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data["error"], "BOOKING_NOT_FOUND")
+
+    def test_non_cancellable_state_is_a_409(self):
+        booking = self._create()
+        Booking.objects.filter(pk=booking.pk).update(
+            status=Booking.Status.IN_PROGRESS
+        )
+        self.client.force_authenticate(self.consumer)
+        response = self.client.post(self._url(booking))
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["error"], "BOOKING_NOT_CANCELLABLE")
+
+    def test_repeat_cancel_is_idempotent(self):
+        booking = self._create()
+        self.client.force_authenticate(self.consumer)
+        first = self.client.post(self._url(booking))
+        second = self.client.post(self._url(booking))
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.data["status"], Booking.Status.CANCELLED)
+
+    def test_manager_cannot_cancel(self):
+        booking = self._create()
+        manager = User.objects.create_user(
+            email="manager@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Manager",
+            role=User.Role.MANAGER,
+        )
+        self.client.force_authenticate(manager)
+        response = self.client.post(self._url(booking))
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_unknown_booking_is_a_404(self):
+        self.client.force_authenticate(self.consumer)
+        response = self.client.post("/api/bookings/999999/cancel/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data["error"], "BOOKING_NOT_FOUND")

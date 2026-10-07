@@ -1279,3 +1279,46 @@ class HoldMinutesRuleTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["hold_minutes"], 10)
         self.assertEqual(BusinessRule.load().hold_minutes, 10)
+
+class CancellationCutoffRuleTests(TestCase):
+    """§19/D53: the refund cutoff is part of the BusinessRule singleton (4.7)."""
+
+    def setUp(self):
+        BusinessRule.objects.all().delete()
+        self.admin = User.objects.create_user(
+            email="admin@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Admin",
+            role=User.Role.ADMIN,
+        )
+        self.client = APIClient()
+
+    def test_default_is_thirty_minutes(self):
+        self.assertEqual(BusinessRule.load().cancellation_cutoff_minutes, 30)
+
+    def test_rule_read_exposes_the_cutoff(self):
+        response = self.client.get("/api/business-rules/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["cancellation_cutoff_minutes"], 30)
+
+    def test_admin_can_update_cutoff(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(
+            "/api/business-rules/", {"cancellation_cutoff_minutes": 60}, format="json"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["cancellation_cutoff_minutes"], 60)
+        self.assertEqual(BusinessRule.load().cancellation_cutoff_minutes, 60)
+
+    def test_non_admin_cannot_update_cutoff(self):
+        consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        self.client.force_authenticate(consumer)
+        response = self.client.patch(
+            "/api/business-rules/", {"cancellation_cutoff_minutes": 60}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(BusinessRule.load().cancellation_cutoff_minutes, 30)

@@ -388,6 +388,7 @@ class BusinessRuleView(APIView):
                 max_hourly_rate=serializer.validated_data.get("max_hourly_rate"),
                 max_booking_hours=serializer.validated_data.get("max_booking_hours"),
                 hold_minutes = serializer.validated_data.get("hold_minutes"),
+                cancellation_cutoff_minutes=serializer.validated_data.get("cancellation_cutoff_minutes"),
             )
         except MaxRateBelowTariffError as exc:
             return Response(

@@ -318,6 +318,15 @@ class BusinessRule(models.Model):
         help_text="Minutes a PENDING_PAYMENT booking holds its slot (PROJECT.md §19).",
     )
 
+    # D53/§19: how long before a booking's start a cancellation still earns a
+    # full refund. Introduced in 4.7. Phase 4 owns the refund *rule*; Phase 5's
+    # payment gateway performs the money movement (see the Phase 5 boundary).
+    cancellation_cutoff_minutes = models.PositiveIntegerField(
+        default=30,
+        validators=[MinValueValidator(1)],
+        help_text="Minutes before start time within which cancellation is non-refundable (PROJECT.md §19).",
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -335,6 +344,10 @@ class BusinessRule(models.Model):
             models.CheckConstraint(
                 condition=models.Q(hold_minutes__gt=0),
                 name="business_rule_hold_minutes_positive",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(cancellation_cutoff_minutes__gt=0),
+                name="business_rule_cancellation_cutoff_positive",
             )
         ]
 

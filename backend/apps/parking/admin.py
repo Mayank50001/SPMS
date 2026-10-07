@@ -30,7 +30,7 @@ class TariffAdmin(admin.ModelAdmin):
 
 @admin.register(BusinessRule)
 class BusinessRuleAdmin(admin.ModelAdmin):
-    list_display = ("id", "max_hourly_rate", "max_booking_hours", "updated_at")
+    list_display = ("id", "max_hourly_rate", "max_booking_hours", "hold_minutes", "cancellation_cutoff_minutes", "updated_at")
 
 
     

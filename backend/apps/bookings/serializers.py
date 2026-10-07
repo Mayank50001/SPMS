@@ -54,7 +54,9 @@ class BookingSerializer(serializers.ModelSerializer):
             "billed_hours",
             "hourly_rate",
             "base_amount",
+            "refund_due_amount",
             "hold_expires_at",
+            "cancelled_at",
             "created_at",
             "updated_at",
         ]

@@ -1,6 +1,6 @@
 # Phase 4 decisions — Booking
 
-Status as of **2026-10-06**:
+Status as of **2026-10-07**:
 
 - **Accepted:** D39 (persistence, relationships, snapshot — **revised in 4.2**,
   see below), D40 (state model), D41 (conflict window and concurrency) —
@@ -25,8 +25,13 @@ Status as of **2026-10-06**:
   public, unguessable booking `reference`) — increment 4.6, **delivered** (a
   Phase 5 gateway can confirm a live booking; every booking now carries a
   receipts/QR code).
-- **Open:** nothing blocking 4.1–4.6. Increment **4.7** (cancellation) will add
-  its own decisions (see "Open questions carried to later increments").
+- **Accepted (4.7, 2026-10-07):** D53 (cancellation contract: consumer-owned
+  cancel, the §19 refund cutoff, the stored `refund_due_amount` snapshot, the
+  shared slot lock and the endpoint) — increment 4.7, **delivered** (a consumer
+  can cancel a pending or confirmed booking; the refund rule is recorded, the
+  money movement stays Phase 5).
+- **Open:** nothing blocking 4.1–4.7. Increment **4.8** (extension) will add its
+  own decisions (see "Open questions carried to later increments").
 
 > A "Decision" below is the human's, not the agent's. Rationale/Consequence
 > record why, so the choice can be defended later.
@@ -628,6 +633,72 @@ this entry settles its scope, format and exposure.
 
 ---
 
+## D53 — Cancellation: the refund cutoff and the cancellation transition (accepted 2026-10-07)
+
+Increment 4.7 is the §19 "change of mind" path. D40 already defines the
+`PENDING_PAYMENT → CANCELLED` and `CONFIRMED → CANCELLED` transitions and D50/Q3
+deferred the consumer's early release of a pending booking to here. This entry
+settles the worksheet's Q1–Q7. Phase 4 owns the refund **rule**; the money
+movement stays Phase 5 (§26 boundary).
+
+- **Decision:**
+  - **Q1 — actor: A.** `POST /api/bookings/{id}/cancel/` is **Consumer-only**
+    (`IsConsumer`), and the lookup is scoped to the caller's own bookings. A
+    manager/admin removing a booking is the separate `TERMINATED` transition,
+    owned by a later phase; D40 already keeps the two states distinct.
+  - **Q2 — cancellable states: A.** A `PENDING_PAYMENT` booking (including one
+    whose hold has lapsed) and a `CONFIRMED` booking may be cancelled. Every
+    other state — `IN_PROGRESS`, `COMPLETED`, `EXPIRED`, `TERMINATED` — is
+    refused with the new **code** `BOOKING_NOT_CANCELLABLE` (409). A foreign
+    booking id is `BOOKING_NOT_FOUND` (404), never `403` (Invariant 2).
+  - **Q3 — cut-off and refund rule: A.** Only a `CONFIRMED` (paid) booking can
+    owe a refund; a `PENDING_PAYMENT` cancellation owes nothing (no payment was
+    taken), including a lapsed hold. A confirmed booking cancelled at or before
+    `start_time − BusinessRule.cancellation_cutoff_minutes` earns the full
+    `base_amount`; later than that, nothing. The cutoff lives on the existing
+    `BusinessRule` singleton (default **30**, positive check), the duration twin
+    of `hold_minutes` (D47/Q3).
+  - **Q4 — storage: A (snapshot).** The refund is computed once, at
+    cancellation, by `services.refund_due_for` and **stored** on the booking as
+    `refund_due_amount` `Decimal(12,2)` default `0.00` (non-negative check).
+    Rationale: the booking is a contract at an agreed price (D39's
+    `base_amount`); storing the refund means a later cutoff change cannot
+    retroactively rewrite a cancelled booking, and Phase 5 reads one value
+    rather than re-deriving the rule.
+  - **Q5 — concurrency: A.** `cancel_booking` locks the **slot** row first, the
+    same first lock as `create_booking` (D49) and `confirm_booking` (D51). It
+    needs no window re-check, but the shared lock is what serializes a cancel
+    against the confirming payment on the same booking: locking only the booking
+    row would let a payment-success and a cancel both commit, losing one write.
+    The service also stamps `cancelled_at` / `cancelled_by` from the request.
+  - **Q6 — repeat cancel: A (idempotent).** Cancelling an already-`CANCELLED`
+    booking returns it unchanged, matching confirmation's retry-safe contract
+    (D51/Q2).
+  - **Q7 — surface and refusal map: A.** `POST /api/bookings/{id}/cancel/`
+    returns `200` with the booking as `CANCELLED`; the read serializer gains
+    `refund_due_amount` and `cancelled_at`. `BOOKING_NOT_FOUND` → `404`,
+    `BOOKING_NOT_CANCELLABLE` → `409`, both in the §33
+    `{"error": "CODE", "message": ...}` shape. `BusinessRule`'s
+    `cancellation_cutoff_minutes` is exposed at `/api/business-rules/` and is
+    Administrator-only to change.
+- **Rationale:** A is the smallest complete §19 cancellation. Consumer-only
+  keeps `TERMINATED` (a manager/admin authority) from leaking into a consumer
+  endpoint; refusing started/finished bookings keeps cancellation distinct from
+  Phase 6 check-out. Storing the refund follows the snapshot rule the project
+  already applies to price, and the shared slot lock reuses the one concurrency
+  mechanism rather than adding a second (D3/D41). Idempotency makes a
+  double-submitted cancel harmless.
+- **Rejected:** deriving the refund from `cancelled_at` at read time (a later
+  cutoff change rewrites history); cancelling `IN_PROGRESS` (that is Phase 6
+  completion/termination); and moving money in Phase 4 (the §26 boundary).
+- **Consequence:** `refund_due_amount` and the cutoff column are non-null with
+  defaults, so **no backfill**; `cancel_booking` joins `create_booking` and
+  `confirm_booking` as the slot-lock users. A deterministic cancel-vs-confirm
+  concurrency test is a Phase 10 hardening candidate (the lock is the argument).
+- **Status:** Accepted (2026-10-07).
+
+---
+
 ## Increment 4.4 implementation decisions (accepted 2026-10-06)
 
 Recorded while delivering 4.4; they refine D47–D49, D41 and D44, not replace
@@ -960,6 +1031,79 @@ recommended option.
 
 ---
 
+## 4.7 decision worksheet (resolved 2026-10-07 — kept for the record)
+
+Increment 4.7 is cancellation. D40 already defines
+`PENDING_PAYMENT/CONFIRMED → CANCELLED` and D50/Q3 deferred the consumer's
+early release of a pending booking to here. The questions below were decided
+with the human; the answers are recorded as **D53**. Every question took the
+recommended option.
+
+### Q1 — Who may cancel, and whose bookings?
+
+- **Options:** **A** Consumer-only, scoped to the caller's own bookings (a
+  manager/admin removal is the separate `TERMINATED` transition, later);
+  **B** Consumer + the lot's Manager + Admin now.
+- **Trade-offs:** A keeps the consumer endpoint from exposing an authority
+  transition Phase 4 does not own; B closes the manager-removal case early but
+  drags in Invariant 3 and a second actor's semantics.
+- **Recommendation/answer:** **A.** A foreign booking id is `404`, not `403`
+  (Invariant 2).
+
+### Q2 — Which states may be cancelled?
+
+- **Options:** **A** `PENDING_PAYMENT` (incl. a lapsed hold) and `CONFIRMED`;
+  **B** also `IN_PROGRESS`.
+- **Trade-offs:** A matches §17's machine and keeps cancellation distinct from
+  Phase 6 check-out; B blurs "change of mind" with "end the stay".
+- **Recommendation/answer:** **A.** Everything else is
+  `BOOKING_NOT_CANCELLABLE` (409).
+
+### Q3 — What is the refund rule, and where is the cutoff?
+
+- **Options:** **A** only a paid (`CONFIRMED`) booking owes a refund: the full
+  `base_amount` when cancelled at or before `start_time − cutoff`, else `0.00`;
+  the cutoff is a `BusinessRule` field (default 30); **B** refund a fixed
+  percentage; **C** hard-code the 30 in the service.
+- **Recommendation/answer:** **A** — the §19 rule verbatim, with the cutoff
+  configurable like `hold_minutes`.
+
+### Q4 — Is the refund derived or stored?
+
+- **Options:** **A** store `refund_due_amount` at cancellation (a snapshot,
+  like `base_amount`); **B** re-derive from `cancelled_at` on each read.
+- **Trade-offs:** A means a later cutoff change cannot rewrite history and
+  Phase 5 reads one value; B is less storage but a rule change retroactively
+  alters cancelled bookings.
+- **Recommendation/answer:** **A.**
+
+### Q5 — How does cancellation serialize with confirmation?
+
+- **Options:** **A** take the same **slot** row lock as creation/confirmation
+  first; **B** lock the booking row; **C** no lock.
+- **Trade-offs:** A is the one mechanism already in the codebase and stops a
+  payment-success and a cancel both committing; B is insufficient because
+  confirmation does not lock the booking row; C can produce a lost update on
+  the same booking.
+- **Recommendation/answer:** **A.**
+
+### Q6 — Is a repeat cancel an error?
+
+- **Options:** **A** idempotent success (return the cancelled booking);
+  **B** `409` on an already-cancelled booking.
+- **Recommendation/answer:** **A**, matching confirmation's retry-safe contract
+  (D51/Q2).
+
+### Q7 — What is the API surface and refusal map?
+
+- **Options:** **A** `POST /api/bookings/{id}/cancel/` → `200` (booking as
+  `CANCELLED`); `BOOKING_NOT_FOUND` → `404`, `BOOKING_NOT_CANCELLABLE` → `409`;
+  expose `refund_due_amount`/`cancelled_at`; **B** a `PATCH status` write.
+- **Recommendation/answer:** **A** — a named action sub-resource, as §22 and
+  the existing `.../availability/` precedent use.
+
+---
+
 ## Open questions carried to later increments
 
 Each will be surfaced as its own decision when its increment is opened.
@@ -967,13 +1111,13 @@ Each will be surfaced as its own decision when its increment is opened.
 | Question | Lands in |
 |----------|----------|
 | `BusinessRule.hold_minutes` (temporary hold length, §19 default 5) | ✅ done in 4.4 (D47/Q3) |
-| Remaining temporary-hold semantics (effective expiry reads, early release) | ✅ done in 4.5 (D50); early release deferred to 4.7 |
-| `BusinessRule.cancellation_cutoff_minutes` (§19 default 30) | 4.7 |
+| Remaining temporary-hold semantics (effective expiry reads, early release) | ✅ done in 4.5 (D50) and 4.7 (D53); release is cancellation |
+| `BusinessRule.cancellation_cutoff_minutes` (§19 default 30) | ✅ done in 4.7 (D53) |
 | `BusinessRule.overstay_multiplier` (§19 default 1.5) | Phase 6 |
 | Confirmation seam in Phase 4 vs deferring to Phase 5's gateway | ✅ done in 4.6 (D51) |
 | Walk-in public `reference`/`ticket_code` (unguessable bearer key) | ✅ done in 4.6 (D52); field stored + exposed |
 | Public reference lookup endpoint (QR/gate, unauthenticated) | walk-in/gate flow (deferred by D52) |
 | Single-booking read `GET /api/bookings/{id}/` | 4.9 |
 | Extension charge seam (Phase 5 payment handoff) | 4.8 |
-| Whether `CANCELLED` and `TERMINATED` need distinct refusal messages | 4.7 |
+| Whether `CANCELLED` and `TERMINATED` need distinct refusal messages | ✅ resolved in 4.7 (D53): one `BOOKING_NOT_CANCELLABLE` code; `TERMINATED` is a later phase |
 | `Idempotency-Key` on booking create | Phase 10 (deferred by D49/Q9) |

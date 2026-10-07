@@ -13,7 +13,7 @@ from apps.accounts.permissions import IsConsumer
 
 from .models import Booking
 from .serializers import BookingCreateSerializer, BookingSerializer
-from .services import BookingRuleError, create_booking
+from .services import BookingRuleError, cancel_booking, create_booking
 
 #: Stable refusal code -> HTTP status (Q10). Shape/client errors are 400,
 #: state/config conflicts are 409, an unaddressable target is 404.
@@ -27,6 +27,8 @@ REFUSAL_STATUS = {
     "SLOT_UNAVAILABLE": status.HTTP_409_CONFLICT,
     "BOOKING_CONFLICT": status.HTTP_409_CONFLICT,
     "NO_TARIFF": status.HTTP_409_CONFLICT,
+    "BOOKING_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+    "BOOKING_NOT_CANCELLABLE": status.HTTP_409_CONFLICT,
 }
 
 class BookingListCreateView(generics.ListCreateAPIView):
@@ -76,5 +78,31 @@ class BookingListCreateView(generics.ListCreateAPIView):
         return Response(
             BookingSerializer(booking).data, status=status.HTTP_201_CREATED
         )
+
+class BookingCancelView(generics.GenericAPIView):
+    """Cancel the caller's own booking (increment 4.7, D53).
+
+    ``POST /api/bookings/{id}/cancel/`` -> the booking as ``CANCELLED``, with
+    any refund the §19 cutoff entitles the consumer to stored on it. No money
+    moves here; Phase 5's gateway reads ``refund_due_amount``.
+
+    Only a Consumer may call it, and the service scopes the lookup to the
+    caller, so another consumer's booking is a 404 (Invariant 2). The service
+    owns the state check and maps to ``BOOKING_NOT_CANCELLABLE`` (409) for a
+    booking that is already in progress/complete/expired/terminated.
+    """
+
+    permission_classes = [IsConsumer]
+    serializer_class = BookingSerializer
+
+    def post(self, request, *args, **kwargs):
+        try:
+            booking = cancel_booking(booking_id=kwargs["pk"], user=request.user)
+        except BookingRuleError as exc:
+            return Response(
+                {"error": exc.code, "message": str(exc)},
+                status=REFUSAL_STATUS.get(exc.code, status.HTTP_400_BAD_REQUEST),
+            )
+        return Response(BookingSerializer(booking).data)
 
 

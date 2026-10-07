@@ -21,9 +21,11 @@ predicate, lazy hold expiry, the stored **`base_amount`** snapshot — D39 revis
 time-window availability query, D46), **4.4** (booking creation — the first write
 path — with the D3/D41 slot-locked concurrency guard, D47–D49), **4.5**
 (effective status for a lapsed hold: a read-only, computed `effective_status`,
-D50) and **4.6** (the confirmation seam for Phase 5's payment gateway, and a
-random, unguessable public `reference` on every booking — D51/D52); its lifecycle
-lands increment by increment, next **4.7**, cancellation. The authoritative
+D50), **4.6** (the confirmation seam for Phase 5's payment gateway, and a
+random, unguessable public `reference` on every booking — D51/D52) and **4.7**
+(cancellation: the §19 refund cutoff, the stored `refund_due_amount` snapshot
+and `POST /api/bookings/{id}/cancel/` — D53); its lifecycle lands increment by
+increment, next **4.8**, extension. The authoritative
 specification is [`PROJECT.md`](PROJECT.md). Documentation is split per phase —
 start at [`docs/README.md`](docs/README.md), the navigation entry point, phase
 tracker and reading protocol.
@@ -190,10 +192,11 @@ npm run build
 | GET    | `/api/parking-lots/{lot}/tariffs/{id}/` | Public | Retrieve a tariff |
 | PATCH  | `/api/parking-lots/{lot}/tariffs/{id}/` | Admin/Manager | Edit a tariff |
 | GET    | `/api/business-rules/` | Public     | The max-hourly-rate singleton    |
-| PATCH  | `/api/business-rules/` | Admin      | Change the max hourly rate / max booking hours |
+| PATCH  | `/api/business-rules/` | Admin      | Change the rate/duration ceilings, hold length or refund cutoff |
 | GET    | `/api/parking-lots/{lot}/availability/` | Public | Slots bookable for `?start=&end=` (4.3) |
 | GET    | `/api/bookings/`       | Consumer   | List the caller's own bookings (4.4) |
 | POST   | `/api/bookings/`       | Consumer   | Create a booking (4.4) |
+| POST   | `/api/bookings/{id}/cancel/` | Consumer | Cancel an own booking, recording the refund due (4.7) |
 
 > Authorisation is enforced server-side on every request (D15, D18). `Admin`
 > above means the authenticated account's `role` must be `ADMIN`; a `403` is
@@ -466,3 +469,40 @@ live pending booking, is idempotent if called twice, and takes the same per-slot
 lock as creation; a late or cancelled booking is refused with
 `BOOKING_NOT_CONFIRMABLE` (409), and a window meanwhile taken refuses with
 `BOOKING_CONFLICT` (409).
+
+### Cancellation (Phase 4, increment 4.7)
+
+A Consumer cancels one of their own bookings, which frees the slot immediately
+and records the refund the §19 cutoff entitles them to. Phase 4 decides the
+refund and stores it; **no money moves** — Phase 5's gateway reads
+`refund_due_amount`.
+
+```text
+POST /api/bookings/1/cancel/
+```
+
+Response `200` (excerpt):
+
+```json
+{
+  "id": 1,
+  "status": "CANCELLED",
+  "refund_due_amount": "40.00",
+  "cancelled_at": "2026-10-06T09:40:00Z"
+}
+```
+
+A `PENDING_PAYMENT` (including a lapsed hold) and a `CONFIRMED` booking may be
+cancelled; both record `refund_due_amount` at cancellation time. Only a paid
+(`CONFIRMED`) booking can owe a refund: the full `base_amount` when cancelled at
+least `BusinessRule.cancellation_cutoff_minutes` (default **30**) before the
+start, otherwise `0.00`. The value is a **stored snapshot** (D53), so changing
+the cutoff later cannot rewrite a booking already cancelled. Re-cancelling an
+already-`CANCELLED` booking is an idempotent success. A booking in progress,
+completed, expired or terminated is refused with
+`409 {"error": "BOOKING_NOT_CANCELLABLE"}`; another consumer's booking is a
+`404 BOOKING_NOT_FOUND`, never a `403` (Invariant 2). Cancellation takes the
+same per-slot lock as creation and confirmation (D49/D51), so a cancel cannot
+race the payment-success that confirms the same booking. `BusinessRule`'s
+`cancellation_cutoff_minutes` is exposed at `/api/business-rules/` and is
+Administrator-only to change.

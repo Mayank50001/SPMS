@@ -95,6 +95,17 @@ class BookingNotConfirmableError(BookingRuleError):
 
     code = "BOOKING_NOT_CONFIRMABLE"
 
+class BookingNotCancellableError(BookingRuleError):
+    """The booking is past the point where a consumer may cancel it (D53).
+
+    A consumer may cancel only a ``PENDING_PAYMENT`` or ``CONFIRMED`` booking
+    (PROJECT.md §17). A booking that has started, been completed, expired or
+    terminated is not cancellable here -- manager/admin removal is the separate
+    ``TERMINATED`` transition, owned by a later phase.
+    """
+
+    code = "BOOKING_NOT_CANCELLABLE"
+
 class BookingQuote(NamedTuple):
     """The priced result of a window, ready to snapshot onto a ``Booking``."""
 
@@ -402,4 +413,87 @@ def confirm_booking(*, booking_id, now=None):
     booking.hold_expires_at = None
     booking.updated_at = now
     booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
+    return booking
+
+def refund_due_for(booking, *, now, cutoff_minutes):
+    """The amount refundable if ``booking`` is cancelled at ``now`` (§19, D53).
+
+    Only a ``CONFIRMED`` booking has been paid, so only it can owe a refund. A
+    cancellation at or before ``start_time - cutoff_minutes`` earns the full
+    ``base_amount``; later than that, nothing. The result is computed here and
+    snapshotted onto the booking by :func:`cancel_booking`, so a later change to
+    the cutoff cannot rewrite an already-cancelled booking.
+    """
+    if booking.status != Booking.Status.CONFIRMED:
+        return Decimal("0.00")
+    if now <= booking.start_time - timedelta(minutes=cutoff_minutes):
+        return booking.base_amount
+    return Decimal("0.00")
+
+@transaction.atomic
+def cancel_booking(*, booking_id, user, now=None):
+    """Cancel the caller's own booking and record any refund due (4.7, D53).
+
+    A consumer may cancel a ``PENDING_PAYMENT`` (early release of the §18 hold)
+    or a ``CONFIRMED`` booking; both free the slot immediately. The refund is
+    decided by the §19 cutoff and **stored**, but no money moves -- Phase 5's
+    gateway reads ``refund_due_amount`` (the Phase 4/5 boundary).
+
+    Concurrency: the **slot** row is locked first, mirroring
+    :func:`create_booking` and :func:`confirm_booking` (D49/D51). Cancellation
+    needs no window check, but it must serialize with confirmation, which locks
+    the slot and then writes the booking. Locking only the booking row would let
+    a payment-success and a cancel both commit, losing one of the two writes.
+    Same first lock, same order, no race.
+
+    Ownership is part of the lookup: another consumer's booking is simply not
+    found (Invariant 2). Cancelling an already-``CANCELLED`` booking returns it
+    unchanged -- idempotent, like confirmation -- so a retry is safe.
+    """
+    now = now or timezone.now()
+
+    # Scope the lookup to the caller so a foreign id is BOOKING_NOT_FOUND, not a
+    # leak. The unlocked read only finds the slot to lock, as in confirmation.
+    slot_id = (
+        Booking.objects.filter(pk=booking_id, user=user)
+        .values_list("slot_id", flat=True)
+        .first()
+    )
+    if slot_id is None:
+        raise BookingNotFoundError("No booking with this id exists.")
+
+    # D49/D51: the same first lock creation and confirmation take. D39 makes
+    # ``Booking.slot`` PROTECT, so the locked slot always exists.
+    ParkingSlot.objects.select_for_update(of=("self",)).filter(pk=slot_id).first()
+
+    booking = Booking.objects.get(pk=booking_id)
+
+    if booking.status == Booking.Status.CANCELLED:
+        return booking
+
+    if booking.status not in (
+        Booking.Status.PENDING_PAYMENT,
+        Booking.Status.CONFIRMED,
+    ):
+        raise BookingNotCancellableError(
+            f"A {booking.status} booking cannot be cancelled."
+        )
+
+    cutoff_minutes = BusinessRule.load().cancellation_cutoff_minutes
+    booking.refund_due_amount = refund_due_for(
+        booking, now=now, cutoff_minutes=cutoff_minutes
+    )
+    booking.status = Booking.Status.CANCELLED
+    booking.cancelled_at = now
+    booking.cancelled_by = user
+    booking.updated_at = now
+    booking.save(
+        update_fields=[
+            "status",
+            "cancelled_at",
+            "cancelled_by",
+            "refund_due_amount",
+            "updated_at",
+        ]
+    )
     return booking

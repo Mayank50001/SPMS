@@ -9,7 +9,7 @@
 > Phase 3 context (parking catalogue, slots, tariffs): 
 > [`../phase-3-parking/PROGRESS.md`](../phase-3-parking/PROGRESS.md).
 
-Last updated: 2026-10-06 · **Increments 4.1–4.6 are complete; 4.7 is next.**
+Last updated: 2026-10-07 · **Increments 4.1–4.7 are complete; 4.8 is next.**
 4.1 delivered the `Booking` model + state enum (D39–D41). 4.2 delivered the
 booking rule layer whole: the tariff quote (`quote_booking`, the single pricing
 seam), the D41 conflict predicate, lazy hold expiry, the **stored `base_amount`
@@ -27,8 +27,12 @@ as `EXPIRED` with no write, so a GET never shows a dead hold as live (no schema
 change). 4.6 delivered the **confirmation seam** (D51) and the public
 **`reference`** (D52): a slot-locked, idempotent `confirm_booking` that Phase 5's
 gateway calls, plus a random unguessable receipt/QR code on every booking.
-**Next: 4.7, cancellation** (the §19 cutoff and refund eligibility); its
-decisions are still open.
+4.7 delivered **cancellation** (D53): the §19 refund cutoff on the
+`BusinessRule` singleton, a slot-locked, idempotent `cancel_booking` that stores
+the **`refund_due_amount`** snapshot, and `POST /api/bookings/{id}/cancel/` —
+Phase 5's gateway performs the actual refund.
+**Next: 4.8, extension** (extending a booking's end time; its decisions are
+still open).
 
 ---
 
@@ -40,10 +44,10 @@ decisions are still open.
    the open questions carried to later increments.
 4. Only if a task touches it: the "Dependencies on earlier phases" table below.
 
-**Next session starts here:** increment **4.7 — cancellation** (the §19
-30-minute cutoff, refund eligibility and `BusinessRule.cancellation_cutoff_minutes`).
-It consumes the `CONFIRMED`/`PENDING_PAYMENT` states and the confirmation seam
-from 4.6; its decisions have not been opened yet.
+**Next session starts here:** increment **4.8 — extension** (extending a
+`CONFIRMED` booking's end time: the slot re-check, the incremental price and the
+Phase 5 charge handoff). It consumes the `CONFIRMED` state, `quote_booking`
+(4.2) and the confirmation seam (4.6); its decisions have not been opened yet.
 
 ---
 
@@ -57,8 +61,8 @@ from 4.6; its decisions have not been opened yet.
 | 4.4 | Booking creation + concurrency (D3/D41) | ✅ Done |
 | 4.5 | Effective status for a lapsed hold (D50) | ✅ Done |
 | 4.6 | Confirmation seam (D51) + public `reference` (D52) | ✅ Done |
-| 4.7 | Cancellation | ⚪ Next |
-| 4.8 | Extension | ⚪ Not started |
+| 4.7 | Cancellation (D53) | ✅ Done |
+| 4.8 | Extension | ⚪ Next |
 | 4.9 | Booking history / listing | ⚪ Not started |
 
 ---
@@ -573,6 +577,121 @@ reference API tests (generated on create, client cannot choose it).
   to the walk-in/gate flow (D52).
 - **No single-booking read** — `BookingDetailView` is 4.9.
 - **No pagination** (Phase 10).
+
+---
+
+## Increment 4.7 — cancellation ✅
+
+### What it delivers
+
+The §19 "change of mind" path: a Consumer cancels one of their own bookings, the
+slot is freed immediately and the **refund rule** is applied and recorded. Phase
+4 still does **not** move money (§26 boundary): the refund is decided and stored
+on the booking; Phase 5's gateway pays it. Cancellation is the second consumer
+write after creation, so it reuses creation's slot-lock ordering to serialize
+with confirmation (D51) rather than introducing a second concurrency mechanism.
+The increment adds the §19 cutoff to the `BusinessRule` singleton and the stored
+refund snapshot to `Booking`.
+
+### Files
+
+| File | State |
+|------|-------|
+| `apps/bookings/services.py` | **extended** — `cancel_booking(...)` (atomic, slot-locked, idempotent), `refund_due_for(...)`, `BookingNotCancellableError`/`BOOKING_NOT_CANCELLABLE` |
+| `apps/bookings/models.py` | **extended** — stored `refund_due_amount` `Decimal(12,2)` default `0.00` (+ non-negative check) |
+| `apps/bookings/migrations/0004_booking_refund_due_amount_and_more.py` | generated |
+| `apps/bookings/serializers.py` | **extended** — `refund_due_amount`, `cancelled_at` on the read serializer |
+| `apps/bookings/views.py` | **extended** — `BookingCancelView` (`IsConsumer`); `BOOKING_NOT_FOUND`/`BOOKING_NOT_CANCELLABLE` added to `REFUSAL_STATUS` |
+| `apps/bookings/urls.py` | **extended** — `bookings/<int:pk>/cancel/` |
+| `apps/bookings/admin.py` | **extended** — `refund_due_amount` in the admin list |
+| `apps/parking/models.py` | **extended** — `BusinessRule.cancellation_cutoff_minutes` (default 30, positive check) |
+| `apps/parking/migrations/0007_businessrule_cancellation_cutoff_minutes_and_more.py` | generated |
+| `apps/parking/services.py` / `serializers.py` / `views.py` | **extended** — expose/validate `cancellation_cutoff_minutes`; `set_business_rules` writes it |
+| `apps/bookings/tests.py` | **extended** — `RefundDueTests`, `CancelBookingServiceTests`, `CancelBookingApiTests` |
+| `apps/parking/tests.py` | **extended** — `CancellationCutoffRuleTests` |
+
+Suggested commit (PROJECT.md §43):
+`feat(bookings): implement booking cancellation and refund eligibility`
+
+### Backend flow
+
+```text
+POST /api/bookings/{id}/cancel/              (IsConsumer)
+   ↓
+BookingCancelView → services.cancel_booking(booking_id, user)
+   (transaction.atomic)
+   ├── look up the caller's booking → BOOKING_NOT_FOUND (Invariant 2)
+   ├── select_for_update(of=("self",)) slot row   (D49/D51, same first lock)
+   ├── re-read booking
+   │     ├── CANCELLED → return unchanged (idempotent)
+   │     ├── not PENDING_PAYMENT/CONFIRMED → BOOKING_NOT_CANCELLABLE
+   ├── refund_due_for(booking, cutoff) → stored snapshot    (D53/§19)
+   └── status = CANCELLED, cancelled_at/by, refund_due_amount
+        ↓
+BookingSerializer (200)
+```
+
+### Decisions realized in the code
+
+- **D53 (Q1/Q2)** — Consumer self-cancel only; `PENDING_PAYMENT` (including a
+  lapsed hold) and `CONFIRMED` are cancellable; `IN_PROGRESS`/`COMPLETED`/
+  `EXPIRED`/`TERMINATED` are refused. Owner-scoped lookup: a foreign booking is
+  `404 BOOKING_NOT_FOUND`, never `403` (Invariant 2).
+- **D53 (Q3/Q4)** — the refund rule lives in `refund_due_for`; only a paid
+  (`CONFIRMED`) booking can owe one, and it is the full `base_amount` at or
+  before `start_time - cutoff`, else `0.00`. The result is a **stored snapshot**
+  on the booking, computed from `BusinessRule.cancellation_cutoff_minutes`.
+- **D53 (Q5)** — cancellation locks the **slot** row first, exactly as creation
+  (D49) and confirmation (D51); it needs no window re-check, but the shared
+  first lock is what stops a cancel racing the confirming payment.
+- **D53 (Q6)** — an already-`CANCELLED` booking returns unchanged (idempotent),
+  matching confirmation's retry-safe contract.
+- **D53 (Q7)** — endpoint + refusal map: `POST /api/bookings/{id}/cancel/`,
+  `200` with `status = CANCELLED` and `refund_due_amount`; `BOOKING_NOT_FOUND`
+  → `404`, `BOOKING_NOT_CANCELLABLE` → `409`.
+
+### Migration note (PROJECT.md §42)
+
+- **Model change:** `Booking.refund_due_amount` (`Decimal(12,2)`, default
+  `0.00`, `>= 0` check); `BusinessRule.cancellation_cutoff_minutes`
+  (`PositiveIntegerField`, default `30`, positive check).
+- **Expected DB change:** `ALTER TABLE bookings_booking ADD refund_due_amount`
+  + check; `ALTER TABLE parking_businessrule ADD cancellation_cutoff_minutes`
+  + check. Both columns are non-null with a default, so existing rows take the
+  default with **no backfill**.
+- **Data implications:** none — active bookings read `0.00`; the singleton takes
+  `30`.
+
+### Verification
+
+```bash
+cd backend
+../env/bin/python manage.py makemigrations --check
+../env/bin/python manage.py migrate
+../env/bin/python manage.py check
+../env/bin/python manage.py test
+```
+
+Result: `makemigrations --check` reports no changes; `check` is clean;
+**288 tests OK** (was 261). New coverage: `RefundDueTests` (before/at/inside the
+cutoff, pending, past-start), `CancelBookingServiceTests` (pending release,
+lapsed-hold release, confirmed refund, cutoff from the singleton, idempotency,
+non-cancellable states, foreign/unknown booking) and `CancelBookingApiTests`
+(auth, refund payload, 404/409 refusals, manager 403), plus
+`CancellationCutoffRuleTests` (default 30, read, Admin-only update).
+
+### Known, deliberate gaps from 4.7
+
+- **No money movement** — `refund_due_amount` is a record; Phase 5's gateway
+  performs the refund (D53/Q3, §26).
+- **No manager/admin cancellation** — removing a booking is the `TERMINATED`
+  transition owned by a later phase; `cancel_booking` is consumer-only.
+- **No `cancelled_by` in the payload** — stored for audit, not yet exposed.
+- **No booking detail / history route** — `BookingDetailView` is still 4.9.
+- **No pagination** (Phase 10).
+- **No cancel-vs-confirm concurrency test** — the shared slot lock is the
+  argument (documented in D53/Q5); a deterministic two-writer test is a Phase 10
+  hardening candidate.
 
 ---
 

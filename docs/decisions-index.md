@@ -84,9 +84,10 @@ Full entries: [`phase-4-booking/DECISIONS.md`](phase-4-booking/DECISIONS.md)
 | D50 | Effective `status` for a lapsed hold; read-only expiry (4.5) | Accepted |
 | D51 | Confirmation seam: slot-locked, idempotent `PENDING_PAYMENT → CONFIRMED` (4.6) | Accepted |
 | D52 | Public booking `reference`: random, unguessable receipt/QR code (4.6) | Accepted |
+| D53 | Cancellation: refund cutoff, stored `refund_due_amount`, slot-locked transition (4.7) | Accepted |
 
-> Increment **4.5** (temporary hold) landed **D50** and increment **4.6**
-> (confirmation seam + public `reference`) landed **D51–D52**; their worksheets
-> are resolved and kept in that file. Increment **4.7** (cancellation) has not
-> opened its decisions yet.
+> Increment **4.5** (temporary hold) landed **D50**, increment **4.6**
+> (confirmation seam + public `reference`) landed **D51–D52**, and increment
+> **4.7** (cancellation) landed **D53**; their worksheets are resolved and kept
+> in that file. Increment **4.8** (extension) has not opened its decisions yet.
 > This index intentionally lists only *accepted* decisions.

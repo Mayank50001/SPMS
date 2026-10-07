@@ -168,6 +168,19 @@ class Booking(models.Model):
         related_name="cancelled_bookings",
     )
 
+    # D53/§19: the amount the §19 cutoff entitles the consumer to when they
+    # cancel. Computed once, at cancellation, by ``services.cancel_booking`` and
+    # stored -- a snapshot, exactly like ``base_amount`` -- so a later change to
+    # ``BusinessRule.cancellation_cutoff_minutes`` cannot retroactively alter a
+    # booking that was already cancelled. Phase 5's refund reads this value; the
+    # money movement itself is Phase 5.
+    refund_due_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -204,6 +217,10 @@ class Booking(models.Model):
             models.CheckConstraint(
                 condition=Q(base_amount__gt=0),
                 name="booking_base_amount_positive",
+            ),
+            models.CheckConstraint(
+                condition=Q(refund_due_amount__gte=0),
+                name="booking_refund_due_not_negative",
             )
         ]
 
