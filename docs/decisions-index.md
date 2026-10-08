@@ -86,9 +86,25 @@ Full entries: [`phase-4-booking/DECISIONS.md`](phase-4-booking/DECISIONS.md)
 | D52 | Public booking `reference`: random, unguessable receipt/QR code (4.6) | Accepted |
 | D53 | Cancellation: refund cutoff, stored `refund_due_amount`, slot-locked transition (4.7) | Accepted |
 | D54 | Extension: consumer quote, whole-window pricing, slot-locked `extend_booking` seam (4.8) | Accepted |
+| D55 | Booking history filters, rich detail read and action hints (4.9) | Accepted |
 
 > Increment **4.5** (temporary hold) landed **D50**, increment **4.6**
 > (confirmation seam + public `reference`) landed **D51–D52**, increment
-> **4.7** (cancellation) landed **D53**, and increment **4.8** (extension)
-> landed **D54**; their worksheets are resolved and kept in that file.
+> **4.7** (cancellation) landed **D53**, increment **4.8** (extension)
+> landed **D54**, and increment **4.9** (booking history / detail) landed
+> **D55**; their worksheets are resolved and kept in that file. **Phase 4 is
+> complete.**
 > This index intentionally lists only *accepted* decisions.
+
+## Phase 5 — Payment
+Full entries: [`phase-5-payment/DECISIONS.md`](phase-5-payment/DECISIONS.md)
+
+| ID | Title | Status |
+|----|-------|--------|
+| D56 | Payment gateway: Stripe test mode behind the provider-agnostic payment abstraction | Accepted |
+
+> D56 is decided ahead of coding so the first Phase 5 increment has a concrete
+> gateway to build against. The rest of Phase 5's decisions (payment model and
+> states, the create/verify/refund endpoints, receipts, webhook handling) are
+> open and will get their own IDs as the phase proceeds — see
+> [`phase-5-payment/`](phase-5-payment/).

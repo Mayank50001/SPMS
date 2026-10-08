@@ -13,7 +13,11 @@ from apps.accounts.models import Vehicle
 from apps.parking.models import ParkingSlot
 
 from .models import Booking
-from .services import effective_status as compute_effective_status
+from .services import (
+    CANCELLABLE_STATUSES,
+    EXTENDABLE_STATUSES,
+    effective_status as compute_effective_status
+)
 
 class BookingSerializer(serializers.ModelSerializer):
     """Read representation of a booking (D39).
@@ -30,6 +34,7 @@ class BookingSerializer(serializers.ModelSerializer):
 
     slot_number = serializers.CharField(source="slot.number", read_only=True)
     lot_code = serializers.CharField(source="slot.lot.code", read_only=True)
+    lot_name = serializers.CharField(source="slot.lot.name", read_only=True)
     effective_status = serializers.SerializerMethodField()
 
     def get_effective_status(self, obj):
@@ -45,6 +50,7 @@ class BookingSerializer(serializers.ModelSerializer):
             "slot",
             "slot_number",
             "lot_code",
+            "lot_name",
             "slot_type",
             "user",
             "vehicle",
@@ -122,3 +128,86 @@ class ExtensionQuoteSerializer(serializers.Serializer):
     new_base_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
     hourly_rate = serializers.DecimalField(max_digits=8, decimal_places=2)
     new_end_time = serializers.DateTimeField()
+
+class BookingHistoryQuerySerializer(serializers.Serializer):
+    """Validates the history filters of ``GET /api/bookings/`` (increment 4.9).
+
+    Every filter is optional; omitting all of them returns the caller's whole
+    history (newest first). ``status`` accepts one or more comma-separated stored
+    states; an unknown token is a field-shaped 400. ``scope`` is a stored-time
+    window, independent of state, so a client can combine the two (e.g. upcoming
+    confirmed bookings). ``lot`` and ``ordering`` are self-explanatory.
+    """
+
+    status = serializers.CharField(required=False)
+    scope = serializers.ChoiceField(
+        choices=["upcoming", "ongoing", "past"], required=False
+    )
+    lot = serializers.IntegerField(required=False, min_value=1)
+    ordering = serializers.ChoiceField(
+        choices=[
+            "start_time",
+            "-start_time",
+            "end_time",
+            "-end_time",
+            "created_at",
+            "-created_at",
+        ],
+        required=False,
+    )
+
+    def validate_status(self, value):
+        tokens = [token.strip() for token in value.split(",") if token.strip()]
+        if not tokens:
+            raise serializers.ValidationError("Provide at least one status.")
+        unknown = sorted(
+            {token for token in tokens if token not in Booking.Status.values}
+        )
+        if unknown:
+            raise serializers.ValidationError(
+                f"Unknown status: {', '.join(unknown)}."
+            )
+        return tokens
+
+class BookingDetailSerializer(BookingSerializer):
+    """Rich read shape for ``GET /api/bookings/{id}/`` (increment 4.9).
+
+    Everything the history list returns, plus the lot/slot location details a
+    "Booking Details" page needs and the ``can_cancel`` / ``can_extend`` action
+    hints. The hints mirror the write endpoints' state checks exactly (the write
+    endpoint stays authoritative). Payment details arrive with Phase 5, so none
+    are referenced here.
+    """
+
+    lot = serializers.IntegerField(source="slot.lot_id", read_only=True)
+    lot_address_line = serializers.CharField(
+        source="slot.lot.address_line", read_only=True
+    )
+    lot_city = serializers.CharField(source="slot.lot.city.name", read_only=True)
+    lot_state = serializers.CharField(source="slot.lot.state", read_only=True)
+    lot_postal_code = serializers.CharField(
+        source="slot.lot.postal_code", read_only=True
+    )
+    slot_floor = serializers.CharField(source="slot.floor", read_only=True)
+    can_cancel = serializers.SerializerMethodField()
+    can_extend = serializers.SerializerMethodField()
+
+    def get_can_cancel(self, obj):
+        # Mirrors ``services.cancel_booking``: a live hold or a paid booking.
+        return obj.status in CANCELLABLE_STATUSES
+
+    def get_can_extend(self, obj):
+        # Mirrors ``services.EXTENDABLE_STATUSES``.
+        return obj.status in EXTENDABLE_STATUSES
+
+    class Meta(BookingSerializer.Meta):
+        fields = BookingSerializer.Meta.fields + [
+            "lot",
+            "lot_address_line",
+            "lot_city",
+            "lot_state",
+            "lot_postal_code",
+            "slot_floor",
+            "can_cancel",
+            "can_extend",
+        ]

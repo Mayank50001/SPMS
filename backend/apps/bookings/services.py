@@ -135,6 +135,10 @@ class ExtensionQuote(NamedTuple):
 #: The states a consumer may extend: the paid, not-yet-finished pair (D54).
 EXTENDABLE_STATUSES = (Booking.Status.CONFIRMED, Booking.Status.IN_PROGRESS)
 
+#: The states a consumer may cancel: a live hold or a paid booking (D53). Shared
+#: with the history read's ``can_cancel`` hint so the two cannot drift (4.9).
+CANCELLABLE_STATUSES = (Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED)
+
 class BookingQuote(NamedTuple):
     """The priced result of a window, ready to snapshot onto a ``Booking``."""
 
@@ -299,6 +303,47 @@ def available_slots(*, lot, start_time, end_time, now=None):
         .filter(is_booked=False)
         .select_related("lot")
     )
+
+#: The time scopes the history read accepts (4.9). Pure time windows, independent
+#: of ``status``: a client combines ``scope`` with ``status`` for a tab such as
+#: "upcoming confirmed".
+HISTORY_SCOPES = ("upcoming", "ongoing", "past")
+
+def filter_bookings(queryset, *, statuses=None, scope=None, lot_id=None, ordering=None, now=None):
+    """Refine a booking queryset for the history read (4.9).
+
+    Pure and read-only (a GET has no side effects, D43/Invariant 6). It filters
+    on the **stored** ``status``: a lapsed ``PENDING_PAYMENT`` is still stored as
+    ``PENDING_PAYMENT``, so it matches a ``status=PENDING_PAYMENT`` filter while
+    its ``effective_status`` in the response reads ``EXPIRED`` (lazy expiry is a
+    read-time presentation concern, D50).
+
+    ``scope`` is a stored-time window independent of state: ``upcoming`` starts
+    after ``now``, ``ongoing`` straddles it, ``past`` has ended. ``statuses`` and
+    ``scope`` combine as an AND. It is an unlocked read, like ``available_slots``:
+    it says nothing about concurrency.
+    """
+
+    if statuses:
+        queryset = queryset.filter(status__in=statuses)
+
+    if scope:
+        now = now or timezone.now()
+        if scope == "upcoming":
+            queryset = queryset.filter(start_time__gt=now)
+        elif scope == "ongoing":
+            queryset = queryset.filter(start_time__lte=now, end_time__gt=now)
+        elif scope == "past":
+            queryset = queryset.filter(end_time__lte=now)
+
+    if lot_id is not None:
+        queryset = queryset.filter(slot__lot_id=lot_id)
+
+    if ordering:
+        # ``-id`` keeps paging stable regardless of the chosen sort key.
+        queryset = queryset.order_by(ordering, "-id")
+
+    return queryset
 
 @transaction.atomic
 def create_booking(*, slot_id, start_time, end_time, user, vehicle):
@@ -500,10 +545,7 @@ def cancel_booking(*, booking_id, user, now=None):
     if booking.status == Booking.Status.CANCELLED:
         return booking
 
-    if booking.status not in (
-        Booking.Status.PENDING_PAYMENT,
-        Booking.Status.CONFIRMED,
-    ):
+    if booking.status not in CANCELLABLE_STATUSES:
         raise BookingNotCancellableError(
             f"A {booking.status} booking cannot be cancelled."
         )

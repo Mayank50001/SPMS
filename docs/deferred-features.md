@@ -85,7 +85,8 @@ the endpoint is deferred.
 response subset (a bearer key must return no more than the gate/reception needs),
 rate-limiting against enumeration, and how it composes with the manager walk-in
 flow and Phase 6 occupancy. The authenticated single-booking read
-`GET /api/bookings/{id}/` is separately scheduled for increment 4.9.
+`GET /api/bookings/{id}/` landed in increment 4.9 (D55); only this public
+reference lookup remains deferred.
 
 **Why deferred:** the response shape is a function of the walk-in/gate feature
 that will consume it; inventing it before that feature exists would guess the

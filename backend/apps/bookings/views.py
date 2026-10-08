@@ -14,11 +14,13 @@ from apps.accounts.permissions import IsConsumer
 from .models import Booking
 from .serializers import (
     BookingCreateSerializer,
+    BookingDetailSerializer,
+    BookingHistoryQuerySerializer,
     BookingSerializer,
     ExtensionQuoteQuerySerializer,
     ExtensionQuoteSerializer,
 )
-from .services import BookingRuleError, cancel_booking, create_booking, quote_extension
+from .services import BookingRuleError, cancel_booking, create_booking, filter_bookings, quote_extension
 
 #: Stable refusal code -> HTTP status (Q10). Shape/client errors are 400,
 #: state/config conflicts are 409, an unaddressable target is 404.
@@ -53,10 +55,19 @@ class BookingListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsConsumer]
 
     def get_queryset(self):
-        return (
-            Booking.objects.filter(user=self.request.user)
-            .select_related("slot__lot", "vehicle")
+        queryset = (
+            Booking.objects.filter(user=self.request.user).select_related("slot__lot__city", "vehicle")
         )
+        if self.request.method == "GET":
+            history = BookingHistoryQuerySerializer(data=self.request.query_params)
+            history.is_valid(raise_exception=True)
+            return filter_bookings(
+                queryset, statuses=history.validated_data.get("status"),
+                scope=history.validated_data.get("scope"),
+                lot_id=history.validated_data.get("lot"),
+                ordering=history.validated_data.get("ordering"),
+            )
+        return queryset
 
     def get_serializer_class(self):
         if self.request.method == "POST":
@@ -153,3 +164,33 @@ class BookingExtensionQuoteView(generics.GenericAPIView):
                 status=REFUSAL_STATUS.get(exc.code, status.HTTP_400_BAD_REQUEST),
             )
         return Response(ExtensionQuoteSerializer(quote).data)
+
+class BookingDetailView(generics.GenericAPIView):
+    """Read one of the caller's own bookings (increment 4.9).
+
+    ``GET /api/bookings/{id}/`` -> the rich :class:`BookingDetailSerializer`
+    shape. Consumer-only and scoped to the caller, so a foreign or unknown id is
+    a 404 carrying the booking lifecycle's stable ``BOOKING_NOT_FOUND`` code --
+    never a 403 (Invariant 2) -- matching cancel/confirm/extend. Read-only: it
+    writes nothing and derives everything from the stored row.
+    """
+
+    permission_classes = [IsConsumer]
+    serializer_class = BookingDetailSerializer
+
+    def get(self, request, *args, **kwargs):
+        booking = (
+            Booking.objects.filter(user=request.user)
+            .select_related("slot__lot__city", "vehicle")
+            .filter(pk=kwargs["pk"])
+            .first()
+        )
+        if booking is None:
+            return Response(
+                {
+                    "error": "BOOKING_NOT_FOUND",
+                    "message": "No booking with this id exists.",
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(BookingDetailSerializer(booking).data)

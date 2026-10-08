@@ -139,7 +139,9 @@ Since hardware is excluded:
 
 - Slot occupancy may be changed through software/admin actions.
 - Vehicle entry/exit may be simulated through software actions.
-- Payment processing may use a mock payment gateway.
+- Payment processing may use a mock payment gateway, or a real provider's
+  **test / sandbox mode** (Phase 5 uses Stripe test mode behind an abstraction —
+  D56).
 - Notifications may initially be represented as database records/logs instead of real SMS/push infrastructure.
 
 ---
@@ -188,6 +190,18 @@ A mock payment service may be created to simulate:
 - payment failure
 - refund
 - transaction ID
+
+A payment provider's **test / sandbox mode** is an approved alternative to a
+hand-rolled mock: it simulates the same success / failure / refund /
+transaction-ID lifecycle while moving **no real money**. **Stripe test mode** is
+the approved gateway for Phase 5, sitting behind the payment abstraction of §26
+(see D56 in `docs/phase-5-payment/DECISIONS.md`). The card form is
+provider-hosted, so card data never reaches this application.
+
+> **Exclusion.** The "no external tools" / "no unnecessary infrastructure"
+> restriction (§12) is **waived for the payment gateway only**, because a
+> sandboxed provider adapter is the §26 abstraction's intended plug-in point.
+> Every other external tool or new service still requires explicit approval.
 
 Never store:
 
@@ -582,7 +596,7 @@ Responsible for:
 Responsible for:
 
 - payment records
-- mock payment gateway
+- payment gateway (Stripe test mode, or a mock in tests)
 - refunds
 - receipts
 - transaction status
@@ -1037,7 +1051,7 @@ Payment Service
    ↓
 Payment Gateway Interface
    ↓
-Mock Payment Gateway
+Stripe Gateway (test mode)        # Mock Gateway in automated tests
 ```
 
 The application should not directly depend on a specific payment provider.
@@ -1057,6 +1071,11 @@ class PaymentGateway:
 ```
 
 The human developer should implement the actual behavior.
+
+Phase 5 implements this interface with a **Stripe test-mode** adapter and keeps a
+**mock** adapter for the automated tests (D56). The application still never
+depends on Stripe directly — only the adapter imports the provider SDK, and the
+gateway is chosen by configuration.
 
 ---
 
@@ -1480,13 +1499,14 @@ Implement:
 
 - Payment model
 - payment states
-- mock payment gateway
+- payment gateway abstraction + **Stripe test-mode** adapter (a mock adapter is
+  kept for automated tests — D56)
 - payment creation
 - payment confirmation
 - receipt
 - refund
 
-No real financial processing.
+No real financial processing — test/sandbox mode only.
 
 ---
 

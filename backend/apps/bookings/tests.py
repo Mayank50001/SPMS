@@ -33,7 +33,7 @@ from apps.bookings.services import (
     available_slots, blocking_window_q, cancel_booking, confirm_booking,
     create_booking, effective_status, expire_stale_holds, extend_booking,
     hours_between, is_hold_live, quote_booking, quote_extension, refund_due_for,
-    validate_duration, validate_window,
+    validate_duration, validate_window, filter_bookings
 )
 
 
@@ -1942,3 +1942,431 @@ class ExtensionQuoteApiTests(TestCase):
         self.client.force_authenticate(manager)
         response = self._get(booking, booking.end_time + timedelta(hours=1))
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+class BookingHistoryQueryTests(TestCase):
+    """``services.filter_bookings`` -- history queryset refinement (4.9)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.other_lot = ParkingLot.objects.create(
+            city=city, number=2, name="Church Street", address_line="2 Church St",
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=cls.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        cls.other_slot = ParkingSlot.objects.create(
+            lot=cls.other_lot, number="B-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.vehicle = Vehicle.objects.create(
+            owner=cls.consumer, registration_number="KA01AB1234",
+        )
+
+    def _booking(
+        self, *, booking_status=Booking.Status.PENDING_PAYMENT,
+        start_hours=2, end_hours=3, slot=None,
+    ):
+        now = timezone.now()
+        hours = end_hours - start_hours
+        return Booking.objects.create(
+            user=self.consumer,
+            created_by=self.consumer,
+            vehicle=self.vehicle,
+            vehicle_plate="",
+            slot=slot or self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=now + timedelta(hours=start_hours),
+            end_time=now + timedelta(hours=end_hours),
+            billed_hours=hours,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("20.00") * hours,
+            status=booking_status,
+        )
+
+    def test_status_filter_matches_stored_status(self):
+        self._booking(booking_status=Booking.Status.PENDING_PAYMENT)
+        confirmed = self._booking(
+            booking_status=Booking.Status.CONFIRMED, start_hours=4, end_hours=5,
+        )
+        ids = set(
+            filter_bookings(
+                Booking.objects.all(), statuses=[Booking.Status.CONFIRMED]
+            ).values_list("id", flat=True)
+        )
+        self.assertEqual(ids, {confirmed.id})
+
+    def test_status_filter_accepts_several(self):
+        confirmed = self._booking(booking_status=Booking.Status.CONFIRMED)
+        in_progress = self._booking(
+            booking_status=Booking.Status.IN_PROGRESS, start_hours=4, end_hours=5,
+        )
+        self._booking(
+            booking_status=Booking.Status.CANCELLED, start_hours=6, end_hours=7,
+        )
+        ids = set(
+            filter_bookings(
+                Booking.objects.all(),
+                statuses=[Booking.Status.CONFIRMED, Booking.Status.IN_PROGRESS],
+            ).values_list("id", flat=True)
+        )
+        self.assertEqual(ids, {confirmed.id, in_progress.id})
+
+    def test_scope_windows(self):
+        past = self._booking(
+            booking_status=Booking.Status.COMPLETED, start_hours=-4, end_hours=-2,
+        )
+        ongoing = self._booking(
+            booking_status=Booking.Status.IN_PROGRESS, start_hours=-1, end_hours=1,
+        )
+        upcoming = self._booking(
+            booking_status=Booking.Status.CONFIRMED, start_hours=2, end_hours=3,
+        )
+
+        def ids(scope):
+            return set(
+                filter_bookings(Booking.objects.all(), scope=scope).values_list(
+                    "id", flat=True
+                )
+            )
+
+        self.assertEqual(ids("past"), {past.id})
+        self.assertEqual(ids("ongoing"), {ongoing.id})
+        self.assertEqual(ids("upcoming"), {upcoming.id})
+
+    def test_scope_combines_with_status(self):
+        upcoming_confirmed = self._booking(
+            booking_status=Booking.Status.CONFIRMED, start_hours=3, end_hours=4,
+        )
+        self._booking(
+            booking_status=Booking.Status.CANCELLED, start_hours=5, end_hours=6,
+        )
+        ids = set(
+            filter_bookings(
+                Booking.objects.all(),
+                statuses=[Booking.Status.CONFIRMED],
+                scope="upcoming",
+            ).values_list("id", flat=True)
+        )
+        self.assertEqual(ids, {upcoming_confirmed.id})
+
+    def test_lot_filter(self):
+        in_lot = self._booking(booking_status=Booking.Status.CONFIRMED)
+        self._booking(
+            booking_status=Booking.Status.CONFIRMED, start_hours=4, end_hours=5,
+            slot=self.other_slot,
+        )
+        ids = set(
+            filter_bookings(
+                Booking.objects.all(), lot_id=self.lot.id
+            ).values_list("id", flat=True)
+        )
+        self.assertEqual(ids, {in_lot.id})
+
+    def test_ordering_is_applied_with_stable_tiebreak(self):
+        first = self._booking(booking_status=Booking.Status.CONFIRMED)
+        second = self._booking(
+            booking_status=Booking.Status.CONFIRMED, start_hours=4, end_hours=5,
+        )
+        ordered = list(
+            filter_bookings(
+                Booking.objects.all(), ordering="-start_time"
+            ).values_list("id", flat=True)
+        )
+        self.assertEqual(ordered, [second.id, first.id])
+
+    def test_lapsed_hold_keeps_its_stored_status_for_filtering(self):
+        # 4.9/Q5: the filter is on the stored status; a lapsed hold still matches
+        # PENDING_PAYMENT even though effective_status reads EXPIRED.
+        now = timezone.now()
+        booking = Booking.objects.create(
+            user=self.consumer,
+            created_by=self.consumer,
+            vehicle=self.vehicle,
+            vehicle_plate="",
+            slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=now + timedelta(hours=2),
+            end_time=now + timedelta(hours=3),
+            billed_hours=1,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("20.00"),
+            status=Booking.Status.PENDING_PAYMENT,
+            hold_expires_at=now - timedelta(minutes=1),
+        )
+        ids = set(
+            filter_bookings(
+                Booking.objects.all(), statuses=[Booking.Status.PENDING_PAYMENT]
+            ).values_list("id", flat=True)
+        )
+        self.assertIn(booking.id, ids)
+        self.assertEqual(effective_status(booking), Booking.Status.EXPIRED)
+
+
+class BookingHistoryApiTests(TestCase):
+    """``GET /api/bookings/`` history filters (increment 4.9)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=cls.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        Tariff.objects.create(
+            lot=cls.lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.other = User.objects.create_user(
+            email="other@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Other",
+        )
+        cls.vehicle = Vehicle.objects.create(
+            owner=cls.consumer, registration_number="KA01AB1234",
+        )
+        cls.other_vehicle = Vehicle.objects.create(
+            owner=cls.other, registration_number="KA05XY9999",
+        )
+        BusinessRule.load()
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _booking(
+        self, *, owner=None, booking_status=Booking.Status.PENDING_PAYMENT,
+        start_hours=2, end_hours=3,
+    ):
+        owner = owner or self.consumer
+        now = timezone.now()
+        hours = end_hours - start_hours
+        return Booking.objects.create(
+            user=owner,
+            created_by=owner,
+            vehicle=self.vehicle if owner == self.consumer else self.other_vehicle,
+            vehicle_plate="",
+            slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=now + timedelta(hours=start_hours),
+            end_time=now + timedelta(hours=end_hours),
+            billed_hours=hours,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("20.00") * hours,
+            status=booking_status,
+        )
+
+    def test_anonymous_cannot_list(self):
+        response = self.client.get("/api/bookings/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_list_returns_only_own_bookings_with_lot_name(self):
+        mine = self._booking()
+        self._booking(owner=self.other, start_hours=4, end_hours=5)
+        self.client.force_authenticate(self.consumer)
+        response = self.client.get("/api/bookings/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["id"] for row in response.data], [mine.id])
+        self.assertEqual(response.data[0]["lot_name"], "MG Road")
+
+    def test_status_filter(self):
+        confirmed = self._booking(booking_status=Booking.Status.CONFIRMED)
+        self._booking(
+            booking_status=Booking.Status.CANCELLED, start_hours=4, end_hours=5,
+        )
+        self.client.force_authenticate(self.consumer)
+        response = self.client.get("/api/bookings/", {"status": "CONFIRMED"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["id"] for row in response.data], [confirmed.id])
+
+    def test_status_filter_accepts_multiple_values(self):
+        confirmed = self._booking(booking_status=Booking.Status.CONFIRMED)
+        in_progress = self._booking(
+            booking_status=Booking.Status.IN_PROGRESS, start_hours=4, end_hours=5,
+        )
+        self._booking(
+            booking_status=Booking.Status.CANCELLED, start_hours=6, end_hours=7,
+        )
+        self.client.force_authenticate(self.consumer)
+        response = self.client.get(
+            "/api/bookings/", {"status": "CONFIRMED,IN_PROGRESS"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {row["id"] for row in response.data}, {confirmed.id, in_progress.id}
+        )
+
+    def test_unknown_status_is_a_400(self):
+        self.client.force_authenticate(self.consumer)
+        response = self.client.get("/api/bookings/", {"status": "NOPE"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_scope_filter(self):
+        past = self._booking(
+            booking_status=Booking.Status.COMPLETED, start_hours=-4, end_hours=-2,
+        )
+        self._booking(
+            booking_status=Booking.Status.CONFIRMED, start_hours=2, end_hours=3,
+        )
+        self.client.force_authenticate(self.consumer)
+        response = self.client.get("/api/bookings/", {"scope": "past"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["id"] for row in response.data], [past.id])
+
+    def test_invalid_scope_is_a_400(self):
+        self.client.force_authenticate(self.consumer)
+        response = self.client.get("/api/bookings/", {"scope": "someday"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_invalid_ordering_is_a_400(self):
+        self.client.force_authenticate(self.consumer)
+        response = self.client.get("/api/bookings/", {"ordering": "plate"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_manager_cannot_list(self):
+        manager = User.objects.create_user(
+            email="manager@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Manager",
+            role=User.Role.MANAGER,
+        )
+        self.client.force_authenticate(manager)
+        response = self.client.get("/api/bookings/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class BookingDetailApiTests(TestCase):
+    """``GET /api/bookings/{id}/`` (increment 4.9)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+            state="Karnataka", postal_code="560001",
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=cls.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+            floor="G",
+        )
+        Tariff.objects.create(
+            lot=cls.lot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.other = User.objects.create_user(
+            email="other@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Other",
+        )
+        cls.vehicle = Vehicle.objects.create(
+            owner=cls.consumer, registration_number="KA01AB1234",
+        )
+        BusinessRule.load()
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _pending(self):
+        now = timezone.now()
+        return create_booking(
+            slot_id=self.slot.id,
+            start_time=now + timedelta(hours=2),
+            end_time=now + timedelta(hours=4),
+            user=self.consumer,
+            vehicle=self.vehicle,
+        )
+
+    def _confirmed(self):
+        booking = self._pending()
+        confirm_booking(booking_id=booking.pk)
+        booking.refresh_from_db()
+        return booking
+
+    def test_anonymous_cannot_read(self):
+        booking = self._confirmed()
+        response = self.client.get(f"/api/bookings/{booking.pk}/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_owner_reads_rich_detail(self):
+        booking = self._confirmed()
+        self.client.force_authenticate(self.consumer)
+        response = self.client.get(f"/api/bookings/{booking.pk}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["reference"], booking.reference)
+        self.assertEqual(response.data["effective_status"], Booking.Status.CONFIRMED)
+        # Rich detail fields (4.9/Q3).
+        self.assertEqual(response.data["lot"], self.lot.id)
+        self.assertEqual(response.data["lot_name"], "MG Road")
+        self.assertEqual(response.data["lot_address_line"], "1 MG Road")
+        self.assertEqual(response.data["lot_city"], "Bengaluru")
+        self.assertEqual(response.data["lot_state"], "Karnataka")
+        self.assertEqual(response.data["lot_postal_code"], "560001")
+        self.assertEqual(response.data["slot_floor"], "G")
+        self.assertTrue(response.data["can_cancel"])
+        self.assertTrue(response.data["can_extend"])
+
+    def test_pending_action_flags(self):
+        booking = self._pending()
+        self.client.force_authenticate(self.consumer)
+        response = self.client.get(f"/api/bookings/{booking.pk}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["can_cancel"])
+        self.assertFalse(response.data["can_extend"])
+
+    def test_cancelled_booking_has_no_actions(self):
+        booking = self._confirmed()
+        cancel_booking(booking_id=booking.pk, user=self.consumer)
+        self.client.force_authenticate(self.consumer)
+        response = self.client.get(f"/api/bookings/{booking.pk}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["can_cancel"])
+        self.assertFalse(response.data["can_extend"])
+
+    def test_another_consumers_booking_is_a_404_with_the_booking_code(self):
+        booking = self._confirmed()
+        self.client.force_authenticate(self.other)
+        response = self.client.get(f"/api/bookings/{booking.pk}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data["error"], "BOOKING_NOT_FOUND")
+
+    def test_unknown_booking_is_a_404(self):
+        self.client.force_authenticate(self.consumer)
+        response = self.client.get("/api/bookings/999999/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data["error"], "BOOKING_NOT_FOUND")
+
+    def test_manager_cannot_read(self):
+        booking = self._confirmed()
+        manager = User.objects.create_user(
+            email="manager@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Manager",
+            role=User.Role.MANAGER,
+        )
+        self.client.force_authenticate(manager)
+        response = self.client.get(f"/api/bookings/{booking.pk}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+

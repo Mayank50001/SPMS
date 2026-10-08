@@ -4,7 +4,7 @@ An academic mini-project: a software-based parking management platform that lets
 consumers discover lots and book slots, managers operate lots and walk-ins, and
 administrators manage users and view platform reports.
 
-**Phase 4 (booking) is in progress.** Phases 0 (repository setup), 1 (backend
+**Phase 4 (booking) is complete.** Phases 0 (repository setup), 1 (backend
 foundation), 2 (authentication and users) and 3 (the parking domain, 3.1–3.4)
 are complete. Implemented so far: the custom email-based user model, consumer
 self-registration, the JWT authentication surface, consumer profile self-update,
@@ -17,17 +17,19 @@ Administrator's **`BusinessRule` maximum rate** (Invariant 4),
 Phase 4 has delivered increments **4.1** (the `Booking` model and state enum,
 D39–D41), **4.2** (the booking rule layer: `quote_booking`, the D41 conflict
 predicate, lazy hold expiry, the stored **`base_amount`** snapshot — D39 revised
-— and the per-slot duration policy **D45**) and **4.3** (the read-only, derived
+— and the per-slot duration policy **D45**), **4.3** (the read-only, derived
 time-window availability query, D46), **4.4** (booking creation — the first write
 path — with the D3/D41 slot-locked concurrency guard, D47–D49), **4.5**
 (effective status for a lapsed hold: a read-only, computed `effective_status`,
 D50), **4.6** (the confirmation seam for Phase 5's payment gateway, and a
 random, unguessable public `reference` on every booking — D51/D52), **4.7**
 (cancellation: the §19 refund cutoff, the stored `refund_due_amount` snapshot
-and `POST /api/bookings/{id}/cancel/` — D53) and **4.8** (extension: a read-only
+and `POST /api/bookings/{id}/cancel/` — D53), **4.8** (extension: a read-only
 quote and the slot-locked `extend_booking` seam for Phase 5's charge — D54; no
-migration); its lifecycle lands increment by increment, next **4.9**, booking
-history/detail. The authoritative
+migration) and **4.9** (booking history filters and the rich single-booking
+detail read — D55; no migration). **Phase 4 is complete.** The next phase is
+**Phase 5 (payment)**, built on the §26 provider-agnostic payment abstraction
+with **Stripe in test mode** as the concrete gateway (D56). The authoritative
 specification is [`PROJECT.md`](PROJECT.md). Documentation is split per phase —
 start at [`docs/README.md`](docs/README.md), the navigation entry point, phase
 tracker and reading protocol.
@@ -61,7 +63,8 @@ ParkingManagementSystem/
 │   ├── foundation/         # phases 0-1 + cross-cutting decisions (D1-D10)
 │   ├── phase-2-authentication/
 │   ├── phase-3-parking/
-│   └── phase-4-booking/    # booking model, rules, duration policy (D39-D54; D39 revised in 4.2)
+│   ├── phase-4-booking/    # booking model, rules, lifecycle (D39-D55; D39 revised in 4.2)
+│   └── phase-5-payment/    # payment scope, plan and decisions (D56 next)
 ├── backend/
 │   ├── manage.py
 │   ├── .env                # local secrets (git-ignored)
@@ -76,7 +79,7 @@ ParkingManagementSystem/
 │       ├── accounts/       # users, roles, auth, vehicles
 │       ├── parking/        # lots, slots, slot types, pricing
 │       ├── bookings/       # bookings, lifecycle, holds
-│       ├── payments/       # payments, mock gateway, refunds
+│       ├── payments/       # payments, Stripe test-mode gateway, refunds
 │       ├── notifications/  # in-app notification records
 │       └── reports/        # occupancy / revenue / stats
 └── frontend/
@@ -196,7 +199,8 @@ npm run build
 | GET    | `/api/business-rules/` | Public     | The max-hourly-rate singleton    |
 | PATCH  | `/api/business-rules/` | Admin      | Change the rate/duration ceilings, hold length or refund cutoff |
 | GET    | `/api/parking-lots/{lot}/availability/` | Public | Slots bookable for `?start=&end=` (4.3) |
-| GET    | `/api/bookings/`       | Consumer   | List the caller's own bookings (4.4) |
+| GET    | `/api/bookings/`       | Consumer   | List/filter the caller's own bookings (4.4/4.9) |
+| GET    | `/api/bookings/{id}/`  | Consumer   | Read one own booking: lot location + `can_cancel`/`can_extend` (4.9) |
 | POST   | `/api/bookings/`       | Consumer   | Create a booking (4.4) |
 | POST   | `/api/bookings/{id}/cancel/` | Consumer | Cancel an own booking, recording the refund due (4.7) |
 | GET    | `/api/bookings/{id}/extension-quote/` | Consumer | Price extending an own booking's end time (4.8) |
@@ -547,3 +551,61 @@ other state is `409 BOOKING_NOT_EXTENDABLE`, and another consumer's booking is a
 per-slot lock as creation, confirmation and cancellation and re-checks the added
 window, so an extension cannot collide with another booking (`409
 BOOKING_CONFLICT`); re-sending the same `end_time` is an idempotent no-op.
+
+### Booking history and detail (Phase 4, increment 4.9)
+
+`GET /api/bookings/` lists only the caller's own bookings and is now
+**filterable** (D55); `GET /api/bookings/{id}/` reads one of them in full. Both
+are read-only: they never persist lazy hold expiry, so a lapsed
+`PENDING_PAYMENT` is still returned by `?status=PENDING_PAYMENT` while its body
+`effective_status` reads `EXPIRED` (D6/D43/D50).
+
+```text
+GET /api/bookings/?status=CONFIRMED,IN_PROGRESS&scope=upcoming&lot=1&ordering=-start_time
+GET /api/bookings/1/
+```
+
+| Query param | Meaning |
+|-------------|---------|
+| `status` | One or more comma-separated **stored** states (`PENDING_PAYMENT`, `CONFIRMED`, …); an unknown token is a `400`. |
+| `scope` | A time window independent of state: `upcoming`, `ongoing` or `past`. |
+| `lot` | Only bookings in this lot. |
+| `ordering` | `start_time` / `-start_time` / `end_time` / `-end_time` / `created_at` / `-created_at`; default is the model's `-start_time`, `-id`. |
+
+The filters combine as an AND, so `?scope=upcoming&status=CONFIRMED` is the
+"upcoming confirmed" tab. The list is **not paginated** (Phase 10).
+
+The detail response is the list shape plus the lot/slot location
+(`lot`, `lot_name`, `lot_address_line`, `lot_city`, `lot_state`,
+`lot_postal_code`, `slot_floor`) and the action hints `can_cancel` / `can_extend`
+— which mirror the cancel and extension rules exactly. Payment fields are
+deliberately absent until Phase 5's `Payment`. Example (excerpt):
+
+```json
+{
+  "id": 1,
+  "reference": "7GQ4M2XK9P",
+  "status": "CONFIRMED",
+  "effective_status": "CONFIRMED",
+  "lot": 1,
+  "lot_name": "MG Road",
+  "lot_address_line": "1 MG Road",
+  "lot_city": "Bengaluru",
+  "slot_number": "A-01",
+  "slot_floor": "G",
+  "can_cancel": true,
+  "can_extend": true
+}
+```
+
+Both routes are Consumer-only and scoped to the caller: another consumer's
+booking — or a non-existent id — is a `404 {"error": "BOOKING_NOT_FOUND"}`, never
+a `403` (Invariant 2).
+
+### Payment (Phase 5) — next
+
+Not implemented yet. Phase 5 adds the `Payment` model, payment states, creation,
+confirmation, receipt and refund on top of Phase 4's seams, using **Stripe in
+test mode** behind the §26 provider-agnostic abstraction (D56). No real charges
+are made and no card data is stored. See
+[`docs/phase-5-payment/`](docs/phase-5-payment/).

@@ -1,15 +1,15 @@
-# Progress — Phase 4 (Booking) 🔵 IN PROGRESS
+# Progress — Phase 4 (Booking) ✅ DONE
 
 > **Scope (PROJECT.md §36):** the booking domain — model, states, availability
 > query, creation, temporary hold, confirmation, cancellation, extension and
 > booking history. This is described as "the most important backend phase".
-> Decisions are in [`DECISIONS.md`](DECISIONS.md) (D39–D54 accepted; D39 revised
+> Decisions are in [`DECISIONS.md`](DECISIONS.md) (D39–D55 accepted; D39 revised
 > in 4.2).
 > Working conventions and the reading protocol: [`../README.md`](../README.md).
 > Phase 3 context (parking catalogue, slots, tariffs): 
 > [`../phase-3-parking/PROGRESS.md`](../phase-3-parking/PROGRESS.md).
 
-Last updated: 2026-10-07 · **Increments 4.1–4.8 are complete; 4.9 is next.**
+Last updated: 2026-10-08 · **Phase 4 is complete — increments 4.1–4.9 are all done.**
 4.1 delivered the `Booking` model + state enum (D39–D41). 4.2 delivered the
 booking rule layer whole: the tariff quote (`quote_booking`, the single pricing
 seam), the D41 conflict predicate, lazy hold expiry, the **stored `base_amount`
@@ -34,8 +34,10 @@ Phase 5's gateway performs the actual refund. 4.8 delivered **extension** (D54):
 a read-only quote that prices a later end time and a slot-locked
 `extend_booking` **seam** Phase 5 calls after charging — whole-window pricing
 re-checked against the slot's min/max, with **no new field and no migration**.
-**Next: 4.9, booking history** (a single-booking read and the caller's
-history/detail; its decisions are still open).
+4.9 delivered **booking history / detail** (D55): the caller's history with
+optional `?status=` / `?scope=` / `?lot=` / `?ordering=` filters and a rich
+`GET /api/bookings/{id}/` (lot location plus `can_cancel` / `can_extend`), both
+read-only. **Phase 4 is complete; Phase 5 (payment) is next.**
 
 ---
 
@@ -43,14 +45,15 @@ history/detail; its decisions are still open).
 
 1. [`../README.md`](../README.md) — conventions + reading protocol.
 2. This file — the increment plan, what is delivered, and what is next.
-3. [`DECISIONS.md`](DECISIONS.md) — D39–D54 (accepted; D39 revised in 4.2), and
-   the open questions carried to later increments.
+3. [`DECISIONS.md`](DECISIONS.md) — D39–D55 (accepted; D39 revised in 4.2), and
+   the questions carried to later increments.
 4. Only if a task touches it: the "Dependencies on earlier phases" table below.
 
-**Next session starts here:** increment **4.9 — booking history / detail** (a
-single-booking read and the caller's booking history, deferred here by 4.4 and
-4.6). It consumes the existing `BookingSerializer` read and the caller-scoped
-queryset; its decisions have not been opened yet.
+**Phase 4 is complete.** A fresh session starts **Phase 5 (payment)** — see
+[`../phase-5-payment/PROGRESS.md`](../phase-5-payment/PROGRESS.md) and its
+[`DECISIONS.md`](../phase-5-payment/DECISIONS.md) (D56: the Stripe test-mode
+gateway). Phase 4's write seams that Phase 5 calls are `confirm_booking` (D51),
+`extend_booking` (D54) and `cancel_booking`'s stored `refund_due_amount` (D53).
 
 ---
 
@@ -66,7 +69,7 @@ queryset; its decisions have not been opened yet.
 | 4.6 | Confirmation seam (D51) + public `reference` (D52) | ✅ Done |
 | 4.7 | Cancellation (D53) | ✅ Done |
 | 4.8 | Extension (D54) | ✅ Done |
-| 4.9 | Booking history / listing | ⚪ Next |
+| 4.9 | Booking history / listing (D55) | ✅ Done |
 
 ---
 
@@ -812,6 +815,110 @@ curl "http://127.0.0.1:8000/api/bookings/1/extension-quote/?end_time=2026-10-07T
   Phase 10 hardening candidate.
 - **No booking detail / history route** — `BookingDetailView` is 4.9.
 - **No pagination** (Phase 10).
+
+---
+
+## Increment 4.9 — booking history / detail ✅
+
+### What it delivers
+
+The read side that closes Phase 4: a Consumer's booking history with optional
+filters and a rich single-booking read, so a list and a details page can be
+rendered from one API. Both are read-only (no writer, no model change, **no
+migration**) and keep "reads never mutate" (Invariant 6, D43): the `status`
+filter matches the **stored** status, so a lapsed hold is still returned by
+`?status=PENDING_PAYMENT` while its body `effective_status` reads `EXPIRED`
+(D50). `scope` is a time window independent of state, combined with `status` as
+an AND.
+
+### Files
+
+| File | State |
+|------|-------|
+| `apps/bookings/services.py` | **extended** — `HISTORY_SCOPES`, `filter_bookings(...)` selector; `CANCELLABLE_STATUSES` extracted and shared with `cancel_booking` |
+| `apps/bookings/serializers.py` | **extended** — `lot_name` on `BookingSerializer`; `BookingHistoryQuerySerializer`; `BookingDetailSerializer` (location + `can_cancel`/`can_extend`) |
+| `apps/bookings/views.py` | **extended** — list `get_queryset` applies the filters; `BookingDetailView` (`IsConsumer`, owner-scoped, coded 404) |
+| `apps/bookings/urls.py` | **extended** — `bookings/<int:pk>/` (`booking-detail`) |
+| `apps/bookings/tests.py` | **extended** — `BookingHistoryQueryTests` (7), `BookingHistoryApiTests` (9), `BookingDetailApiTests` (7) |
+
+Suggested commit (PROJECT.md §43):
+`feat(bookings): add booking history filters and detail read`
+
+### Backend flow
+
+```text
+GET /api/bookings/?status=…&scope=…&lot=…&ordering=…        (IsConsumer)
+   ↓
+BookingHistoryQuerySerializer   (comma statuses, scope, lot, ordering)
+   ↓
+services.filter_bookings   (read-only, stored status)
+   ├── status__in                         (stored status; lapsed hold kept)
+   ├── scope window  (upcoming/ongoing/past; AND with status)
+   ├── slot__lot_id
+   └── order_by(ordering, "-id")          (falls back to the model's -start_time)
+   ↓
+BookingSerializer (list; includes lot_name)
+
+GET /api/bookings/{id}/                                     (IsConsumer)
+   ↓
+owner-scoped lookup → 404 {"error": "BOOKING_NOT_FOUND"} (Invariant 2)
+   ↓
+BookingDetailSerializer = list + lot/lot_name/lot_address_line/
+   lot_city/lot_state/lot_postal_code/slot_floor + can_cancel/can_extend
+```
+
+### Decisions realized in the code
+
+- **D55 (Q1/Q2)** — richer read, Consumer-only, own bookings; a foreign/unknown
+  id is `404 {"error": "BOOKING_NOT_FOUND"}`, never `403`.
+- **D55 (Q3)** — the detail adds the lot/slot location and the two action hints.
+  The hints read `CANCELLABLE_STATUSES` / `EXTENDABLE_STATUSES`, the same
+  constants the write services use, so they cannot drift.
+- **D55 (Q4)** — the coded 404, matching cancel/confirm/extend.
+- **D55 (Q5)** — filters: stored `status` (one or more, comma-separated; unknown
+  → `400`), independent `scope` (`upcoming`/`ongoing`/`past`), `lot`, and
+  `ordering` (default: the model's `-start_time, -id`; an explicit choice gets an
+  `-id` tie-break). `filter_bookings` is pure.
+
+### Migration note (PROJECT.md §42)
+
+- **Model change:** none.
+- **Expected DB change:** none — read-only increment; no new column.
+- **Data implications:** none.
+
+### Verification
+
+```bash
+cd backend
+../env/bin/python manage.py makemigrations --check
+../env/bin/python manage.py check
+../env/bin/python manage.py test
+```
+
+Result: `makemigrations --check` reports no changes; `check` is clean;
+**333 tests OK** (was 288 after 4.7). New coverage: `BookingHistoryQueryTests`
+(stored-status match, several statuses, the three scope windows, scope+status,
+lot filter, `-start_time` ordering with a stable tiebreak, and a lapsed hold
+still matching `PENDING_PAYMENT` while `effective_status` reads `EXPIRED`),
+`BookingHistoryApiTests` (auth, own-only + `lot_name`, status/multi-status,
+unknown-status `400`, scope, invalid scope/ordering `400`, manager `403`) and
+`BookingDetailApiTests` (auth, the rich fields + action flags, pending/cancelled
+flags, foreign and unknown coded `404`, manager `403`). Manual spot-check:
+
+```bash
+curl "http://127.0.0.1:8000/api/bookings/?scope=upcoming&status=CONFIRMED" \
+  -H "Authorization: Bearer <access>"
+curl "http://127.0.0.1:8000/api/bookings/1/" -H "Authorization: Bearer <access>"
+```
+
+### Known, deliberate gaps from 4.9
+
+- **No pagination** — the history list is unpaginated; that is Phase 10.
+- **No payment fields on the detail** — `Payment`/`paid_at`/transaction id are
+  Phase 5; the detail deliberately references none.
+- **No manager/admin history read** — all bookings for a lot are a later phase.
+- **Public reference lookup still deferred** — the unauthenticated QR/gate read
+  arrives with the walk-in flow (D52).
 
 ---
 

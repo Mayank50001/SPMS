@@ -1,6 +1,6 @@
 # Phase 4 decisions — Booking
 
-Status as of **2026-10-07**:
+Status as of **2026-10-08**:
 
 - **Accepted:** D39 (persistence, relationships, snapshot — **revised in 4.2**,
   see below), D40 (state model), D41 (conflict window and concurrency) —
@@ -34,8 +34,14 @@ Status as of **2026-10-07**:
   the whole-window price recompute, the slot-locked `extend_booking` seam and the
   duration-policy re-check) — increment 4.8, **delivered** (a consumer can price
   an extension; Phase 5 charges it and calls the seam — **no migration**).
-- **Open:** nothing blocking 4.1–4.8. Increment **4.9** (booking history) will
-  add its own decisions (see "Open questions carried to later increments").
+- **Accepted (4.9, 2026-10-08):** D55 (booking history: the stored-status /
+  time-scope filter set, the rich single-booking detail read and the
+  `can_cancel` / `can_extend` action hints) — increment 4.9, **delivered** (the
+  caller's history is filterable and one own booking is readable; **no
+  migration**). **Phase 4 is complete — all of 4.1–4.9 are done.**
+- **Open:** nothing in Phase 4. Phase 5 (payment) is next; its first decision
+  (the Stripe test-mode gateway) is recorded in
+  [`../phase-5-payment/DECISIONS.md`](../phase-5-payment/DECISIONS.md) as **D56**.
 
 > A "Decision" below is the human's, not the agent's. Rationale/Consequence
 > record why, so the choice can be defended later.
@@ -779,6 +785,83 @@ worksheet's Q1–Q8.
 
 ---
 
+## D55 — Booking history filters and the single-booking detail read (accepted 2026-10-08)
+
+Increment 4.9 closes Phase 4 with its **read side**. D39 made `GET /api/bookings/`
+return the caller's bookings; D47/Q4, D52/Q6 and D54/Q7 successively deferred the
+single-booking `GET /api/bookings/{id}/` to here, and the history list was still
+only "everything, in the model's default order". 4.9 gives a client enough shape
+to render a history list (filterable) and a booking-detail page (rich) without a
+second request. This entry settles the 4.9 worksheet's Q1–Q5. It is **read-only**:
+no model change, no new writer, no migration, and it keeps the "reads never
+mutate" rule (Invariant 6, D43).
+
+- **Decision:**
+  - **Q1 — scope: B (richer, not minimal).** 4.9 delivers the **history filters**
+    on the collection *and* the **rich single-booking read**, rather than a bare
+    detail route. The list gains optional `?status=`, `?scope=`, `?lot=` and
+    `?ordering=`; the detail returns location and action fields (Q3). A minimal
+    detail endpoint would have had to be reopened for the list filters and the
+    frontend-ready fields later.
+  - **Q2 — actor and ownership: A.** Both reads are **Consumer-only**
+    (`IsConsumer`) and the lookup is scoped to the caller's own bookings. A
+    foreign or unknown id is `404` carrying the booking lifecycle's stable
+    `{"error": "BOOKING_NOT_FOUND"}`, **never** `403` (Invariant 2) — the same
+    contract as cancel/confirm/extend.
+  - **Q3 — detail shape: B (richer).** `GET /api/bookings/{id}/` returns the
+    list shape **plus** lot/slot location — `lot`, `lot_name`, `lot_address_line`,
+    `lot_city`, `lot_state`, `lot_postal_code`, `slot_floor` — and the action
+    hints `can_cancel` / `can_extend`. Payment fields are deliberately **absent**:
+    they arrive with Phase 5's `Payment`, not here.
+  - **Q4 — foreign/unknown detail id: A (coded 404).** A foreign or unknown id
+    answers `404 {"error": "BOOKING_NOT_FOUND"}` (D51/D53's code), not the
+    generic DRF `{"detail": ...}` that `/api/vehicles/{id}/` uses. One lifecycle
+    uses one refusal code, so the client branches the same way for reads and
+    writes.
+  - **Q5 — filter on the *stored* status; `scope` is independent: A.** A
+    `?status=` filter matches the **stored** `status`: a lapsed
+    `PENDING_PAYMENT` hold still matches `?status=PENDING_PAYMENT` while its
+    response `effective_status` reads `EXPIRED` (lazy expiry is a read-time
+    presentation concern, D50) — reads never write. `?scope=upcoming|ongoing|past`
+    is a purely time-based window independent of state, so the two **combine as
+    an AND** (e.g. "upcoming confirmed"). `?status=` accepts one or more
+    comma-separated stored states; an unknown token is a field-shaped `400`.
+- **Surface:** `GET /api/bookings/` gains optional
+  `status`, `scope` (`upcoming`/`ongoing`/`past`), `lot`, `ordering`
+  (`start_time`/`-start_time`/`end_time`/`-end_time`/`created_at`/`-created_at`;
+  default: the model's `-start_time, -id`, and an explicit choice gets an `-id`
+  tie-break for stable paging).
+  `GET /api/bookings/{id}/` is the new rich read. **No pagination** — that stays
+  Phase 10.
+- **Placement:** the pure selector `filter_bookings(queryset, *, statuses, scope,
+  lot_id, ordering, now=None)` and the `HISTORY_SCOPES` tuple live in
+  `apps/bookings/services.py` (the rule layer, D44); the query validation is
+  `BookingHistoryQuerySerializer`; the detail shape extends `BookingSerializer`
+  as `BookingDetailSerializer`, so list and detail cannot drift on the shared
+  fields. `CANCELLABLE_STATUSES` is **extracted** as a shared constant so
+  `cancel_booking` and the detail's `can_cancel` hint read one definition
+  (mirroring `EXTENDABLE_STATUSES` / `can_extend`, D54). D43's "one definition"
+  pattern is applied to the read side.
+- **Rationale:** the two reads a booking UI needs most are "my history, filtered"
+  and "this booking, in full". Filtering on the stored status keeps the read
+  path side-effect-free: expiring a hold to filter it would turn a GET into a
+  write, breaking D43. Keeping `scope` and `status` orthogonal lets the frontend
+  compose tabs ("upcoming confirmed", "past cancelled") without the backend
+  enumerating combinations. Extracting the cancellable/extendable constants
+  means an action hint can never disagree with the write endpoint it points at.
+- **Rejected:** filtering on the *effective* status (would need a write on GET);
+  a manager/admin history read (a later phase); the generic
+  `{"detail": ...}` 404 (the lifecycle already has a code); pagination (Phase
+  10); payment fields on the detail (Phase 5 owns `Payment`).
+- **Consequence:** **no schema change, no migration.** `BookingSerializer` gains
+  `lot_name` (shared by list and detail); `BookingDetailSerializer` adds the
+  location fields and the two action hints; `filter_bookings` and
+  `BookingHistoryQuerySerializer` add the filters; `BookingDetailView` adds the
+  detail route. Phase 4's read surface is now complete.
+- **Status:** Accepted (2026-10-08).
+
+---
+
 ## Increment 4.4 implementation decisions (accepted 2026-10-06)
 
 Recorded while delivering 4.4; they refine D47–D49, D41 and D44, not replace
@@ -1264,6 +1347,72 @@ recorded as **D54**. Every question took the recommended option.
 
 ---
 
+## 4.9 decision worksheet (resolved 2026-10-08 — kept for the record)
+
+Increment 4.9 is the read side of Phase 4: the caller's booking history and a
+single-booking detail read, deferred here by 4.4 (D47), 4.6 (D52) and 4.8 (D54).
+The questions below were decided with the human; the answers are recorded as
+**D55**. The phase's earlier reads (`effective_status`, availability) already
+established the "reads never write" rule the worksheet had to respect.
+
+### Q1 — What is the scope of 4.9?
+
+- **Options:** **A** a minimal single-booking read only (list filters later);
+  **B** the history filters on `GET /api/bookings/` **and** the single-booking
+  read, both frontend-ready.
+- **Trade-offs:** A is the smallest step but reopens the read contract twice —
+  once for filters, once for the detail fields. B settles both while the booking
+  read is fresh, so the frontend can be built against one stable shape.
+- **Recommendation/answer:** **B** — richer, not minimal.
+
+### Q2 — Who may read, and whose bookings?
+
+- **Options:** **A** Consumer-only, scoped to the caller's own bookings;
+  **B** Consumer plus the lot's Manager/Admin.
+- **Trade-offs:** A matches every existing consumer booking route and keeps
+  Invariant 2 simple; B reopens Invariant 3 and a manager history surface Phase 4
+  does not own.
+- **Recommendation/answer:** **A.** A foreign or unknown id is `404`, not `403`
+  (Invariant 2).
+
+### Q3 — How rich is the detail response?
+
+- **Options:** **A** the list shape only; **B** the list shape plus location
+  (`lot` + its address/city/state/postal, `lot_name`, `slot_floor`) and the
+  `can_cancel` / `can_extend` action hints.
+- **Trade-offs:** A forces a second request for the lot address and lets the
+  client guess which actions are legal; B gives one self-contained detail page
+  but couples the hint to the write rules — which are kept in one shared constant
+  so they cannot drift.
+- **Recommendation/answer:** **B**, with **no payment fields** (Phase 5 owns
+  them).
+
+### Q4 — How is a foreign/unknown detail id reported?
+
+- **Options:** **A** `404 {"error": "BOOKING_NOT_FOUND"}` (the lifecycle code);
+  **B** the generic DRF `{"detail": ...}` 404.
+- **Trade-offs:** A matches cancel/confirm/extend, so a client reads refusals
+  the same way across the lifecycle; B matches `/api/vehicles/{id}/` but
+  reintroduces a second 404 shape inside the booking domain.
+- **Recommendation/answer:** **A.** Never `403` — a booking the caller does not
+  own simply does not exist to them.
+
+### Q5 — Does the `status` filter use the stored or the effective status, and is
+`scope` independent?
+
+- **Options:** **A** filter on the **stored** `status` (a lapsed hold still
+  matches `PENDING_PAYMENT`, its body `effective_status` reads `EXPIRED`), with
+  `scope` a time window independent of state, combined as an AND; **B** filter on
+  the effective status and make `scope` derive from state.
+- **Trade-offs:** A keeps the GET side-effect-free (expiring rows to filter them
+  would be a write, breaking D43/Invariant 6) and lets a client compose tabs
+  ("upcoming confirmed") freely; B would require reading — and therefore
+  writing — expiry on the list path.
+- **Recommendation/answer:** **A** — stored status, independent scope, AND
+  combination.
+
+---
+
 ## Open questions carried to later increments
 
 Each will be surfaced as its own decision when its increment is opened.
@@ -1277,8 +1426,11 @@ Each will be surfaced as its own decision when its increment is opened.
 | Confirmation seam in Phase 4 vs deferring to Phase 5's gateway | ✅ done in 4.6 (D51) |
 | Walk-in public `reference`/`ticket_code` (unguessable bearer key) | ✅ done in 4.6 (D52); field stored + exposed |
 | Public reference lookup endpoint (QR/gate, unauthenticated) | walk-in/gate flow (deferred by D52) |
-| Single-booking read `GET /api/bookings/{id}/` | 4.9 |
+| Single-booking read `GET /api/bookings/{id}/` | ✅ done in 4.9 (D55) — rich `BookingDetailSerializer` |
+| Booking-history filters (`?status=`, `?scope=`, `?lot=`, `?ordering=`) | ✅ done in 4.9 (D55) |
+| Booking-history pagination | Phase 10 |
 | Extension charge seam (Phase 5 payment handoff) | ✅ done in 4.8 (D54): read-only quote + slot-locked `extend_booking` seam, no apply endpoint |
+| Payment gateway implementation (hand-rolled mock vs an external test-mode provider) | ✅ decided in D56 (Stripe test mode) — see [`../phase-5-payment/DECISIONS.md`](../phase-5-payment/DECISIONS.md) |
 | Extension payment/charge endpoint (calls `extend_booking` after charging) | Phase 5 |
 | Overstay vs extension boundary (§19 1.5× multiplier) | Phase 6 |
 | Whether `CANCELLED` and `TERMINATED` need distinct refusal messages | ✅ resolved in 4.7 (D53): one `BOOKING_NOT_CANCELLABLE` code; `TERMINATED` is a later phase |
