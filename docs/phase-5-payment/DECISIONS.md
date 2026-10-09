@@ -10,13 +10,24 @@ Status as of **2026-10-10**:
   `Booking.status`.
 - **Accepted (2026-10-09):** **D58** — the `PaymentGateway` interface (three
   methods, primitives in/out), adapter selection by settings, and the offline
-  `MockGateway` / lazy-SDK test strategy.
+  `MockGateway` / lazy-SDK test strategy. *(Revised by D60: a 4th method,
+  `parse_webhook`.)*
 - **Accepted (2026-10-10):** **D59** — the payment-creation surface:
   `POST /api/payments/`, consumer-only, server-authoritative amount, one
   `PENDING` attempt per request, `client_payload` in the response.
-- **Open:** the confirm/refund surfaces, webhook handling, receipts and
-  the transaction views. Each will be surfaced as its own decision when its
-  increment is opened (see "Open questions to decide before coding").
+- **Accepted (2026-10-10):** **D60** — payment confirmation: a server-verified
+  return callback **and** a signature-verified webhook, both funnelling through
+  one apply core into the D51 `confirm_booking` seam; the
+  **captured-but-not-applied** policy (`Payment.booking_applied`); and the
+  revision of D58 to a four-method gateway interface.
+- **Accepted (2026-10-10):** **D61** — a refund is a **ledger event** (a child
+  `Refund` row), never a mutation of a captured `Payment`. Revises D57 by
+  **removing** the `REFUNDED` state; triggered automatically on the D53
+  cancellation refund, with a Manager/Admin `POST /api/payments/{id}/refund/`
+  retry. See the entry below.
+- **Open:** receipts and the transaction views. Each will be surfaced as its own
+  decision when its increment is opened (see "Open questions to decide before
+  coding").
 
 > A "Decision" below is the human's, not the agent's. Rationale/Consequence
 > record why, so the choice can be defended later.
@@ -284,17 +295,130 @@ receives back.
 
 ---
 
+## D60 — Payment confirmation: return verify + signed webhook, one apply core (accepted 2026-10-10)
+
+D56 fixes the provider and D58 the interface; D59 starts an attempt. D60 closes
+the loop: how a paid attempt is **learned, verified and applied** to the booking.
+(Resolves open question 1.)
+
+- **Decision:**
+  - **Two trusted channels, one core.** (1) **Return verify** —
+    `POST /api/payments/{id}/confirm/`, consumer-only and owner-scoped, body
+    `{"payload": {...}}` (whatever Checkout's handler gave the browser).
+    (2) **Webhook** — `POST /api/payments/webhook/`, public, authenticated by
+    the **raw-body signature** (`X-Razorpay-Signature`) alone. Both call
+    `services.apply_payment_outcome`, the single place that writes
+    `SUCCEEDED`/`FAILED` and calls the D51 `confirm_booking` seam, so the two
+    channels cannot drift.
+  - **Verify, don't trust (§24/§25).** Only a server-side signature check — the
+    **stored** order id is what gets signed, never a client-supplied one — can
+    move a booking to `CONFIRMED`.
+  - **Idempotent by construction.** Provider ids are unique, a `Payment` is
+    terminal once resolved, and `confirm_booking` is already idempotent (D51);
+    a duplicate callback or webhook is a no-op.
+  - **Captured but not applied.** If the gateway captured the money but the
+    booking can no longer be confirmed (lapsed hold, slot taken): the money row
+    is committed `SUCCEEDED` and `booking_applied=False`, with
+    `failure_reason = "booking_not_confirmable:<CODE>"`. The return path answers
+    `409 PAYMENT_CAPTURED_NOT_APPLIED`; the webhook acknowledges `200` so the
+    provider does not retry. The owed refund is D61 (5.5); the **automated
+    reconciler is deferred post-project** (see
+    [`../deferred-features.md`](../deferred-features.md)) because the project
+    deliberately has no background workers (D6, §12, §47).
+  - **New field.** `Payment.booking_applied` (`BooleanField`, default `False`),
+    migration `payments/0002_payment_booking_applied`. It is the exact key the
+    deferred reconciler will query, so it is not speculative.
+  - **Interface revision (D58).** `PaymentGateway` gains a 4th method,
+    `parse_webhook(*, body, headers) -> WebhookEvent | None`; `None` means the
+    webhook could not be verified. `verify_razorpay_webhook_signature` is the
+    stdlib raw-body HMAC helper. This supersedes D58's "exactly three methods",
+    because a webhook's signature scheme and payload shape are provider-specific
+    and must stay inside the adapter (§26).
+  - **Refusals.** `PAYMENT_NOT_FOUND` (404), `PAYMENT_NOT_CONFIRMABLE` (409),
+    `PAYMENT_VERIFICATION_FAILED` (409), `PAYMENT_CAPTURED_NOT_APPLIED` (409),
+    `INVALID_WEBHOOK_SIGNATURE` (400), `PAYMENT_GATEWAY_UNAVAILABLE` (503).
+
+- **Rationale:** §26 exists so the application never depends on the provider; a
+  webhook's signature and payload *are* provider details, so the adapter owns
+  them. Keeping one apply core writes the money/booking ordering once, and the
+  money row is committed *before* the booking seam so a booking refusal can
+  never roll back captured money — the honest outcome for a real charge.
+
+- **Rejected:** webhook-only (breaks the local demo); an unverified webhook
+  (trusting the client); provider parsing in the service (leaks past §26);
+  mutating a captured `Payment` to `REFUNDED` (D61 makes refund a ledger event);
+  one big transaction around verify+money+booking (would lose captured money);
+  encoding the not-applied case as a bare `failure_reason` string with no field
+  (stringly-typed and not queryable by the future reconciler).
+
+- **Status:** Accepted (2026-10-10).
+
+---
+
+## D61 — Refund is a ledger event, not a mutation of a captured `Payment` (accepted 2026-10-10)
+
+A captured payment's terminal state is **immutable**. A refund is a new ledger
+event: a child `Refund` row (`payment` FK, `amount`, `provider_refund_id`,
+`status`, `reason`, timestamps), so "how much of this payment was refunded?" is
+a derived sum and the original capture is never rewritten. This **revises D57**
+by **removing** the unreachable `REFUNDED` `Payment.Status` value, so a captured
+payment only ever becomes `SUCCEEDED`/`FAILED`.
+
+- **Decision:**
+  - **Ledger, not mutation.** Each refund is its own `Refund` row; the captured
+    `Payment.status` is never edited. The amount owed is a **derived** value
+    (`refundable_amount`), never client-supplied (§46), and net of refunds
+    already reserved (`PENDING`) or settled (`SUCCEEDED`).
+  - **What is owed.** A charge is refundable only when it was **captured but not
+    applied** to a booking (D60) — the whole capture — or when its booking was
+    **cancelled with a §19 entitlement** (D53) —
+    `min(captured, refund_due_amount)`. §19 is all-or-nothing, so each applied
+    charge refunds in full.
+  - **Trigger — automatic on cancellation.** The cancellation *view* composes
+    the domains: after `cancel_booking` (D53) commits, Phase 5's
+    `refund_booking` refunds each owed payment. Phase 4's service still moves no
+    money (its contract is unchanged). A failure is recorded as a `FAILED`
+    `Refund` and never un-cancels the booking; there is no background retry.
+  - **Surface — Manager/Admin only.** `POST /api/payments/{id}/refund/` is the
+    operational refund/retry tool; a consumer's refund is automatic, so they do
+    not call it. It is idempotent: a repeat after a settled (or in-flight)
+    refund returns that same row.
+  - **Partials — ledger-capable, policy all-or-nothing.** `Refund.amount`
+    accepts any positive value (so a future partial policy needs no migration),
+    but the 5.5 rule only ever refunds the full owed amount.
+  - **Concurrency.** `_reserve_refund` locks the payment row and counts
+    `PENDING` refunds, so two concurrent requests cannot reserve the same
+    balance twice; only then is the gateway called (mirroring the D59/D60
+    ordering).
+  - **Refusals.** `PAYMENT_NOT_REFUNDABLE` (409), `PAYMENT_REFUND_FAILED` (502).
+  - **Migration.** `payments/0003` = `CreateModel(Refund)` +
+    `AlterField(Payment.status)` (choices only; no data change).
+
+- **Rationale:** keeping the capture immutable makes the ledger trustworthy — a
+  later reader can always reconstruct exactly what was charged and what was
+  given back, which is what "no mutation" (D61) is for. Deriving the owed amount
+  server-side from the D53 snapshot keeps the §19 rule in one place.
+
+- **Rejected:** mutating a captured `Payment` to `REFUNDED` (loses history, and
+  cannot express partial or multiple refunds); client-supplied refund amounts;
+  a background refund sweeper (no workers — D6/§12/§47); a consumer-callable
+  refund endpoint (the consumer path is automatic).
+
+- **Status:** Accepted (2026-10-10).
+
+---
+
 ## Open questions to decide before coding
 
-These are **not decided yet**. Each is a decision point (PROJECT.md §9) that
-must be settled *with the human* when its increment opens; the agent proposes
-options and trade-offs first. They are listed here so the next session does not
-have to rediscover them.
+These are the Phase 5 decision points (PROJECT.md §9). Each is settled *with
+the human* when its increment opens; the agent proposes options and trade-offs
+first. Items already resolved are annotated below. They are listed here so the
+next session does not have to rediscover them.
 
-1. **Confirmation** — synchronous verify on return **and** the webhook; webhook
-   route, signature verification, and how it calls `confirm_booking` (D51).
-2. **Refund** — how `Booking.refund_due_amount` (D53) drives the Razorpay refund,
-   who triggers it, and how partial/zero refunds are recorded.
+1. **Confirmation** — *decided as **D60** (return verify + signed webhook, one
+   apply core, captured-but-not-applied policy).*
+2. **Refund** — *decided as **D61** (a `Refund` ledger event; automatic on the
+   D53 cancellation refund, Manager/Admin retry endpoint, `REFUNDED` removed).*
 3. **Extension charge path** — charge the D54 quote, then call `extend_booking`.
 4. **Walk-in cash payment** — the manager-recorded cash path (§3.1, §19).
 5. **Receipt** — shape, endpoint, and whether it is generated from the payment
@@ -305,7 +429,9 @@ have to rediscover them.
    duplicate callback) and how they map to refusal codes/statuses.
 
 > *Decided since:* the model/states and the amount source (D57); the gateway
-> interface, adapter selection and test strategy (D58); the creation surface
-> (D59).
+> interface, adapter selection and test strategy (D58, revised by D60); the
+> creation surface (D59); confirmation and the captured-but-not-applied policy
+> (D60); the refund ledger event, its automatic cancellation trigger, the
+> Manager/Admin retry surface and the removal of `REFUNDED` (D61).
 
 ---

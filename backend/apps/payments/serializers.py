@@ -7,7 +7,7 @@ from the booking server-side.
 
 from rest_framework import serializers
 
-from .models import Payment
+from .models import Payment, Refund
 
 
 class PaymentCreateSerializer(serializers.Serializer):
@@ -38,6 +38,37 @@ class PaymentSerializer(serializers.ModelSerializer):
             "provider_payment_id",
             "failure_reason",
             "paid_at",
+            "booking_applied",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+class PaymentConfirmSerializer(serializers.Serializer):
+    """Write shape for ``POST /api/payments/{id}/confirm/`` (5.4, D60).
+
+    The client returns whatever the gateway's Checkout handed the browser,
+    wrapped under ``payload``. It is passed straight to the adapter's
+    ``verify_payment``, so the field names stay the provider's, not ours -- and
+    the client can never supply an amount, currency or order id we act on (the
+    stored order id is what gets signed, D56/§46).
+    """
+
+    payload = serializers.DictField(required=False, default=dict)
+
+
+class RefundSerializer(serializers.ModelSerializer):
+    """Read representation of a refund ledger event (5.5, D61)."""
+
+    class Meta:
+        model = Refund
+        fields = [
+            "id",
+            "payment",
+            "amount",
+            "status",
+            "provider_refund_id",
+            "reason",
             "created_at",
             "updated_at",
         ]

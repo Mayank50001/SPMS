@@ -10,11 +10,14 @@
 > Phase 4 context (the seams Phase 5 calls):
 > [`../phase-4-booking/PROGRESS.md`](../phase-4-booking/PROGRESS.md).
 
-Last updated: **2026-10-10** · **5.1–5.3 are delivered; 5.4+ are next (batched).**
+Last updated: **2026-10-10** · **5.1–5.5 are delivered; 5.6+ are next (batched).**
 **D56** (revised: Razorpay test mode behind the payment abstraction),
 **D57** (the `Payment` model and states), **D58** (the gateway interface,
-adapter selection and offline test strategy) and **D59** (the creation surface)
-are accepted. Everything else in
+adapter selection and offline test strategy; **revised by D60** to a four-method
+interface), **D59** (the creation surface), **D60** (confirmation: return
+verify + signed webhook, one apply core, captured-but-not-applied policy) and
+**D61** (refund is a ledger event, automatic on cancellation, Manager/Admin
+retry, `REFUNDED` removed) are accepted. Everything else in
 [`DECISIONS.md`](DECISIONS.md) → "Open questions to decide before coding" is
 still open and must be settled with the human as each increment opens.
 
@@ -34,17 +37,12 @@ still open and must be settled with the human as each increment opens.
 
 **Next session starts here:** batch the remaining Phase 5 work — a session now
 delivers **several progressive increments of the same component** (see the
-batching rule in [`../README.md`](../README.md)). **Proposed batch A: 5.4 + 5.5
-+ 5.6**, which closes the money loop in one block:
+batching rule in [`../README.md`](../README.md)). **5.4 and 5.5 are delivered**;
+**batch A** finishes with **5.6**:
 
-- **5.4 — confirmation** (open question 1): server-side verify on return **and**
-  a signature-verified webhook, both idempotently calling
-  `bookings.services.confirm_booking` (D51) and marking the `Payment`
-  `SUCCEEDED`.
-- **5.5 — refund** (open question 2): drive `Booking.refund_due_amount` (D53)
-  through `refund_payment`, record the `REFUNDED` state.
-- **5.6 — extension charge** (open question 3): charge the D54 quote, then call
-  `bookings.services.extend_booking`.
+- **5.6 — extension charge** (open question 3): a `Payment(purpose=EXTENSION)`
+  that charges the D54 `quote_extension` amount, then calls
+  `bookings.services.extend_booking`. Reuses the creation + confirmation core.
 
 **Batch B: 5.7 + 5.8 + 5.9** (walk-in cash, receipt, transaction views) follows.
 Each increment still settles its open question and records its own `D<n>` before
@@ -57,17 +55,17 @@ its code. Do **not** start Phase 6.
 > **Draft — confirm at phase open.** The split follows Phase 4's pattern: a
 > coherent feature per increment, decisions surfaced before each. It may be
 > re-cut as the payment surfaces are decided. From 2026-10-10 the remaining
-> increments are **batched** (batch A: 5.4–5.6; batch B: 5.7–5.9) because they
-> are progressive stages of the same component — see the batching rule in
-> [`../README.md`](../README.md).
+> increments are **batched** (5.4–5.5 delivered; batch A: 5.6; batch B:
+> 5.7–5.9) because they are progressive stages of the same component — see the
+> batching rule in [`../README.md`](../README.md).
 
 | # | Increment | Status |
 |---|-----------|--------|
 | 5.1 | `Payment` model + payment states + migration | ✅ Done |
 | 5.2 | Gateway abstraction + `RazorpayGateway` (test mode) + `MockGateway` | ✅ Done |
 | 5.3 | Payment creation for a `PENDING_PAYMENT` booking (Razorpay Order / hosted Checkout) | ✅ Done |
-| 5.4 | Payment confirmation (server verify + signed webhook → `confirm_booking`) | ⚪ Next (batch A) |
-| 5.5 | Refund (drive it from `refund_due_amount`; `POST /api/payments/{id}/refund/`) | ⚪ Next (batch A) |
+| 5.4 | Payment confirmation (server verify + signed webhook → `confirm_booking`) | ✅ Done |
+| 5.5 | Refund (drive it from `refund_due_amount`; `POST /api/payments/{id}/refund/`) | ✅ Done |
 | 5.6 | Extension charge (charge the D54 quote → `extend_booking`) | ⚪ Next (batch A) |
 | 5.7 | Walk-in cash payment recording (Manager) | ⚪ (batch B) |
 | 5.8 | Receipt | ⚪ (batch B) |
@@ -89,6 +87,22 @@ its code. Do **not** start Phase 6.
   `POST /api/payments/` wired in `config/urls.py`; `MockGateway`'s id counter is
   now shared so repeat attempts get distinct order ids (D59). API tests added.
   **No migration** (no model change).
+- **5.4** — confirmation (D60): the shared `apply_payment_outcome` core, the
+  return-verify route `POST /api/payments/{id}/confirm/`, the public
+  signature-verified webhook `POST /api/payments/webhook/`, the 4th gateway
+  method `parse_webhook` (+ `verify_razorpay_webhook_signature`), and
+  `Payment.booking_applied` (migration `payments/0002_payment_booking_applied`).
+  Captured-but-not-applied is **recorded, not dropped**; the automated
+  reconciler is deferred post-project. API + gateway tests added.
+- **5.5** — refund (D61): the `Refund` ledger model + migration
+  `payments/0003_refund_alter_payment_status` (also removes the unreachable
+  `Payment.Status.REFUNDED`); `refundable_amount` / `_reserve_refund` /
+  `refund_payment` / `refund_booking` in `services.py`; the Manager/Admin
+  `POST /api/payments/{id}/refund/` (`PaymentRefundView`, `RefundSerializer`);
+  the automatic refund wired into `BookingCancelView` after `cancel_booking`.
+  The captured `Payment.status` is **never mutated**; a failed refund is a
+  `FAILED` row, retriable. Ledger-capable for partials; the business rule stays
+  all-or-nothing. API + model + auto-refund tests added.
 
 ---
 
@@ -114,6 +128,18 @@ its code. Do **not** start Phase 6.
   server-side, one `PENDING` attempt per request, `201` with the payment plus
   `client_payload`; refusals `BOOKING_NOT_PAYABLE` / `BOOKING_ALREADY_PAID`
   (409), `BOOKING_NOT_FOUND` (404), `PAYMENT_GATEWAY_UNAVAILABLE` (503). See
+  [`DECISIONS.md`](DECISIONS.md).
+- **D60 (accepted 2026-10-10)** — confirmation: server-verified return callback
+  **and** a signature-verified webhook, both funnelling through one apply core
+  into `confirm_booking` (D51); `Payment.booking_applied` records a
+  captured-but-not-applied charge instead of dropping it; D58's gateway
+  interface is revised to four methods (`parse_webhook`). See
+  [`DECISIONS.md`](DECISIONS.md).
+- **D61 (accepted 2026-10-10)** — a refund is a **ledger event** (a child
+  `Refund` row), never a mutation of a captured `Payment`; revises D57 by
+  removing the `REFUNDED` state. Triggered automatically on the D53
+  cancellation refund, with a Manager/Admin `POST /api/payments/{id}/refund/`
+  retry; ledger-capable for partials but the policy stays all-or-nothing. See
   [`DECISIONS.md`](DECISIONS.md).
 
 ---

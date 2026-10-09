@@ -105,12 +105,17 @@ Full entries: [`phase-5-payment/DECISIONS.md`](phase-5-payment/DECISIONS.md)
 | D57 | Payment model and states: one row per charge attempt | Accepted |
 | D58 | Payment gateway interface and adapter selection (mock + Razorpay, lazy SDK) | Accepted |
 | D59 | Payment creation surface: `POST /api/payments/` | Accepted |
+| D60 | Payment confirmation: return verify + signed webhook, one apply core; captured-but-not-applied policy (`booking_applied`) | Accepted |
+| D61 | Refund is a ledger event (`Refund` row), not a mutation of a captured `Payment`; automatic on cancellation, Manager/Admin retry, `REFUNDED` removed | Accepted (code in 5.5) |
 
 > D56 is decided ahead of coding so the first Phase 5 increment has a concrete
 > gateway to build against; it was **revised (Stripe → Razorpay)** on 2026-10-08
 > because SPMS is India-scoped and everything is INR. D57 fixes the `Payment`
 > model and states; D58 fixes the gateway interface, adapter selection and the
-> offline test strategy; D59 fixes the creation surface. The rest of Phase 5's
-> decisions (confirmation/webhook, refund, extension charge, cash, receipt,
-> transaction views) are open and will get their own IDs as the phase proceeds —
+> offline test strategy (revised by D60 to a four-method interface); D59 fixes
+> the creation surface; D60 fixes confirmation (return verify + signed webhook,
+> one apply core, captured-but-not-applied); D61 makes the refund a ledger event,
+> automatic on cancellation with a Manager/Admin retry. The remaining Phase 5
+> decisions (extension charge, cash, receipt, transaction views) are open and
+> will get their own IDs as the phase proceeds —
 > see [`phase-5-payment/`](phase-5-payment/).

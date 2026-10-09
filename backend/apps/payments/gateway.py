@@ -14,9 +14,8 @@ this module never requires the package to be installed.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
-import itertools
+import hashlib, hmac, itertools, json
+
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -50,6 +49,20 @@ class RefundResult:
     refund_id: str
     amount: Decimal
 
+@dataclass(frozen=True)
+class WebhookEvent:
+    """A provider webhook, verified and normalised to our vocabulary (D60).
+
+    ``event`` is the provider's event name (e.g. ``payment.captured``);
+    ``success`` says whether it represents money captured. The ids are the
+    provider handles we correlate against our stored ``Payment``.
+    """
+
+    event: str
+    gateway_order_id: str | None = None
+    gateway_payment_id: str | None = None
+    success: bool = False
+
 class PaymentGateway(ABC):
     """The provider-agnostic payment interface (PROJECT.md §26).
 
@@ -75,6 +88,16 @@ class PaymentGateway(ABC):
     ) -> RefundResult:
         """Refund (part of) a settled payment."""
 
+    @abstractmethod
+    def parse_webhook(
+        self, *, body: bytes, headers: Mapping[str, str]
+    ) -> WebhookEvent | None:
+        """Verify and normalise a provider webhook (D60).
+
+        Returns ``None`` when the webhook cannot be verified -- a bad or missing
+        signature -- so the caller refuses it rather than trusting it.
+        """
+
 def verify_razorpay_signature(
     *, order_id: str, payment_id: str, signature: str, secret: str
 ) -> bool:
@@ -92,12 +115,36 @@ def verify_razorpay_signature(
     ).hexdigest()
     return hmac.compare_digest(expected, signature)
 
+def verify_razorpay_webhook_signature(
+    *, body: bytes, signature: str, secret: str
+) -> bool:
+    """Return whether a Razorpay webhook signature matches its raw body (D60).
+
+    Razorpay signs the **raw request body** with the webhook secret, so the
+    bytes must be verified *before* they are parsed. Pure stdlib, unit-tested
+    offline, exactly like :func:`verify_razorpay_signature`.
+    """
+
+    if not body or not signature or not secret:
+        return False
+    expected = hmac.new(
+        secret.encode("utf-8"), body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
 
 #: Shared across MockGateway instances. ``get_payment_gateway()`` builds a fresh
 #: adapter on every call, so a per-instance counter would restart at 1 and mint
 #: duplicate ids -- which the unique ``provider_order_id`` / ``provider_payment_id``
 #: constraints reject once a second attempt exists (5.3, D59).
 _MOCK_SEQUENCE = itertools.count(1)
+
+#: The fixed header value MockGateway accepts for a webhook, so the signature
+#: gate is still exercised in the offline suite (a wrong/absent value is refused,
+#: mirroring a bad Razorpay signature). Real deployments use RazorpayGateway.
+MOCK_WEBHOOK_HEADER = "X-Mock-Signature"
+MOCK_WEBHOOK_SIGNATURE = "mock-signature"
 class MockGateway(PaymentGateway):
     
     """Offline, deterministic adapter for the automated suite (D58).
@@ -134,6 +181,22 @@ class MockGateway(PaymentGateway):
 
     def refund_payment(self, *, gateway_payment_id, amount):
         return RefundResult(refund_id=self._next("rfnd"), amount=amount)
+
+    def parse_webhook(self, *, body, headers):
+        if (headers or {}).get(MOCK_WEBHOOK_HEADER) != MOCK_WEBHOOK_SIGNATURE:
+            return None
+        try:
+            data = json.loads(body or b"{}")
+        except (TypeError, ValueError):
+            return None
+        entity = (data.get("payload") or {}).get("payment", {}).get("entity", {})
+        event = str(data.get("event", ""))
+        return WebhookEvent(
+            event=event,
+            gateway_order_id=entity.get("order_id"),
+            gateway_payment_id=entity.get("id"),
+            success=event == "payment.captured",
+        )
 
 class RazorpayGateway(PaymentGateway):
     """Razorpay **test-mode** adapter (D56 revised, D58).
@@ -214,6 +277,27 @@ class RazorpayGateway(PaymentGateway):
         )
         return RefundResult(refund_id=refund["id"], amount=amount)
 
+    def parse_webhook(self, *, body, headers):
+        signature = (headers or {}).get("X-Razorpay-Signature", "")
+        if not verify_razorpay_webhook_signature(
+            body=body,
+            signature=signature,
+            secret=getattr(settings, "RAZORPAY_WEBHOOK_SECRET", ""),
+        ):
+            return None
+        try:
+            data = json.loads(body or b"{}")
+        except (TypeError, ValueError):
+            return None
+        entity = (data.get("payload") or {}).get("payment", {}).get("entity", {})
+        event = str(data.get("event", ""))
+        return WebhookEvent(
+            event=event,
+            gateway_order_id=entity.get("order_id"),
+            gateway_payment_id=entity.get("id"),
+            success=event == "payment.captured",
+        )
+    
 def get_payment_gateway() -> PaymentGateway:
     """Return the adapter named by ``settings.PAYMENT_GATEWAY`` (D58).
 

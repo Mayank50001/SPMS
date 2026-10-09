@@ -21,6 +21,7 @@ from .serializers import (
     ExtensionQuoteSerializer,
 )
 from .services import BookingRuleError, cancel_booking, create_booking, filter_bookings, quote_extension
+from apps.payments.services import refund_booking
 
 #: Stable refusal code -> HTTP status (Q10). Shape/client errors are 400,
 #: state/config conflicts are 409, an unaddressable target is 404.
@@ -121,6 +122,14 @@ class BookingCancelView(generics.GenericAPIView):
                 {"error": exc.code, "message": str(exc)},
                 status=REFUSAL_STATUS.get(exc.code, status.HTTP_400_BAD_REQUEST),
             )
+
+        # D53/D61 (5.5): cancellation stored the §19 entitlement; Phase 5 now
+        # moves the money. Best-effort -- a failed refund is recorded on the
+        # payment and retriable via POST /api/payments/{id}/refund/, so a dead
+        # gateway never un-cancels a booking.
+        if booking.refund_due_amount > 0:
+            refund_booking(booking)
+
         return Response(BookingSerializer(booking).data)
 
 class BookingExtensionQuoteView(generics.GenericAPIView):

@@ -99,3 +99,20 @@ contract (D52/§47).
 - `requirements.txt` pins `redis==8.1.0` and `pillow==12.3.0`, neither of which
   is imported anywhere. D6 avoids Redis and §12 forbids introducing it without
   approval. Left in place pending a decision; they are currently misleading.
+
+---
+
+## Automated payment reconciliation / refund sweeper (post-project)
+
+A background process that periodically finds `Payment` rows with
+`status = SUCCEEDED` but `booking_applied = False` — money captured while the
+booking could no longer be confirmed (D60) — and drives them to a refund (D61).
+
+**Scope when picked up:** a scheduled worker (management command / cron), the
+refund call for the orphaned captures, and alerting. It requires the background
+infrastructure the project deliberately excludes (D6 keeps expiry lazy; §12/§47
+forbid new infrastructure without approval).
+
+**Why deferred:** the project has no workers. Until then a captured-but-not-
+applied payment is recovered through 5.5's manual refund endpoint, and
+`booking_applied = False` is the flag the sweeper will consume.
