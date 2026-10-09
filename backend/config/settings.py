@@ -287,3 +287,19 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOW_CREDENTIALS = env_bool("CORS_ALLOW_CREDENTIALS", default=False)
 
 CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
+
+# ---------------------------------------------------------------------------
+# Payment gateway (Phase 5 — D56 revised / D58)
+# ---------------------------------------------------------------------------
+
+# Which PaymentGateway adapter to use: "mock" (offline, deterministic; the
+# default so development and the test suite need no network or credentials) or
+# "razorpay" (test-mode sandbox). Only the adapter imports the provider SDK.
+PAYMENT_GATEWAY = os.environ.get("PAYMENT_GATEWAY", "mock").strip().lower()
+
+# Razorpay **test-mode** credentials. TEST keys only (rzp_test_...); NEVER live
+# keys and NEVER committed (D9/D56 revised). Blank by default, because the mock
+# path needs no secrets.
+RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
+RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")

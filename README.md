@@ -29,7 +29,7 @@ quote and the slot-locked `extend_booking` seam for Phase 5's charge — D54; no
 migration) and **4.9** (booking history filters and the rich single-booking
 detail read — D55; no migration). **Phase 4 is complete.** The next phase is
 **Phase 5 (payment)**, built on the §26 provider-agnostic payment abstraction
-with **Stripe in test mode** as the concrete gateway (D56). The authoritative
+with **Razorpay in test mode** as the concrete gateway (D56, revised). The authoritative
 specification is [`PROJECT.md`](PROJECT.md). Documentation is split per phase —
 start at [`docs/README.md`](docs/README.md), the navigation entry point, phase
 tracker and reading protocol.
@@ -79,7 +79,7 @@ ParkingManagementSystem/
 │       ├── accounts/       # users, roles, auth, vehicles
 │       ├── parking/        # lots, slots, slot types, pricing
 │       ├── bookings/       # bookings, lifecycle, holds
-│       ├── payments/       # payments, Stripe test-mode gateway, refunds
+│       ├── payments/       # payments, Razorpay test-mode gateway, refunds
 │       ├── notifications/  # in-app notification records
 │       └── reports/        # occupancy / revenue / stats
 └── frontend/
@@ -605,7 +605,7 @@ a `403` (Invariant 2).
 ### Payment (Phase 5) — next
 
 Not implemented yet. Phase 5 adds the `Payment` model, payment states, creation,
-confirmation, receipt and refund on top of Phase 4's seams, using **Stripe in
-test mode** behind the §26 provider-agnostic abstraction (D56). No real charges
-are made and no card data is stored. See
-[`docs/phase-5-payment/`](docs/phase-5-payment/).
+confirmation, receipt and refund on top of Phase 4's seams, using **Razorpay in
+test mode** behind the §26 provider-agnostic abstraction (D56, revised from
+Stripe; the model and states are fixed by D57). No real charges are made and no
+card data is stored. See [`docs/phase-5-payment/`](docs/phase-5-payment/).

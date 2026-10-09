@@ -140,8 +140,8 @@ Since hardware is excluded:
 - Slot occupancy may be changed through software/admin actions.
 - Vehicle entry/exit may be simulated through software actions.
 - Payment processing may use a mock payment gateway, or a real provider's
-  **test / sandbox mode** (Phase 5 uses Stripe test mode behind an abstraction —
-  D56).
+  **test / sandbox mode** (Phase 5 uses Razorpay test mode behind an abstraction —
+  D56, revised from Stripe).
 - Notifications may initially be represented as database records/logs instead of real SMS/push infrastructure.
 
 ---
@@ -193,9 +193,10 @@ A mock payment service may be created to simulate:
 
 A payment provider's **test / sandbox mode** is an approved alternative to a
 hand-rolled mock: it simulates the same success / failure / refund /
-transaction-ID lifecycle while moving **no real money**. **Stripe test mode** is
-the approved gateway for Phase 5, sitting behind the payment abstraction of §26
-(see D56 in `docs/phase-5-payment/DECISIONS.md`). The card form is
+transaction-ID lifecycle while moving **no real money**. **Razorpay test mode**
+is the approved gateway for Phase 5 (revised from Stripe, because the project is
+India-scoped and every amount is INR), sitting behind the payment abstraction of
+§26 (see D56 in `docs/phase-5-payment/DECISIONS.md`). The card form is
 provider-hosted, so card data never reaches this application.
 
 > **Exclusion.** The "no external tools" / "no unnecessary infrastructure"
@@ -596,7 +597,7 @@ Responsible for:
 Responsible for:
 
 - payment records
-- payment gateway (Stripe test mode, or a mock in tests)
+- payment gateway (Razorpay test mode, or a mock in tests)
 - refunds
 - receipts
 - transaction status
@@ -1051,7 +1052,7 @@ Payment Service
    ↓
 Payment Gateway Interface
    ↓
-Stripe Gateway (test mode)        # Mock Gateway in automated tests
+Razorpay Gateway (test mode)      # Mock Gateway in automated tests
 ```
 
 The application should not directly depend on a specific payment provider.
@@ -1072,10 +1073,10 @@ class PaymentGateway:
 
 The human developer should implement the actual behavior.
 
-Phase 5 implements this interface with a **Stripe test-mode** adapter and keeps a
-**mock** adapter for the automated tests (D56). The application still never
-depends on Stripe directly — only the adapter imports the provider SDK, and the
-gateway is chosen by configuration.
+Phase 5 implements this interface with a **Razorpay test-mode** adapter and keeps
+a **mock** adapter for the automated tests (D56, revised from Stripe). The
+application still never depends on Razorpay directly — only the adapter imports
+the provider SDK, and the gateway is chosen by configuration.
 
 ---
 
@@ -1499,7 +1500,7 @@ Implement:
 
 - Payment model
 - payment states
-- payment gateway abstraction + **Stripe test-mode** adapter (a mock adapter is
+- payment gateway abstraction + **Razorpay test-mode** adapter (a mock adapter is
   kept for automated tests — D56)
 - payment creation
 - payment confirmation

@@ -39,9 +39,10 @@ Status as of **2026-10-08**:
   `can_cancel` / `can_extend` action hints) — increment 4.9, **delivered** (the
   caller's history is filterable and one own booking is readable; **no
   migration**). **Phase 4 is complete — all of 4.1–4.9 are done.**
-- **Open:** nothing in Phase 4. Phase 5 (payment) is next; its first decision
-  (the Stripe test-mode gateway) is recorded in
-  [`../phase-5-payment/DECISIONS.md`](../phase-5-payment/DECISIONS.md) as **D56**.
+- **Open:** nothing in Phase 4. Phase 5 (payment) is next; its decisions
+  (D56 — the Razorpay test-mode gateway, revised from Stripe; D57 — the payment
+  model and states) are recorded in
+  [`../phase-5-payment/DECISIONS.md`](../phase-5-payment/DECISIONS.md).
 
 > A "Decision" below is the human's, not the agent's. Rationale/Consequence
 > record why, so the choice can be defended later.
@@ -1430,7 +1431,7 @@ Each will be surfaced as its own decision when its increment is opened.
 | Booking-history filters (`?status=`, `?scope=`, `?lot=`, `?ordering=`) | ✅ done in 4.9 (D55) |
 | Booking-history pagination | Phase 10 |
 | Extension charge seam (Phase 5 payment handoff) | ✅ done in 4.8 (D54): read-only quote + slot-locked `extend_booking` seam, no apply endpoint |
-| Payment gateway implementation (hand-rolled mock vs an external test-mode provider) | ✅ decided in D56 (Stripe test mode) — see [`../phase-5-payment/DECISIONS.md`](../phase-5-payment/DECISIONS.md) |
+| Payment gateway implementation (hand-rolled mock vs an external test-mode provider) | ✅ decided in D56 (Razorpay test mode, revised from Stripe) — see [`../phase-5-payment/DECISIONS.md`](../phase-5-payment/DECISIONS.md) |
 | Extension payment/charge endpoint (calls `extend_booking` after charging) | Phase 5 |
 | Overstay vs extension boundary (§19 1.5× multiplier) | Phase 6 |
 | Whether `CANCELLED` and `TERMINATED` need distinct refusal messages | ✅ resolved in 4.7 (D53): one `BOOKING_NOT_CANCELLABLE` code; `TERMINATED` is a later phase |

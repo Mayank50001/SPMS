@@ -51,8 +51,9 @@ read-only. **Phase 4 is complete; Phase 5 (payment) is next.**
 
 **Phase 4 is complete.** A fresh session starts **Phase 5 (payment)** — see
 [`../phase-5-payment/PROGRESS.md`](../phase-5-payment/PROGRESS.md) and its
-[`DECISIONS.md`](../phase-5-payment/DECISIONS.md) (D56: the Stripe test-mode
-gateway). Phase 4's write seams that Phase 5 calls are `confirm_booking` (D51),
+[`DECISIONS.md`](../phase-5-payment/DECISIONS.md) (D56: the Razorpay test-mode
+gateway, revised from Stripe; D57: the payment model and states). Phase 4's
+write seams that Phase 5 calls are `confirm_booking` (D51),
 `extend_booking` (D54) and `cancel_booking`'s stored `refund_due_amount` (D53).
 
 ---
