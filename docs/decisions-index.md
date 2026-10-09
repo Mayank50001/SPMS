@@ -104,12 +104,13 @@ Full entries: [`phase-5-payment/DECISIONS.md`](phase-5-payment/DECISIONS.md)
 | D56 | Payment gateway: Razorpay test mode behind the provider-agnostic payment abstraction (revised 2026-10-08 from Stripe) | Accepted |
 | D57 | Payment model and states: one row per charge attempt | Accepted |
 | D58 | Payment gateway interface and adapter selection (mock + Razorpay, lazy SDK) | Accepted |
+| D59 | Payment creation surface: `POST /api/payments/` | Accepted |
 
 > D56 is decided ahead of coding so the first Phase 5 increment has a concrete
 > gateway to build against; it was **revised (Stripe → Razorpay)** on 2026-10-08
 > because SPMS is India-scoped and everything is INR. D57 fixes the `Payment`
 > model and states; D58 fixes the gateway interface, adapter selection and the
-> offline test strategy. The rest of Phase 5's decisions (the create/verify/refund
-> surfaces, receipts, webhook handling) are open and will get their own IDs as
-> the phase proceeds — see
-> [`phase-5-payment/`](phase-5-payment/).
+> offline test strategy; D59 fixes the creation surface. The rest of Phase 5's
+> decisions (confirmation/webhook, refund, extension charge, cash, receipt,
+> transaction views) are open and will get their own IDs as the phase proceeds —
+> see [`phase-5-payment/`](phase-5-payment/).

@@ -1,6 +1,6 @@
 # Phase 5 decisions — Payment
 
-Status as of **2026-10-09**:
+Status as of **2026-10-10**:
 
 - **Accepted (2026-10-08; revised 2026-10-08):** **D56** — the payment gateway
   is **Razorpay in test mode**, behind the provider-agnostic payment abstraction.
@@ -11,7 +11,10 @@ Status as of **2026-10-09**:
 - **Accepted (2026-10-09):** **D58** — the `PaymentGateway` interface (three
   methods, primitives in/out), adapter selection by settings, and the offline
   `MockGateway` / lazy-SDK test strategy.
-- **Open:** the create/verify/refund surfaces, webhook handling, receipts and
+- **Accepted (2026-10-10):** **D59** — the payment-creation surface:
+  `POST /api/payments/`, consumer-only, server-authoritative amount, one
+  `PENDING` attempt per request, `client_payload` in the response.
+- **Open:** the confirm/refund surfaces, webhook handling, receipts and
   the transaction views. Each will be surfaced as its own decision when its
   increment is opened (see "Open questions to decide before coding").
 
@@ -221,6 +224,66 @@ resolves the test-strategy open question.)
 
 ---
 
+## D59 — Payment creation surface: `POST /api/payments/` (accepted 2026-10-10)
+
+Open question 1. D57 fixes *what* a `Payment` is and D58 fixes the gateway
+interface; D59 fixes how an attempt is **started over HTTP** and what the client
+receives back.
+
+- **Decision:**
+  - **Endpoint:** `POST /api/payments/` with body `{"booking": <id>}`, matching
+    PROJECT.md §22 and the collection style of the other domains. The 5.9
+    history read adds `GET` on the same route.
+  - **Actor:** the booking's **owner**, `IsConsumer`. Manager walk-in cash is
+    5.7; extension charges are 5.6.
+  - **Amount/currency are server-side:** `amount = Booking.base_amount`
+    (D57/§46) and `currency = "INR"`; any `amount`/`currency` in the body is
+    ignored. The write shape accepts only the target booking.
+  - **One request = one attempt:** every call writes a new `PENDING` row and
+    opens a new provider order (D57's "one row per charge attempt"). Duplicates
+    are harmless -- provider ids are unique and 5.4's confirmation is idempotent
+    (D51), so at most one can succeed.
+  - **Response:** `201` with the payment's read fields plus `client_payload`
+    (exactly what the adapter returned for the client to open Razorpay Checkout).
+  - **Payable = a live `PENDING_PAYMENT` booking** (`is_hold_live`, D6/D50); a
+    lapsed hold or any other state is `BOOKING_NOT_PAYABLE` (409). A booking
+    whose initial charge already `SUCCEEDED` is `BOOKING_ALREADY_PAID` (409),
+    which also covers the window before 5.4's confirmation runs.
+  - **No slot lock here:** starting an attempt changes no booking/slot state, and
+    `base_amount` cannot move while `PENDING_PAYMENT` (extensions require
+    `CONFIRMED`/`IN_PROGRESS`, D54). Confirmation owns the lock (5.4).
+  - **Gateway errors are `PAYMENT_GATEWAY_UNAVAILABLE` (503):** the adapter is
+    resolved *before* the row is written, so a pure configuration error writes
+    nothing; a provider failure during the call marks the row `FAILED` and is
+    surfaced as the same 503.
+  - **Receipt string:** `f"{booking.reference}-{payment.id}"` -- unique per
+    attempt (the D52 reference plus the row id).
+  - **5.2 regression fixed:** `MockGateway`'s id counter is now module-level
+    (shared), so repeat attempts mint distinct `order_mock_*` ids and satisfy the
+    unique provider-id constraints.
+
+- **Rationale:** the §22 endpoint list already names `/api/payments/`, so
+  creation and the later history read share one resource. Keeping the amount
+  server-side and the attempt-per-request model preserves D57's audit trail, and
+  resolving the adapter before writing keeps a misconfiguration from leaving
+  junk rows.
+
+- **Rejected:** a booking-scoped `POST /api/bookings/{id}/pay/` (still needs the
+  collection route for history); reusing an outstanding `PENDING` attempt (the
+  model stores no client payload, so it would need a rebuild helper); refusing a
+  second attempt with 409 (a refresh would hard-fail the user); accepting a
+  client amount/currency (§46).
+
+- **Consequence:** new `payments/services.py` (`create_payment_attempt` +
+  `PaymentError` subclasses), `serializers.py` (`PaymentCreateSerializer`,
+  `PaymentSerializer`), `views.py` (`PaymentCreateView`) and `urls.py`; a new
+  `path("api/payments/", ...)`; `MockGateway`'s shared counter; new API tests.
+  No migration (no model change).
+
+- **Status:** Accepted (2026-10-10).
+
+---
+
 ## Open questions to decide before coding
 
 These are **not decided yet**. Each is a decision point (PROJECT.md §9) that
@@ -228,22 +291,21 @@ must be settled *with the human* when its increment opens; the agent proposes
 options and trade-offs first. They are listed here so the next session does not
 have to rediscover them.
 
-1. **Payment creation surface** — endpoint shape, who may initiate, and whether
-   the response returns a Razorpay order handle for the client to open Checkout.
-2. **Confirmation** — synchronous verify on return **and** the webhook; webhook
+1. **Confirmation** — synchronous verify on return **and** the webhook; webhook
    route, signature verification, and how it calls `confirm_booking` (D51).
-3. **Refund** — how `Booking.refund_due_amount` (D53) drives the Razorpay refund,
+2. **Refund** — how `Booking.refund_due_amount` (D53) drives the Razorpay refund,
    who triggers it, and how partial/zero refunds are recorded.
-4. **Extension charge path** — charge the D54 quote, then call `extend_booking`.
-5. **Walk-in cash payment** — the manager-recorded cash path (§3.1, §19).
-6. **Receipt** — shape, endpoint, and whether it is generated from the payment
+3. **Extension charge path** — charge the D54 quote, then call `extend_booking`.
+4. **Walk-in cash payment** — the manager-recorded cash path (§3.1, §19).
+5. **Receipt** — shape, endpoint, and whether it is generated from the payment
    record.
-7. **Transaction visibility** — consumer payment history vs manager/admin
+6. **Transaction visibility** — consumer payment history vs manager/admin
    transaction listing (PROJECT.md §22 `/api/payments/`).
-8. **Failure/timeout handling** — the §35 cases (payment fails, timeout,
+7. **Failure/timeout handling** — the §35 cases (payment fails, timeout,
    duplicate callback) and how they map to refusal codes/statuses.
 
 > *Decided since:* the model/states and the amount source (D57); the gateway
-> interface, adapter selection and test strategy (D58).
+> interface, adapter selection and test strategy (D58); the creation surface
+> (D59).
 
 ---

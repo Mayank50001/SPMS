@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import itertools
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -91,6 +92,12 @@ def verify_razorpay_signature(
     ).hexdigest()
     return hmac.compare_digest(expected, signature)
 
+
+#: Shared across MockGateway instances. ``get_payment_gateway()`` builds a fresh
+#: adapter on every call, so a per-instance counter would restart at 1 and mint
+#: duplicate ids -- which the unique ``provider_order_id`` / ``provider_payment_id``
+#: constraints reject once a second attempt exists (5.3, D59).
+_MOCK_SEQUENCE = itertools.count(1)
 class MockGateway(PaymentGateway):
     
     """Offline, deterministic adapter for the automated suite (D58).
@@ -100,18 +107,16 @@ class MockGateway(PaymentGateway):
     ``{"outcome": "failure"}``, and ``refund_payment`` mints a fake refund id.
     """
 
-    def __init__(self) -> None:
-        self._counter = 0
-
     def _next(self, prefix: str) -> str:
-        self._counter += 1
-        return f"{prefix}_mock_{self._counter:06d}"
+        return f"{prefix}_mock_{next(_MOCK_SEQUENCE):06d}"
 
     def create_payment(self, *, amount, currency, receipt):
+        order_id = self._next("order")
         return PaymentInitiation(
-            gateway_order_id=self._next("order"),
+            gateway_order_id=order_id,
             client_payload={
                 "gateway": "mock",
+                "order_id": order_id,
                 "amount": str(amount),
                 "currency": currency,
                 "receipt": receipt,
