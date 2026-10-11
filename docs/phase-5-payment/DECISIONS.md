@@ -29,9 +29,19 @@ Status as of **2026-10-10**:
   `POST /api/payments/` (`purpose=EXTENSION` + `end_time`), stores the target
   `extension_end_time` on the payment row, and applies it by calling the D54
   `extend_booking` seam on confirmation. See the entry below.
-- **Open:** walk-in cash, receipts and the transaction views. Each will be
-  surfaced as its own decision when its increment is opened (see "Open questions
-  to decide before coding").
+- **Deferred (2026-10-11):** **D63** — **walk-in booking creation and its cash
+  payment** move to a future addition; Phase 5 continues with **5.8** (receipt)
+  and **5.9** (transaction views). See the entry below.
+- **Accepted (2026-10-11):** **D64** — the **receipt** is a **per-payment JSON
+  read** (`GET /api/payments/{id}/receipt/`): a derived projection of a
+  `SUCCEEDED` payment plus its booking snapshot, with no stored model and no
+  generated document; an unsettled charge is `RECEIPT_NOT_AVAILABLE`. See the
+  entry below.
+- **Accepted (2026-10-11):** **D65** — transaction views: a single role-scoped
+  `GET /api/payments/` (consumer → own · manager → assigned lots · admin → all),
+  two read shapes chosen by role, a derived refund total, 4.9-style filters and
+  **no** pagination. See the entry below.
+- *(No Phase 5 decision points remain open.)*
 
 > A "Decision" below is the human's, not the agent's. Rationale/Consequence
 > record why, so the choice can be defended later.
@@ -472,6 +482,140 @@ and which surface starts the charge.
 
 ---
 
+## D63 — Walk-in booking creation and cash payment deferred (accepted 2026-10-11)
+
+Open question 4 (walk-in cash). While opening increment 5.7 it was found that its
+prerequisite — a Manager **creating a walk-in booking** — was never delivered:
+`POST /api/bookings/` is consumer-only and requires a registered vehicle
+(D47/Q1 deliberately deferred manager walk-ins to "its own coherent increment"),
+and `services.create_booking` always sets `user = created_by = request.user`.
+Cash therefore had no booking to attach to. Reviewed with the human.
+
+- **Decision:** defer **both** walk-in **booking creation** and its **cash
+  payment** (`method=CASH`) to a **future addition**. Phase 5 continues with
+  **5.8 (receipt)** and **5.9 (transaction views)**; 5.7 is skipped for now.
+- **Rationale:** the current project scope is met with the consumer and
+  manager/admin roles already built; a walk-in flow is a distinct §3.1 Manager
+  feature slice (Invariant 3 lot-scoping, D8 identity, V7 free-text plates) and
+  adds a whole booking-creation surface. It is a self-contained future feature,
+  not a correction, so it does not block closing the payment domain.
+- **What remains in place for a later pickup:** the `Payment.Method.CASH` value
+  and its no-provider-ids constraint (D57), and the fact that `refundable_amount`
+  / `refund_booking` already exclude non-`ONLINE` charges — so a future cash
+  increment needs no migration to the money model.
+- **Rejected:** implementing cash without a walk-in booking to pay (no real
+  caller, and an undelivered SRS feature); implementing the whole walk-in flow
+  now (scope beyond the current project's needs).
+- **Status:** Deferred (2026-10-11). Scope recorded in
+  [`../deferred-features.md`](../deferred-features.md).
+
+---
+
+## D64 — Receipt: a per-payment JSON read (accepted 2026-10-11)
+
+Open question 5. The SRS names a consumer "digital receipt" and makes "receipts"
+a payments responsibility, but fixes no shape or surface. D57 stores one
+`Payment` per charge attempt; this decides what proof of a charge a consumer can
+fetch.
+
+- **Decision:**
+  - **Shape: structured JSON, not a generated document.** A receipt is a read-only
+    projection of a `Payment` plus its booking snapshot. No PDF/HTML generator and
+    no new dependency is introduced (§12); the Phase 9 frontend renders it.
+  - **Granularity: one receipt per payment (per charge).** `Payment` is the money
+    ledger (D57): an initial charge and each extension charge are separate rows,
+    so each gets its own receipt. The consolidated, all-charges view is 5.9's
+    transaction history, not a second receipt.
+  - **Surface:** `GET /api/payments/{id}/receipt/`. Consumer-only and
+    owner-scoped, like confirm/refund; a foreign or unknown id is
+    `PAYMENT_NOT_FOUND` (404, Invariant 2).
+  - **Only a settled charge has one:** a `SUCCEEDED` payment returns the receipt;
+    a `PENDING`/`FAILED` one is `RECEIPT_NOT_AVAILABLE` (409).
+  - **Receipt number:** `f"{booking.reference}-{payment.id}"` — the same
+    per-attempt string D59 already sends the gateway, so a provider reference and
+    a customer-facing receipt agree. Extracted to one shared helper so the two
+    call sites cannot drift.
+  - **Contents (all derived, never client-supplied):** receipt number, `paid_at`,
+    `amount`, `currency`, `method`, `purpose`, `status`, the provider payment id,
+    and the booking snapshot (reference, slot number, lot name/code, window,
+    billed hours).
+  - **No model change, no migration.** Everything is computed from the stored
+    `Payment`/`Booking`; nothing new is persisted.
+  - **Method-agnostic in code** (it projects whatever payment it is given), so it
+    stays correct if a cash path is added later (D63).
+  - **Refusals:** `PAYMENT_NOT_FOUND` (404), `RECEIPT_NOT_AVAILABLE` (409).
+
+- **Rationale:** a receipt must be reconstructable from the immutable ledger,
+  never a second stored artefact that could drift from it — the same reasoning as
+  D61's "a refund is a ledger event". Projecting a settled payment keeps one
+  source of truth and needs no schema change; leaving it as data satisfies §12 and
+  lets the frontend own presentation.
+
+- **Rejected:** a generated PDF/HTML document (new dependency, presentation in the
+  backend); a booking-level consolidated receipt (duplicates 5.9's history and
+  blurs the per-charge ledger); a stored `Receipt` model (a copy of data the
+  payment already holds); issuing a receipt for a non-settled charge.
+
+- **Status:** Accepted (2026-10-11).
+
+---
+
+## D65 — Transaction views: one role-scoped `GET /api/payments/` (accepted 2026-10-11)
+
+Open question 6. The SRS gives a consumer "view transactions" (§19) and a manager
+"view bookings for assigned lots" / "generate reports for assigned lots" (§20),
+and makes **transaction status** a payments responsibility (§26); §22 already
+lists `/api/payments/`, whose GET D59 reserved for this. D57 stores one `Payment`
+per charge attempt and 5.8 gives a per-payment receipt; this decides how a caller
+**lists** charges.
+
+- **Decision:**
+  - **One route, branched by role.** `GET /api/payments/` serves all three roles;
+    the same path's `POST` stays consumer-only and unchanged (D59). No second
+    listing route is added — it honours §22 and D59's reservation.
+  - **Scoping is done in the queryset** (Invariant 2/3): consumer →
+    `booking__user = caller`; manager → `booking__slot__lot__manager = caller`
+    (their D36-assigned lots); admin → all rows. A caller who owns none gets an
+    empty list — never a `403`/`404` (matching the lot-catalogue role branching,
+    D37).
+  - **Two read shapes, chosen by role.** The consumer sees a slim history item
+    (own payment + booking/lot identifiers + a derived `receipt_available` hint);
+    the operator sees a transaction row that adds the payer and vehicle plate.
+    Operator-only fields never reach a consumer response.
+  - **Derived `refunded_amount`** (the sum of that payment's `SUCCEEDED` refunds)
+    on both shapes, so "transaction status" reflects refunds without a second
+    request — computed from the `Refund` ledger, never stored (D61).
+  - **Optional filters** (a 4.9-style query serializer): `status`
+    (comma-separated `PENDING`/`SUCCEEDED`/`FAILED`), `method`
+    (`ONLINE`/`CASH`), `purpose` (`BOOKING`/`EXTENSION`), `booking`, `lot`,
+    `created_from`/`created_to`, and `ordering` (`created_at`/`paid_at`/`amount`,
+    each with the `-id` tie-breaker for a stable page).
+  - **No pagination** — consistent with every other list in the project
+    (bookings, lots); paging is a later cross-cutting change.
+  - **No detail route** in this increment: the consumer already has the 5.8
+    receipt; an operator single-transaction read can be added later if a screen
+    needs it (kept out now to keep the increment to the list).
+  - **No model change, no migration.**
+  - **Refusals:** none new — a caller with no visible payments gets `200` and an
+    empty list.
+
+- **Rationale:** §22 already names the route and §26 already owns "transaction
+  status", so the surface is fixed; the roles differ only in **scope** and
+  **presentation**. One view + a scoped queryset + a role-selected serializer is
+  therefore the smallest honest change, and it keeps "who may see this row" in
+  exactly one place (the queryset), as the permissions module requires.
+
+- **Rejected:** a separate `GET /api/payments/transactions/` (names a route the
+  SRS does not and leaves two "list transactions" endpoints to document); one
+  superset serializer for all roles (leaks operator fields into consumer
+  responses); pagination (no peer list paginates); a stored refund total (it is
+  derivable and would drift from the ledger); a single-payment detail route now
+  (no caller needs it yet).
+
+- **Status:** Accepted (2026-10-11). Code in 5.9.
+
+---
+
 ## Open questions to decide before coding
 
 These are the Phase 5 decision points (PROJECT.md §9). Each is settled *with
@@ -486,19 +630,30 @@ next session does not have to rediscover them.
 3. **Extension charge path** — *decided as **D62** (reuse `POST /api/payments/`
    with `purpose=EXTENSION` + `end_time`; store `extension_end_time`; apply via
    the D54 `extend_booking` seam).*
-4. **Walk-in cash payment** — the manager-recorded cash path (§3.1, §19).
-5. **Receipt** — shape, endpoint, and whether it is generated from the payment
-   record.
-6. **Transaction visibility** — consumer payment history vs manager/admin
-   transaction listing (PROJECT.md §22 `/api/payments/`).
-7. **Failure/timeout handling** — the §35 cases (payment fails, timeout,
-   duplicate callback) and how they map to refusal codes/statuses.
+4. **Walk-in cash payment** — *deferred as **D63**: a Manager walk-in booking
+   surface (its prerequisite) was never built, so walk-in booking creation and
+   its cash payment move to a future addition.*
+5. **Receipt** — *decided as **D64**: a per-payment JSON read
+   (`GET /api/payments/{id}/receipt/`), derived from a `SUCCEEDED` payment and its
+   booking, with no stored model and no generated document.*
+6. **Transaction visibility** — *decided as **D65**: one role-scoped
+   `GET /api/payments/` — consumer history vs manager/admin listing, scoped in the
+   queryset, two read shapes, derived refund totals, 4.9-style filters, no
+   pagination.*
+7. **Failure/timeout handling** — *settled within **D57** (the `PENDING` /
+   `SUCCEEDED` / `FAILED` states) and **D60** (duplicate-callback idempotency, the
+   captured-but-not-applied policy, and the "acknowledge an unknown/duplicate
+   webhook with 200" contract). No separate decision was needed.*
 
 > *Decided since:* the model/states and the amount source (D57); the gateway
 > interface, adapter selection and test strategy (D58, revised by D60); the
 > creation surface (D59); confirmation and the captured-but-not-applied policy
 > (D60); the refund ledger event, its automatic cancellation trigger, the
 > Manager/Admin retry surface and the removal of `REFUNDED` (D61); the extension
-> charge surface, stored target end time and apply branch (D62).
+> charge surface, stored target end time and apply branch (D62); and the deferral
+> of walk-in booking creation and its cash payment to a future addition (D63);
+> the receipt as a per-payment JSON read (D64); and the transaction views as one
+> role-scoped `GET /api/payments/` (D65). The §35 failure/timeout cases were
+> settled inside D57 and D60, so no Phase 5 decision points remain open.
 
 ---

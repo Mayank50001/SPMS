@@ -1,4 +1,4 @@
-# Progress — Phase 5 (Payment) 🔵 NEXT
+# Progress — Phase 5 (Payment) ✅ DONE
 
 > **Scope (PROJECT.md Phase 5):** the payment domain — the `Payment` model,
 > payment states, **payment creation**, **payment confirmation**, **receipt** and
@@ -10,7 +10,7 @@
 > Phase 4 context (the seams Phase 5 calls):
 > [`../phase-4-booking/PROGRESS.md`](../phase-4-booking/PROGRESS.md).
 
-Last updated: **2026-10-11** · **5.1–5.6 are delivered; batch B (5.7–5.9) is next.**
+Last updated: **2026-10-11** · **5.1–5.6, 5.8 and 5.9 are delivered; 5.7 is deferred (D63). Phase 5 is complete.**
 **D56** (revised: Razorpay test mode behind the payment abstraction),
 **D57** (the `Payment` model and states), **D58** (the gateway interface,
 adapter selection and offline test strategy; **revised by D60** to a four-method
@@ -19,9 +19,13 @@ verify + signed webhook, one apply core, captured-but-not-applied policy),
 **D61** (refund is a ledger event, automatic on cancellation, Manager/Admin
 retry, `REFUNDED` removed) and **D62** (extension charge: reuse
 `POST /api/payments/` with `purpose=EXTENSION` + `end_time`, store
-`extension_end_time`, apply via `extend_booking`) are accepted. Everything else
-in [`DECISIONS.md`](DECISIONS.md) → "Open questions to decide before coding" is
-still open and must be settled with the human as each increment opens.
+`extension_end_time`, apply via `extend_booking`) are accepted; **D63** records
+that walk-in booking creation and its cash payment are **deferred** to a future
+addition; **D64** fixes the receipt as a per-payment JSON read; **D65** fixes the
+transaction views as one role-scoped `GET /api/payments/` (code in 5.9).
+Everything else in [`DECISIONS.md`](DECISIONS.md) → "Open questions to
+decide before coding" is still open and must be settled with the human as each
+increment opens.
 
 ---
 
@@ -37,20 +41,15 @@ still open and must be settled with the human as each increment opens.
    `cancel_booking`), **D54** (`quote_extension` / `extend_booking`) and
    **D39 revised** (`base_amount`).
 
-**Next session starts here:** **batch B — 5.7 + 5.8 + 5.9** (walk-in cash, receipt,
-transaction views). A session delivers several progressive increments of the same
-component (see the batching rule in [`../README.md`](../README.md)). Each
-increment still settles its open question and records its own `D<n>` before its
-code:
+**Phase 5 is complete.** Every increment except **5.7** is delivered. **5.7
+(walk-in cash) is deferred** to a future addition (**D63**): its prerequisite — a
+Manager creating a walk-in booking — was never built, so it is out of the current
+project's scope.
 
-- **5.7 — walk-in cash payment** (open question 4): a Manager records cash against
-  a walk-in booking; no gateway is involved.
-- **5.8 — receipt** (open question 5): the receipt shape and endpoint.
-- **5.9 — transaction views** (open question 6): consumer payment history and a
-  manager/admin transaction listing on `GET /api/payments/` (D59 reserved the
-  route for this).
-
-Do **not** start Phase 6.
+**Next session starts here:** **Phase 6 — occupancy simulation**. Read
+[`../README.md`](../README.md) first, then open Phase 6 the same way each phase
+has been opened: surface each increment's decision with the human *before* its
+code, and record it as a `D<n>`.
 
 ---
 
@@ -71,9 +70,9 @@ Do **not** start Phase 6.
 | 5.4 | Payment confirmation (server verify + signed webhook → `confirm_booking`) | ✅ Done |
 | 5.5 | Refund (drive it from `refund_due_amount`; `POST /api/payments/{id}/refund/`) | ✅ Done |
 | 5.6 | Extension charge (charge the D54 quote, store the target end time → `extend_booking`) | ✅ Done |
-| 5.7 | Walk-in cash payment recording (Manager) | ⚪ (batch B) |
-| 5.8 | Receipt | ⚪ (batch B) |
-| 5.9 | Payment history / transaction views (consumer, manager/admin) | ⚪ (batch B) |
+| 5.7 | Walk-in cash payment recording (Manager) | ⏸ Deferred — future addition (D63) |
+| 5.8 | Receipt | ✅ Done |
+| 5.9 | Payment history / transaction views (consumer, manager/admin) | ✅ Done |
 
 ### Delivered so far
 
@@ -117,6 +116,22 @@ Do **not** start Phase 6.
   `confirm_payment_attempt` accepts an online extension as well as a booking
   charge; `PaymentCreateSerializer` gained `purpose`/`end_time`; `views.py` maps
   the extension refusal codes. No new route. API tests added.
+- **5.8** — receipt (D64): the derived `ReceiptSerializer` and
+  `get_payment_receipt` / `payment_receipt_number` helpers (the latter now shared
+  with the gateway call so a provider reference and a receipt agree);
+  `GET /api/payments/{id}/receipt/` (`PaymentReceiptView`, consumer-only,
+  owner-scoped); `RECEIPT_NOT_AVAILABLE` (409) for an unsettled charge. No model
+  change and **no migration** — the receipt is a projection of a `SUCCEEDED`
+  payment and its booking snapshot. API tests added (7).
+- **5.9** — transaction views (D65): a single role-scoped `GET /api/payments/`
+  (`PaymentListCreateView`; `POST` stays consumer-only and unchanged);
+  `_visible_payments` scopes consumer → own, manager → assigned lots,
+  admin → all (queryset scoping, so nobody gets a 403); `filter_payments` and
+  `annotate_refunded_amount` (derived refund totals from the `Refund` ledger);
+  `PaymentHistoryQuerySerializer` with 4.9-style filters; a slim
+  `PaymentHistorySerializer` (consumer, with a derived `receipt_available`) and a
+  `TransactionSerializer` (operator, adding payer/plate/lot). No model change and
+  **no migration**. API tests added (16). **This completes Phase 5.**
 
 ---
 
@@ -161,6 +176,20 @@ Do **not** start Phase 6.
   confirm time, §46) and applies it by calling the D54 `extend_booking` seam on
   confirmation; amount is the D54 incremental quote. See
   [`DECISIONS.md`](DECISIONS.md).
+- **D63 (accepted 2026-10-11)** — **walk-in booking creation and its cash
+  payment are deferred** to a future addition (the prerequisite Manager
+  walk-in-booking surface was never built); Phase 5 continues with **5.8**
+  (receipt) and **5.9** (transaction views). See [`DECISIONS.md`](DECISIONS.md).
+- **D64 (accepted 2026-10-11)** — the **receipt** is a per-payment JSON read
+  (`GET /api/payments/{id}/receipt/`): a derived projection of a `SUCCEEDED`
+  payment and its booking snapshot, with no stored model and no generated
+  document; `RECEIPT_NOT_AVAILABLE` (409) for an unsettled charge. Code in 5.8.
+  See [`DECISIONS.md`](DECISIONS.md).
+- **D65 (accepted 2026-10-11)** — **transaction views** are one role-scoped
+  `GET /api/payments/`: consumer → own, manager → assigned lots, admin → all,
+  scoped in the queryset (never a 403); two read shapes chosen by role; a derived
+  `refunded_amount`; 4.9-style filters; no pagination; no migration. Code in 5.9.
+  See [`DECISIONS.md`](DECISIONS.md).
 
 ---
 

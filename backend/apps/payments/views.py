@@ -7,25 +7,36 @@ live in one place; the view maps stable refusal codes to HTTP statuses only
 """
 
 from rest_framework import generics, status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.models import User
 from apps.accounts.permissions import IsConsumer, IsAdminOrManager
 from apps.bookings.services import BookingRuleError
+
+from .models import Payment
 
 from .serializers import (
     PaymentConfirmSerializer,
     PaymentCreateSerializer,
+    PaymentHistoryQuerySerializer,
+    PaymentHistorySerializer,
     PaymentSerializer,
     RefundSerializer,
+    ReceiptSerializer,
+    TransactionSerializer,
 )
 from .services import (
     InvalidWebhookSignatureError,
     PaymentCapturedNotAppliedError,
     PaymentError,
     PaymentGatewayUnavailableError,
+    annotate_refunded_amount,
     confirm_payment_attempt,
     create_payment_attempt,
+    filter_payments,
+    get_payment_receipt,
     handle_payment_webhook,
     refund_payment,
 )
@@ -48,21 +59,78 @@ REFUSAL_STATUS = {
     "INVALID_EXTENSION": status.HTTP_400_BAD_REQUEST,
     "MAX_DURATION_EXCEEDED": status.HTTP_400_BAD_REQUEST,
     "EXTENSION_ALREADY_PAID": status.HTTP_409_CONFLICT,
+    "PAYMENT_NOT_REFUNDABLE": status.HTTP_409_CONFLICT,
+    "PAYMENT_REFUND_FAILED": status.HTTP_502_BAD_GATEWAY,
+    "RECEIPT_NOT_AVAILABLE": status.HTTP_409_CONFLICT,
 }
 
-class PaymentCreateView(generics.GenericAPIView):
-    """Start an online payment for the caller's own booking (5.3, D59).
+def _visible_payments(request):
+    """Payments a caller may list (5.9, D65; Invariant 2/3).
 
-    ``POST /api/payments/`` with ``{"booking": <id>}`` -> 201 with the PENDING
-    payment plus the ``client_payload`` the client uses to open Razorpay
-    Checkout. Consumer-only and scoped to the caller, so a foreign or unknown
-    booking is a 404 (Invariant 2). It does **not** confirm anything: verifying
-    the callback and moving the booking to CONFIRMED is 5.4.
+    Consumer -> their own payments. Manager -> payments on the lots assigned to
+    them (``booking.slot.lot.manager``). Administrator -> all. Scoping is done
+    here, in the queryset, so a caller who owns none gets an empty list -- never
+    a 403. (The permissions module documents why "is this mine?" cannot be a
+    permission class.)
+    """
+    queryset = Payment.objects.select_related(
+        "booking__user", "booking__slot__lot"
+    )
+    user = request.user
+    if user.role == User.Role.ADMIN:
+        return queryset
+    if user.role == User.Role.MANAGER:
+        return queryset.filter(booking__slot__lot__manager=user)
+    return queryset.filter(booking__user=user)
+
+class PaymentListCreateView(generics.ListCreateAPIView):
+    """List visible payments (5.9, D65), or start a payment (5.3, D59).
+
+    ``GET /api/payments/``  -> the payments the caller may see
+    ``POST /api/payments/`` -> start a PENDING attempt for an own booking
+
+    Both roles share the path (PROJECT.md §22; D59 reserved the GET). The
+    queryset is scoped by role (consumer -> own, manager -> assigned lots,
+    admin -> all), so "may I see this row" is answered in one place and a caller
+    who owns none gets an empty list, never a 403 (Invariant 2/3). The response
+    shape is chosen the same way: a slim consumer item, an operator row
+    otherwise. POST stays consumer-only and unchanged.
     """
 
-    permission_classes = [IsConsumer]
-    serializer_class = PaymentCreateSerializer
-    def post(self, request, *args, **kwargs):
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsConsumer()]
+        return [IsAuthenticated()]
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return PaymentCreateSerializer
+        user = self.request.user
+        if user.role in (User.Role.ADMIN, User.Role.MANAGER):
+            return TransactionSerializer
+        return PaymentHistorySerializer
+
+    def get_queryset(self):
+        queryset = _visible_payments(self.request)
+        if self.request.method != "GET":
+            return queryset
+
+        query = PaymentHistoryQuerySerializer(data=self.request.query_params)
+        query.is_valid(raise_exception=True)
+        queryset = annotate_refunded_amount(queryset)
+        return filter_payments(
+            queryset,
+            statuses=query.validated_data.get("status"),
+            method=query.validated_data.get("method"),
+            purpose=query.validated_data.get("purpose"),
+            booking_id=query.validated_data.get("booking"),
+            lot_id=query.validated_data.get("lot"),
+            created_from=query.validated_data.get("created_from"),
+            created_to=query.validated_data.get("created_to"),
+            ordering=query.validated_data.get("ordering"),
+        )
+
+    def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -178,3 +246,29 @@ class PaymentRefundView(generics.GenericAPIView):
         return Response(
             RefundSerializer(refund).data, status=status.HTTP_201_CREATED
         )
+
+class PaymentReceiptView(generics.GenericAPIView):
+    """Read a receipt for a settled charge (5.8, D64).
+
+    ``GET /api/payments/{id}/receipt/`` -> the JSON receipt for one SUCCEEDED
+    payment, derived from the payment and its booking snapshot. Consumer-only and
+    owner-scoped, so a foreign or unknown id is a 404 (Invariant 2). A charge that
+    is not settled has no receipt (409 ``RECEIPT_NOT_AVAILABLE``).
+    """
+
+    permission_classes = [IsConsumer]
+    serializer_class = ReceiptSerializer
+
+    def get(self, request, *args, **kwargs):
+        try:
+            payment = get_payment_receipt(
+                payment_id=kwargs["pk"], user=request.user
+            )
+        except PaymentError as exc:
+            return Response(
+                {"error": exc.code, "message": str(exc)},
+                status=REFUSAL_STATUS.get(exc.code, status.HTTP_400_BAD_REQUEST),
+            )
+        return Response(ReceiptSerializer(payment).data)
+
+

@@ -36,6 +36,7 @@ from apps.payments.gateway import (
     verify_razorpay_webhook_signature,
 )
 from apps.payments.models import Payment, Refund
+from apps.payments.services import payment_receipt_number
 
 class PaymentModelTests(TestCase):
     @classmethod
@@ -1129,3 +1130,312 @@ class PaymentExtensionApiTests(TestCase):
         response = self._post(self._extension_payload())
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
         self.assertEqual(response.data["error"], "EXTENSION_ALREADY_PAID")
+
+class PaymentReceiptApiTests(TestCase):
+    """``GET /api/payments/{id}/receipt/`` (increment 5.8, D64)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com", password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.other = User.objects.create_user(
+            email="other@example.com", password="Tr0ub4dor&3",
+            full_name="Other",
+        )
+        cls.manager = User.objects.create_user(
+            email="manager@example.com", password="Tr0ub4dor&3",
+            full_name="Manager", role=User.Role.MANAGER,
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+        now = timezone.now()
+        self.booking = Booking.objects.create(
+            user=self.consumer, created_by=self.consumer, vehicle=None,
+            vehicle_plate="KA01AB1234", slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=now + timedelta(hours=1),
+            end_time=now + timedelta(hours=3),
+            billed_hours=2, hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("40.00"),
+            status=Booking.Status.CONFIRMED, hold_expires_at=None,
+        )
+        self.payment = Payment.objects.create(
+            booking=self.booking, amount=Decimal("40.00"),
+            status=Payment.Status.SUCCEEDED,
+            provider_order_id="order_rcpt_1",
+            provider_payment_id="pay_rcpt_1",
+            booking_applied=True,
+            paid_at=now,
+        )
+
+    def _get(self, payment_id=None):
+        return self.client.get(
+            f"/api/payments/{payment_id or self.payment.id}/receipt/"
+        )
+
+    def test_anonymous_is_rejected(self):
+        self.assertEqual(self._get().status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_manager_is_rejected(self):
+        self.client.force_authenticate(self.manager)
+        self.assertEqual(self._get().status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_owner_reads_the_receipt(self):
+        self.client.force_authenticate(self.consumer)
+        response = self._get()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["receipt_number"],
+            f"{self.booking.reference}-{self.payment.id}",
+        )
+        self.assertEqual(Decimal(response.data["amount"]), Decimal("40.00"))
+        self.assertEqual(response.data["currency"], "INR")
+        self.assertEqual(response.data["method"], Payment.Method.ONLINE)
+        self.assertEqual(response.data["purpose"], Payment.Purpose.BOOKING)
+        self.assertEqual(response.data["transaction_id"], "pay_rcpt_1")
+        self.assertEqual(
+            response.data["booking_reference"], self.booking.reference
+        )
+        self.assertEqual(response.data["slot_number"], "A-01")
+        self.assertEqual(response.data["lot_name"], "MG Road")
+        self.assertEqual(response.data["billed_hours"], 2)
+
+    def test_receipt_number_is_the_gateway_receipt(self):
+        # D64: the receipt number is the same value D59 sends the gateway.
+        self.assertEqual(
+            f"{self.booking.reference}-{self.payment.id}",
+            payment_receipt_number(self.payment),
+        )
+
+    def test_unsettled_payment_has_no_receipt(self):
+        self.payment.status = Payment.Status.PENDING
+        self.payment.provider_payment_id = None
+        self.payment.paid_at = None
+        self.payment.save(
+            update_fields=["status", "provider_payment_id", "paid_at"]
+        )
+        self.client.force_authenticate(self.consumer)
+        response = self._get()
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["error"], "RECEIPT_NOT_AVAILABLE")
+
+    def test_foreign_payment_is_a_404(self):
+        self.client.force_authenticate(self.other)
+        self.assertEqual(self._get().status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_unknown_payment_is_a_404(self):
+        self.client.force_authenticate(self.consumer)
+        response = self._get(payment_id=999999)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data["error"], "PAYMENT_NOT_FOUND")
+
+
+class PaymentHistoryApiTests(TestCase):
+    """``GET /api/payments/`` (increment 5.9, D65)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com", password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.other = User.objects.create_user(
+            email="other@example.com", password="Tr0ub4dor&3",
+            full_name="Other",
+        )
+        cls.manager = User.objects.create_user(
+            email="manager@example.com", password="Tr0ub4dor&3",
+            full_name="Manager", role=User.Role.MANAGER,
+        )
+        cls.admin = User.objects.create_user(
+            email="admin@example.com", password="Tr0ub4dor&3",
+            full_name="Admin", role=User.Role.ADMIN,
+        )
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+            manager=cls.manager,
+        )
+        cls.other_lot = ParkingLot.objects.create(
+            city=city, number=2, name="Indiranagar",
+            address_line="2 100ft Road",
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=cls.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        cls.other_slot = ParkingSlot.objects.create(
+            lot=cls.other_lot, number="B-01",
+            slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+        self.now = timezone.now()
+        self.booking = self._booking(self.consumer, self.slot)
+        self.payment = self._payment(
+            self.booking, status=Payment.Status.SUCCEEDED,
+            provider_order_id="order_hist_1", provider_payment_id="pay_hist_1",
+            paid_at=self.now,
+        )
+
+    def _booking(self, user, slot, plate="KA01AB1234"):
+        return Booking.objects.create(
+            user=user, created_by=user, vehicle=None, vehicle_plate=plate,
+            slot=slot, slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=self.now + timedelta(hours=1),
+            end_time=self.now + timedelta(hours=3),
+            billed_hours=2, hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("40.00"),
+            status=Booking.Status.CONFIRMED, hold_expires_at=None,
+        )
+
+    def _payment(self, booking, *, amount=Decimal("40.00"), **kwargs):
+        return Payment.objects.create(booking=booking, amount=amount, **kwargs)
+
+    def _get(self, params=None, as_user=None):
+        if as_user is not None:
+            self.client.force_authenticate(as_user)
+        return self.client.get("/api/payments/", params or {})
+
+    def test_anonymous_is_rejected(self):
+        self.assertEqual(self._get().status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_manager_may_list(self):
+        response = self._get(as_user=self.manager)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_manager_post_is_still_rejected(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.post(
+            "/api/payments/", {"booking": self.booking.id}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_consumer_sees_only_own_payments(self):
+        other_booking = self._booking(
+            self.other, self.other_slot, plate="KA05XY9999"
+        )
+        self._payment(
+            other_booking, provider_order_id="order_hist_2",
+            provider_payment_id="pay_hist_2",
+        )
+        response = self._get(as_user=self.consumer)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["id"] for row in response.data], [self.payment.id])
+
+    def test_consumer_shape_has_receipt_hint_and_no_payer(self):
+        response = self._get(as_user=self.consumer)
+        row = response.data[0]
+        self.assertTrue(row["receipt_available"])
+        self.assertEqual(row["booking_reference"], self.booking.reference)
+        self.assertEqual(row["lot_name"], "MG Road")
+        self.assertNotIn("consumer_email", row)
+
+    def test_unsettled_payment_has_no_receipt_hint(self):
+        self.payment.status = Payment.Status.PENDING
+        self.payment.provider_payment_id = None
+        self.payment.paid_at = None
+        self.payment.save(
+            update_fields=["status", "provider_payment_id", "paid_at"]
+        )
+        response = self._get(as_user=self.consumer)
+        self.assertFalse(response.data[0]["receipt_available"])
+
+    def test_refunded_amount_is_derived(self):
+        Refund.objects.create(
+            payment=self.payment, amount=Decimal("40.00"),
+            status=Refund.Status.SUCCEEDED,
+        )
+        response = self._get(as_user=self.consumer)
+        self.assertEqual(
+            Decimal(response.data[0]["refunded_amount"]), Decimal("40.00")
+        )
+
+    def test_manager_sees_only_assigned_lots(self):
+        other_booking = self._booking(
+            self.other, self.other_slot, plate="KA05XY9999"
+        )
+        self._payment(
+            other_booking, provider_order_id="order_hist_2",
+            provider_payment_id="pay_hist_2",
+        )
+        response = self._get(as_user=self.manager)
+        self.assertEqual([row["id"] for row in response.data], [self.payment.id])
+
+    def test_manager_shape_has_payer(self):
+        response = self._get(as_user=self.manager)
+        row = response.data[0]
+        self.assertEqual(row["consumer_email"], self.consumer.email)
+        self.assertEqual(row["vehicle_plate"], "KA01AB1234")
+        self.assertEqual(row["lot"], self.lot.id)
+
+    def test_admin_sees_all(self):
+        other_booking = self._booking(
+            self.other, self.other_slot, plate="KA05XY9999"
+        )
+        self._payment(
+            other_booking, provider_order_id="order_hist_2",
+            provider_payment_id="pay_hist_2",
+        )
+        response = self._get(as_user=self.admin)
+        self.assertEqual(len(response.data), 2)
+
+    def test_filter_by_status(self):
+        self._payment(self.booking, amount=Decimal("10.00"))
+        response = self._get({"status": "SUCCEEDED"}, as_user=self.consumer)
+        self.assertEqual([row["id"] for row in response.data], [self.payment.id])
+
+    def test_filter_by_purpose_and_method(self):
+        self._payment(
+            self.booking, amount=Decimal("10.00"), method=Payment.Method.CASH,
+            purpose=Payment.Purpose.EXTENSION,
+            extension_end_time=self.now + timedelta(hours=5),
+        )
+        cash = self._get({"method": "CASH"}, as_user=self.consumer)
+        self.assertEqual(len(cash.data), 1)
+        self.assertEqual(cash.data[0]["method"], "CASH")
+        ext = self._get({"purpose": "EXTENSION"}, as_user=self.consumer)
+        self.assertEqual(len(ext.data), 1)
+        self.assertEqual(ext.data[0]["purpose"], "EXTENSION")
+
+    def test_filter_by_lot_as_admin(self):
+        other_booking = self._booking(
+            self.other, self.other_slot, plate="KA05XY9999"
+        )
+        other_payment = self._payment(
+            other_booking, provider_order_id="order_hist_2",
+            provider_payment_id="pay_hist_2",
+        )
+        response = self._get({"lot": self.other_lot.id}, as_user=self.admin)
+        self.assertEqual([row["id"] for row in response.data], [other_payment.id])
+
+    def test_ordering_by_amount(self):
+        bigger = self._payment(
+            self.booking, amount=Decimal("99.00"),
+            provider_order_id="order_hist_3", provider_payment_id="pay_hist_3",
+        )
+        response = self._get({"ordering": "-amount"}, as_user=self.consumer)
+        self.assertEqual(
+            [row["id"] for row in response.data], [bigger.id, self.payment.id]
+        )
+
+    def test_unknown_status_is_a_400(self):
+        response = self._get({"status": "BOGUS"}, as_user=self.consumer)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_empty_history_is_ok(self):
+        response = self._get(as_user=self.other)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])

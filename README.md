@@ -4,8 +4,8 @@ An academic mini-project: a software-based parking management platform that lets
 consumers discover lots and book slots, managers operate lots and walk-ins, and
 administrators manage users and view platform reports.
 
-**Phase 5 (payment) is in progress: increments 5.1–5.5 are complete; 5.6–5.9
-remain.** Phases 0 (repository setup), 1 (backend foundation), 2 (authentication
+**Phase 5 (payment) is complete: increments 5.1–5.6 and 5.8–5.9 are done; 5.7
+(walk-in cash) is deferred.** Phases 0 (repository setup), 1 (backend foundation), 2 (authentication
 and users), 3 (the parking domain, 3.1–3.4) and 4 (booking, 4.1–4.9) are
 complete. Implemented so far: the custom email-based user model, consumer
 self-registration, the JWT authentication surface, consumer profile self-update,
@@ -37,9 +37,11 @@ provider-agnostic `PaymentGateway` interface with a `MockGateway` and a
 D59), **5.4** (confirmation: server return-verify + a signature-verified
 webhook, one apply core — D60), **5.5** (refund as an immutable **ledger
 event**, automatic on cancellation — D61) and **5.6** (extension charge:
-`purpose=EXTENSION` on the same route, applied via `extend_booking` — D62). The
-next increments are **batch B — 5.7–5.9** (walk-in cash, receipt, transaction
-views).
+`purpose=EXTENSION` on the same route, applied via `extend_booking` — D62),
+**5.8** (a per-payment JSON **receipt** read — D64) and **5.9** (role-scoped
+**transaction views** on `GET /api/payments/` — D65). Only **5.7** (walk-in cash,
+D63) is deferred to a future addition because its prerequisite — a
+Manager-created walk-in booking — is out of the current project's scope.
 The authoritative specification is [`PROJECT.md`](PROJECT.md). Documentation is
 split per phase — start at [`docs/README.md`](docs/README.md), the navigation
 entry point, phase tracker and reading protocol.
@@ -616,7 +618,7 @@ Both routes are Consumer-only and scoped to the caller: another consumer's
 booking — or a non-existent id — is a `404 {"error": "BOOKING_NOT_FOUND"}`, never
 a `403` (Invariant 2).
 
-### Payment (Phase 5) — in progress (5.1–5.6)
+### Payment (Phase 5) — complete (5.1–5.6, 5.8–5.9)
 
 Payment sits behind the §26 provider-agnostic abstraction: **Razorpay in test
 mode** is the concrete gateway and a `MockGateway` keeps the automated suite
@@ -624,7 +626,11 @@ offline (D56 revised, D58). No real charges are made and no card data is stored 
 the card form is provider-hosted.
 
 ```text
-POST /api/payments/                (Consumer)
+POST /api/payments/                 (Consumer)
+POST /api/payments/{id}/confirm/    (Consumer)
+POST /api/payments/webhook/         (public, signature-verified)
+POST /api/payments/{id}/refund/     (Manager/Admin)
+GET  /api/payments/{id}/receipt/    (Consumer)
 ```
 
 Start an attempt for an own live `PENDING_PAYMENT` booking; the amount is
@@ -648,6 +654,25 @@ cancellation refund, and Manager/Admin can retry it with
 An **extension** reuses the same creation route (D62): `POST /api/payments/` with
 `{"booking": <id>, "purpose": "EXTENSION", "end_time": "<new end>"}` prices the
 added hours with the D54 quote, stores the target `extension_end_time`, and moves
-the booking's end time through `extend_booking` on confirmation. Remaining Phase 5
-increments: **5.7** walk-in cash, **5.8** receipt, **5.9** transaction views. See
+the booking's end time through `extend_booking` on confirmation.
+
+A **receipt** (D64) is a derived JSON read of one settled charge:
+`GET /api/payments/{id}/receipt/` returns the receipt number
+(`{booking.reference}-{payment.id}`), amount/currency, method, purpose, `paid_at`,
+the provider transaction id and the booking snapshot. It is consumer-only and
+owner-scoped (a foreign id is a `404`, never a `403` — Invariant 2), and an
+unsettled charge is `409 RECEIPT_NOT_AVAILABLE`. Nothing is stored: the receipt is
+projected from the immutable `Payment`, so it cannot drift from the ledger.
+A **transaction view** (D65) is the same route's list read:
+`GET /api/payments/` returns every payment the caller may see, **scoped by role**
+in the queryset — a Consumer sees only their own payments, a Manager only those on
+their assigned lots, an Administrator all (a caller who owns none gets an empty
+list, never a `403` — Invariants 2/3). The shape follows the role: a slim consumer
+history item (with a derived `receipt_available` hint) or an operator row that
+adds the payer and plate. Both carry a derived `refunded_amount` from the `Refund`
+ledger. Optional filters (`status`, `method`, `purpose`, `booking`, `lot`,
+`created_from`/`created_to`) and `ordering` mirror the booking history (4.9).
+
+**Phase 5 is complete.** The only undelivered increment is **5.7** (walk-in cash),
+deferred to a future addition (D63). See
 [`docs/phase-5-payment/`](docs/phase-5-payment/).

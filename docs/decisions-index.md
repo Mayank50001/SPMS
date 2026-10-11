@@ -108,6 +108,9 @@ Full entries: [`phase-5-payment/DECISIONS.md`](phase-5-payment/DECISIONS.md)
 | D60 | Payment confirmation: return verify + signed webhook, one apply core; captured-but-not-applied policy (`booking_applied`) | Accepted |
 | D61 | Refund is a ledger event (`Refund` row), not a mutation of a captured `Payment`; automatic on cancellation, Manager/Admin retry, `REFUNDED` removed | Accepted (code in 5.5) |
 | D62 | Extension charge: reuse `POST /api/payments/` (`purpose=EXTENSION` + `end_time`), store `extension_end_time`, apply via `extend_booking` | Accepted (code in 5.6) |
+| D63 | Walk-in booking creation and cash payment deferred to a future addition | Deferred (2026-10-11) |
+| D64 | Receipt: per-payment JSON read (`GET /api/payments/{id}/receipt/`), derived from a settled payment | Accepted (2026-10-11; code in 5.8) |
+| D65 | Transaction views: one role-scoped `GET /api/payments/` (consumer own / manager assigned lots / admin all), two read shapes, derived refund totals, 4.9-style filters, no pagination | Accepted (2026-10-11; code in 5.9) |
 
 > D56 is decided ahead of coding so the first Phase 5 increment has a concrete
 > gateway to build against; it was **revised (Stripe → Razorpay)** on 2026-10-08
@@ -116,7 +119,8 @@ Full entries: [`phase-5-payment/DECISIONS.md`](phase-5-payment/DECISIONS.md)
 > offline test strategy (revised by D60 to a four-method interface); D59 fixes
 > the creation surface; D60 fixes confirmation (return verify + signed webhook,
 > one apply core, captured-but-not-applied); D61 makes the refund a ledger event,
-> automatic on cancellation with a Manager/Admin retry. The remaining Phase 5
-> decisions (extension charge, cash, receipt, transaction views) are open and
-> will get their own IDs as the phase proceeds —
-> see [`phase-5-payment/`](phase-5-payment/).
+> automatic on cancellation with a Manager/Admin retry; D62 is the extension
+> charge, D63 defers the walk-in/cash flow, D64 is the per-payment receipt
+> read and D65 makes the transaction views one role-scoped `GET /api/payments/`.
+> Phase 5's decision points are now complete — see
+> [`phase-5-payment/`](phase-5-payment/).

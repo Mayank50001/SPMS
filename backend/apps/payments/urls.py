@@ -2,13 +2,14 @@ from django.urls import path
 
 from .views import (
     PaymentConfirmView,
-    PaymentCreateView,
+    PaymentListCreateView,
+    PaymentReceiptView,
     PaymentRefundView,
     PaymentWebhookView,
 )
 
 urlpatterns = [
-    path("payments/", PaymentCreateView.as_view(), name="payment-create"),
+    path("payments/", PaymentListCreateView.as_view(), name="payment-create"),
     path(
         "payments/webhook/",
         PaymentWebhookView.as_view(),
@@ -23,5 +24,10 @@ urlpatterns = [
         "payments/<int:pk>/refund/",
         PaymentRefundView.as_view(),
         name="payment-refund",
+    ),
+    path(
+        "payments/<int:pk>/receipt/",
+        PaymentReceiptView.as_view(),
+        name="payment-receipt",
     ),
 ]

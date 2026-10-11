@@ -20,7 +20,7 @@ context — what each phase built (**PROGRESS**) and the decisions made or pendi
 | 2 | Authentication and users | ✅ Done | [`phase-2-authentication/`](phase-2-authentication/) |
 | 3 | **Parking domain (lots, slots, pricing, assignments)** | ✅ Done (3.1–3.4; reopened once for D45 duration fields) | [`phase-3-parking/`](phase-3-parking/) |
 | 4 | Booking | ✅ Done (4.1–4.9) | [`phase-4-booking/`](phase-4-booking/) |
-| 5 | Payment | 🔵 In progress (5.1–5.6 done; batch B: 5.7–5.9 · **D56** revised, **D57** model/states, **D58** gateway interface (revised by D60), **D59** creation surface, **D60** confirmation, **D61** refund ledger + auto-refund, **D62** extension charge) | [`phase-5-payment/`](phase-5-payment/) |
+| 5 | Payment | ✅ Done (5.1–5.6 + 5.8–5.9; **5.7 walk-in cash deferred** · **D63** · **D56** revised, **D57** model/states, **D58** gateway interface (revised by D60), **D59** creation surface, **D60** confirmation, **D61** refund ledger + auto-refund, **D62** extension charge, **D63** walk-in/cash deferral, **D64** per-payment receipt, **D65** transaction views) | [`phase-5-payment/`](phase-5-payment/) |
 | 6 | Occupancy simulation | ⚪ Not started | — |
 | 7 | Notifications | ⚪ Not started | — |
 | 8 | Reports | ⚪ Not started | — |
@@ -50,7 +50,7 @@ docs/
 │   └── DECISIONS.md                # D39-D55 (accepted; D39 revised in 4.2; D51-D52 = 4.6, D53 = 4.7, D54 = 4.8, D55 = 4.9) + questions carried later
 └── phase-5-payment/
     ├── PROGRESS.md                 # scope, increment plan, next-session start
-    └── DECISIONS.md                # D56 accepted (Razorpay test-mode gateway; revised from Stripe) + D57 (payment model/states) + D58 (gateway interface/selection; revised by D60) + D59 (creation surface) + D60 (confirmation) + D61 (refund ledger + auto-refund + REFUNDED removed) + open questions
+    └── DECISIONS.md                # D56 accepted (Razorpay test-mode gateway; revised from Stripe) + D57 (payment model/states) + D58 (gateway interface/selection; revised by D60) + D59 (creation surface) + D60 (confirmation) + D61 (refund ledger + auto-refund + REFUNDED removed) + D62 (extension charge) + D63 (walk-in/cash deferral) + D64 (per-payment receipt) + D65 (transaction views) — all Phase 5 decisions settled
 ```
 
 Each phase owns one `PROGRESS.md` (state) and one `DECISIONS.md` (decisions that

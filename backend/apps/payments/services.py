@@ -12,7 +12,8 @@ callback and calling ``bookings.services.confirm_booking`` (D51) -- is 5.4.
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Sum, Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from apps.bookings.models import Booking
@@ -89,6 +90,11 @@ class PaymentRefundFailedError(PaymentError):
     """The gateway refused or failed the refund; the attempt is logged (5.5)."""
 
     code = "PAYMENT_REFUND_FAILED"
+
+class ReceiptNotAvailableError(PaymentError):
+    """The payment has no receipt because it is not a settled charge (5.8, D64)."""
+
+    code = "RECEIPT_NOT_AVAILABLE"
 
 def create_payment_attempt(
     *,
@@ -185,8 +191,9 @@ def create_payment_attempt(
     )
 
     # A unique per-attempt receipt: the public booking reference (D52) plus the
-    # row id.
-    receipt = f"{booking.reference}-{payment.id}"
+    # row id. D64 reads the customer-facing receipt through this same helper, so a
+    # provider reference and a receipt can never disagree.
+    receipt = payment_receipt_number(payment)
     try:
         initiation = gateway.create_payment(
             amount=payment.amount,
@@ -541,3 +548,86 @@ def refund_booking(booking, *, reason="booking_cancelled"):
             # going so one bad payment cannot suppress another's refund.
             continue
     return refunds
+
+def payment_receipt_number(payment):
+    """The customer-facing receipt number (D59/D64).
+
+    The public booking reference (D52) plus the payment row id -- the same string
+    Phase 5 sends the gateway as its ``receipt``, so a provider reference can be
+    reconciled to a receipt. One definition, two call sites.
+    """
+    return f"{payment.booking.reference}-{payment.id}"
+
+def get_payment_receipt(*, payment_id, user):
+    """Return the settled payment a consumer may read a receipt for (5.8, D64).
+
+    Owner-scoped, so a foreign or unknown id is ``PAYMENT_NOT_FOUND`` (Invariant
+    2). Only a ``SUCCEEDED`` charge has a receipt; a pending or failed one is
+    ``RECEIPT_NOT_AVAILABLE``. The receipt is a projection built by the serializer
+    -- nothing is stored (D64).
+    """
+    payment = (
+        Payment.objects.select_related("booking__slot__lot")
+        .filter(pk=payment_id, booking__user=user)
+        .first()
+    )
+    if payment is None:
+        raise PaymentNotFoundError("No payment with this id exists.")
+    if payment.status != Payment.Status.SUCCEEDED:
+        raise ReceiptNotAvailableError("This payment does not have a receipt.")
+    return payment
+
+def filter_payments(
+    queryset,
+    *,
+    statuses=None,
+    method=None,
+    purpose=None,
+    booking_id=None,
+    lot_id=None,
+    created_from=None,
+    created_to=None,
+    ordering=None,
+):
+    """Refine a payment queryset for a transaction read (5.9, D65).
+
+    Pure and read-only, like ``bookings.services.filter_bookings`` (D43). Every
+    argument is optional: the caller (the view) has already scoped the queryset
+    to what this user may see, so this only narrows it.
+    """
+
+    if statuses:
+        queryset = queryset.filter(status__in=statuses)
+    if method:
+        queryset = queryset.filter(method=method)
+    if purpose:
+        queryset = queryset.filter(purpose=purpose)
+    if booking_id is not None:
+        queryset = queryset.filter(booking_id=booking_id)
+    if lot_id is not None:
+        queryset = queryset.filter(booking__slot__lot_id=lot_id)
+    if created_from is not None:
+        queryset = queryset.filter(created_at__gte=created_from)
+    if created_to is not None:
+        queryset = queryset.filter(created_at__lte=created_to)
+    if ordering:
+        # ``-id`` keeps the page stable regardless of the chosen sort key.
+        queryset = queryset.order_by(ordering, "-id")
+    return queryset
+
+def annotate_refunded_amount(queryset):
+    """Add a derived ``refunded_amount`` (settled refunds) per payment (5.9, D65).
+
+    The total is read from the ``Refund`` ledger (D61), never stored on the
+    payment, so it can never drift from the money that actually moved. A payment
+    with no refunds gets ``0.00``.
+    """
+    return queryset.annotate(
+        refunded_amount=Coalesce(
+            Sum(
+                "refunds__amount",
+                filter=Q(refunds__status=Refund.Status.SUCCEEDED),
+            ),
+            Decimal("0.00"),
+        )
+    )

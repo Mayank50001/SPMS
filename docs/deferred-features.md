@@ -94,6 +94,31 @@ contract (D52/§47).
 
 ---
 
+## Walk-in bookings and manager-recorded cash payment
+
+A Manager creates a **walk-in booking** for a customer with no account
+(`user=null`, `created_by=manager`, free-text `vehicle_plate`) in one of their
+**assigned lots**, and records the **cash** taken at the desk
+(`Payment.method=CASH`).
+
+**Scope when picked up:** a manager walk-in booking-creation surface — reusing
+`create_booking`'s slot lock, conflict check, pricing and duration policy, but
+with `user=None` and a free-text plate, scoped to `slot.lot.manager == user`
+(Invariant 3) — plus the cash-recording surface (for example
+`POST /api/payments/cash/`) that writes a `SUCCEEDED`
+`Payment(method=CASH, booking_applied=True)` and confirms the booking in one
+transaction. Walk-in identity (D8, V7) and the manager-lot authorization
+(Invariant 3) come with it.
+
+**Why deferred:** the current project scope is met with the consumer and
+manager/admin roles; a walk-in flow is a distinct §3.1 Manager feature slice.
+It was decided as **D63** (2026-10-11). The model already supports it —
+`Payment.Method.CASH`, the `payment_cash_has_no_provider_ids` constraint (D57),
+`Booking.user` nullable (D8) — so no money-model migration is needed to add it
+later.
+
+---
+
 ## Repository hygiene
 
 - `requirements.txt` pins `redis==8.1.0` and `pillow==12.3.0`, neither of which
