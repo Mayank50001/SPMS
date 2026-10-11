@@ -21,10 +21,10 @@ context — what each phase built (**PROGRESS**) and the decisions made or pendi
 | 3 | **Parking domain (lots, slots, pricing, assignments)** | ✅ Done (3.1–3.4; reopened once for D45 duration fields) | [`phase-3-parking/`](phase-3-parking/) |
 | 4 | Booking | ✅ Done (4.1–4.9) | [`phase-4-booking/`](phase-4-booking/) |
 | 5 | Payment | ✅ Done (5.1–5.6 + 5.8–5.9; **5.7 walk-in cash deferred** · **D63** · **D56** revised, **D57** model/states, **D58** gateway interface (revised by D60), **D59** creation surface, **D60** confirmation, **D61** refund ledger + auto-refund, **D62** extension charge, **D63** walk-in/cash deferral, **D64** per-payment receipt, **D65** transaction views) | [`phase-5-payment/`](phase-5-payment/) |
-| 6 | Occupancy simulation | ⚪ Not started | — |
-| 7 | Notifications | ⚪ Not started | — |
-| 8 | Reports | ⚪ Not started | — |
-| 9 | React frontend | ⚪ Not started | — |
+| 6 | Occupancy simulation (**+ operator booking reads** — opens the manager/admin workflow) | 🔜 Opened 2026-10-12; not started | [`phase-6-occupancy/`](phase-6-occupancy/) |
+| 7 | Notifications | ⏸ Deferred until after the frontend (2026-10-12) | — |
+| 8 | Reports (manager/admin dashboards) | ⏭ Pulled forward after Phase 6 (2026-10-12) | — |
+| 9 | React frontend | ⏸ Deferred until the manager/admin workflow is complete | — |
 | 10 | Testing and hardening | ⚪ Not started | — |
 
 ---
@@ -35,6 +35,7 @@ context — what each phase built (**PROGRESS**) and the decisions made or pendi
 docs/
 ├── README.md                       # this file — navigation + reading protocol
 ├── decisions-index.md              # D-number -> the file that holds the full entry
+├── api-contract.md                 # frozen frontend-facing contract (D66 + conventions)
 ├── deferred-features.md            # scheduled-but-not-dropped, cross-phase
 ├── foundation/                     # phases 0 & 1, plus the cross-cutting decisions
 │   ├── PROGRESS.md
@@ -48,9 +49,12 @@ docs/
 ├── phase-4-booking/
 │   ├── PROGRESS.md
 │   └── DECISIONS.md                # D39-D55 (accepted; D39 revised in 4.2; D51-D52 = 4.6, D53 = 4.7, D54 = 4.8, D55 = 4.9) + questions carried later
-└── phase-5-payment/
-    ├── PROGRESS.md                 # scope, increment plan, next-session start
-    └── DECISIONS.md                # D56 accepted (Razorpay test-mode gateway; revised from Stripe) + D57 (payment model/states) + D58 (gateway interface/selection; revised by D60) + D59 (creation surface) + D60 (confirmation) + D61 (refund ledger + auto-refund + REFUNDED removed) + D62 (extension charge) + D63 (walk-in/cash deferral) + D64 (per-payment receipt) + D65 (transaction views) — all Phase 5 decisions settled
+├── phase-5-payment/
+│   ├── PROGRESS.md                 # scope, increment plan, next-session start
+│   └── DECISIONS.md                # D56 accepted (Razorpay test-mode gateway; revised from Stripe) + D57 (payment model/states) + D58 (gateway interface/selection; revised by D60) + D59 (creation surface) + D60 (confirmation) + D61 (refund ledger + auto-refund + REFUNDED removed) + D62 (extension charge) + D63 (walk-in/cash deferral) + D64 (per-payment receipt) + D65 (transaction views) — all Phase 5 decisions settled
+└── phase-6-occupancy/              # NEXT — occupancy + operator booking reads
+    ├── PROGRESS.md                 # scope, agreed ordering, increment plan
+    └── DECISIONS.md                # D67 accepted (operator booking reads); D68-D71 open
 ```
 
 Each phase owns one `PROGRESS.md` (state) and one `DECISIONS.md` (decisions that
@@ -101,7 +105,8 @@ the current phase's docs plus a short dependency list are enough.
   agent and may be written substantially or completely, but only against real
   backend APIs (never invented ones). No frontend feature starts before its
   backend contract is settled (§23). Frontend is **Phase 9**; it is out of scope
-  for every backend phase.
+  for every backend phase. The frozen cross-cutting contract a frontend session
+  must read is [`api-contract.md`](api-contract.md).
 - **Core logic** (PROJECT.md §9): booking allocation, conflict detection,
   holds, state transitions, pricing, authorization, occupancy, aggregation and
   concurrency are decided *with* the human before they are coded.

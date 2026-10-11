@@ -127,6 +127,9 @@ class CityListCreateView(generics.ListCreateAPIView):
 
     queryset = City.objects.all()
     serializer_class = CitySerializer
+    # A tiny, seeded vocabulary used as a <select>; paginating it is pure
+    # friction, so it returns a bare array (D66).
+    pagination_class = None
 
     def get_permissions(self):
         if self.request.method in SAFE_METHODS:
@@ -404,7 +407,10 @@ class BusinessRuleView(APIView):
 
 class ParkingLotAvailabilityView(LotScopedMixin, generics.ListAPIView):
     serializer_class = ParkingSlotSerializer
-
+    # A computed window set the slot grid renders whole, not a browsable
+    # collection; returns a bare array (D66).
+    pagination_class = None
+    
     def get_permissions(self):
         # Read-only and non-PII, so it opts out of the deny-by-default posture
         # exactly as the rest of the parking reads do (D18/D37).

@@ -1,7 +1,8 @@
-# Foundation decisions (D1–D10)
+# Foundation decisions (D1–D10, plus cross-cutting D66)
 
-Cross-cutting decisions that every later phase depends on. They were agreed
-during Phase 0/1 planning and are implemented across phases (see the "Implemented
+Cross-cutting decisions that every later phase depends on. D1–D10 were agreed
+during Phase 0/1 planning; later cross-cutting additions (currently **D66**) are
+appended at the end. They are implemented across phases (see the "Implemented
 in" column in [`../decisions-index.md`](../decisions-index.md)). These are not
 open for re-litigation by the coding agent.
 
@@ -94,3 +95,31 @@ open for re-litigation by the coding agent.
   routed in `config/urls.py`.
 - **Rationale:** It is an infrastructure concern, not a domain concern; adding
   an app for it would be premature structure.
+
+## D66 — List endpoints return a paginated envelope
+
+- **Decision:** every collection-list endpoint is paginated globally with a
+  custom `PageNumberPagination` (`config.pagination.DefaultPagination`): default
+  page size **20**, a client-tunable `?page_size=` capped at **100**, and the
+  standard envelope `{"count", "next", "previous", "results"}`. Two
+  bounded/derived reads opt out with `pagination_class = None` —
+  `GET /api/cities/` (a seeded vocabulary used as a `<select>`) and
+  `GET /api/parking-lots/{lot}/availability/` (a computed window set the slot
+  grid consumes whole). `GET /api/business-rules/` is a singleton, not a list,
+  and is unaffected.
+- **Rationale:** freezes the list contract **before** the frontend binds to it,
+  so the Phase 10 hardening pass does not have to re-shape every list response.
+  Page numbers map directly onto table pagination and `count` supports "x of y".
+- **Options considered:** page-number vs limit/offset vs cursor pagination.
+  Page-number chosen: academic datasets are small and bounded, page numbers are
+  human-visible in the UI, and `count` is available (cursor pagination exposes
+  no `count` and cannot seek an arbitrary page).
+- **Consequences:** D55 (booking history) and D65 (payment history) said "no
+  pagination"; those reads are now paginated, so D66 **revises** that note. D46
+  (availability) is unchanged — the grid read is explicitly exempted. The
+  frontend reads `results` and drives `?page=` itself from `count`; an invalid
+  `?page=` is DRF's `404`.
+- **Status:** Accepted 2026-10-11. Applied in `config/settings.py`
+  (`REST_FRAMEWORK["DEFAULT_PAGINATION_CLASS"]`) with the class in
+  `config/pagination.py`; the two exemptions live in `apps/parking/views.py`.
+  The frozen frontend-facing contract is [`../api-contract.md`](../api-contract.md).

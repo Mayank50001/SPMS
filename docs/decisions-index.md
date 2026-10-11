@@ -22,6 +22,7 @@ Full entries: [`foundation/DECISIONS.md`](foundation/DECISIONS.md)
 | D8 | `Booking.user` is nullable (walk-in support) | Phase 4 |
 | D9 | `.env` loading uses the Python standard library | Phase 1 |
 | D10 | Health endpoint lives in `config`, not a new app | Phase 1 |
+| D66 | List endpoints return a paginated envelope (page-number, `?page_size=`); cities and availability opt out | All list reads |
 
 ## Phase 2 — Authentication and users
 Full entries: [`phase-2-authentication/DECISIONS.md`](phase-2-authentication/DECISIONS.md)
@@ -124,3 +125,14 @@ Full entries: [`phase-5-payment/DECISIONS.md`](phase-5-payment/DECISIONS.md)
 > read and D65 makes the transaction views one role-scoped `GET /api/payments/`.
 > Phase 5's decision points are now complete — see
 > [`phase-5-payment/`](phase-5-payment/).
+
+## Phase 6 — Occupancy simulation
+Full entries: [`phase-6-occupancy/DECISIONS.md`](phase-6-occupancy/DECISIONS.md)
+
+| ID | Title | Status |
+|----|-------|--------|
+| D67 | Operator booking reads: one role-scoped `GET /api/bookings/` (consumer own / manager assigned lots / admin all), mirroring D65 | Accepted (2026-10-12; code in 6.1) |
+| D68 | Occupancy model: how a slot becomes `OCCUPIED` (explicit action vs booking entry/exit) | **Open** (6.2) |
+| D69 | Entry/exit simulation and the `IN_PROGRESS` / `COMPLETED` lifecycle | **Open** (6.3) |
+| D70 | Overstay settlement: `BusinessRule.overstay_multiplier` and the charging surface | **Open** (6.4) |
+| D71 | Occupancy board read (per-lot live view) | **Open** (6.5) |

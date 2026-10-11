@@ -46,10 +46,12 @@ increment opens.
 Manager creating a walk-in booking — was never built, so it is out of the current
 project's scope.
 
-**Next session starts here:** **Phase 6 — occupancy simulation**. Read
-[`../README.md`](../README.md) first, then open Phase 6 the same way each phase
-has been opened: surface each increment's decision with the human *before* its
-code, and record it as a `D<n>`.
+**Next session starts here:** **Phase 6 — occupancy simulation** (opened
+2026-10-12; not started). Read [`../README.md`](../README.md) first, then open
+[Phase 6](../phase-6-occupancy/PROGRESS.md) — its agreed ordering
+(6 → 8 → frontend, D66 before 6.1), increment plan and **D67–D71** live in
+[`../phase-6-occupancy/`](../phase-6-occupancy/). Surface each increment's
+decision with the human *before* its code, as every phase has been opened.
 
 ---
 
