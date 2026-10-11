@@ -4,9 +4,10 @@ An academic mini-project: a software-based parking management platform that lets
 consumers discover lots and book slots, managers operate lots and walk-ins, and
 administrators manage users and view platform reports.
 
-**Phase 4 (booking) is complete.** Phases 0 (repository setup), 1 (backend
-foundation), 2 (authentication and users) and 3 (the parking domain, 3.1–3.4)
-are complete. Implemented so far: the custom email-based user model, consumer
+**Phase 5 (payment) is in progress: increments 5.1–5.5 are complete; 5.6–5.9
+remain.** Phases 0 (repository setup), 1 (backend foundation), 2 (authentication
+and users), 3 (the parking domain, 3.1–3.4) and 4 (booking, 4.1–4.9) are
+complete. Implemented so far: the custom email-based user model, consumer
 self-registration, the JWT authentication surface, consumer profile self-update,
 Administrator user management, role-based authorization, consumer **vehicle
 registration**, and the parking domain — the `City`/`ParkingLot` catalogue, the
@@ -14,6 +15,7 @@ registration**, and the parking domain — the `City`/`ParkingLot` catalogue, th
 Administrator's **`BusinessRule` maximum rate** (Invariant 4),
 **manager-scoped lot reads** (Invariant 3), and the per-slot **duration policy**
 (`min_booking_hours` / `max_booking_hours`, capped by `max_booking_hours`, D45).
+
 Phase 4 has delivered increments **4.1** (the `Booking` model and state enum,
 D39–D41), **4.2** (the booking rule layer: `quote_booking`, the D41 conflict
 predicate, lazy hold expiry, the stored **`base_amount`** snapshot — D39 revised
@@ -27,12 +29,18 @@ random, unguessable public `reference` on every booking — D51/D52), **4.7**
 and `POST /api/bookings/{id}/cancel/` — D53), **4.8** (extension: a read-only
 quote and the slot-locked `extend_booking` seam for Phase 5's charge — D54; no
 migration) and **4.9** (booking history filters and the rich single-booking
-detail read — D55; no migration). **Phase 4 is complete.** The next phase is
-**Phase 5 (payment)**, built on the §26 provider-agnostic payment abstraction
-with **Razorpay in test mode** as the concrete gateway (D56, revised). The authoritative
-specification is [`PROJECT.md`](PROJECT.md). Documentation is split per phase —
-start at [`docs/README.md`](docs/README.md), the navigation entry point, phase
-tracker and reading protocol.
+detail read — D55; no migration). **Phase 4 is complete.**
+
+Phase 5 has delivered **5.1** (the `Payment` model and states, D57), **5.2** (the
+provider-agnostic `PaymentGateway` interface with a `MockGateway` and a
+**Razorpay test-mode** adapter, D58), **5.3** (`POST /api/payments/` creation,
+D59), **5.4** (confirmation: server return-verify + a signature-verified
+webhook, one apply core — D60) and **5.5** (refund as an immutable **ledger
+event**, automatic on cancellation — D61). The next increments are **5.6**
+(extension charge), then **5.7–5.9** (walk-in cash, receipt, transaction views).
+The authoritative specification is [`PROJECT.md`](PROJECT.md). Documentation is
+split per phase — start at [`docs/README.md`](docs/README.md), the navigation
+entry point, phase tracker and reading protocol.
 
 ---
 
@@ -204,6 +212,10 @@ npm run build
 | POST   | `/api/bookings/`       | Consumer   | Create a booking (4.4) |
 | POST   | `/api/bookings/{id}/cancel/` | Consumer | Cancel an own booking, recording the refund due (4.7) |
 | GET    | `/api/bookings/{id}/extension-quote/` | Consumer | Price extending an own booking's end time (4.8) |
+| POST   | `/api/payments/`      | Consumer    | Start a payment attempt for an own `PENDING_PAYMENT` booking (5.3) |
+| POST   | `/api/payments/{id}/confirm/` | Consumer | Server-verify a Checkout return and confirm the booking (5.4) |
+| POST   | `/api/payments/webhook/` | Public   | Signature-verified Razorpay webhook (5.4) |
+| POST   | `/api/payments/{id}/refund/` | Admin/Manager | Refund / retry a refund against a captured payment (5.5) |
 
 > Authorisation is enforced server-side on every request (D15, D18). `Admin`
 > above means the authenticated account's `role` must be `ADMIN`; a `403` is
@@ -602,10 +614,33 @@ Both routes are Consumer-only and scoped to the caller: another consumer's
 booking — or a non-existent id — is a `404 {"error": "BOOKING_NOT_FOUND"}`, never
 a `403` (Invariant 2).
 
-### Payment (Phase 5) — next
+### Payment (Phase 5) — in progress (5.1–5.5)
 
-Not implemented yet. Phase 5 adds the `Payment` model, payment states, creation,
-confirmation, receipt and refund on top of Phase 4's seams, using **Razorpay in
-test mode** behind the §26 provider-agnostic abstraction (D56, revised from
-Stripe; the model and states are fixed by D57). No real charges are made and no
-card data is stored. See [`docs/phase-5-payment/`](docs/phase-5-payment/).
+Payment sits behind the §26 provider-agnostic abstraction: **Razorpay in test
+mode** is the concrete gateway and a `MockGateway` keeps the automated suite
+offline (D56 revised, D58). No real charges are made and no card data is stored —
+the card form is provider-hosted.
+
+```text
+POST /api/payments/                (Consumer)
+```
+
+Start an attempt for an own live `PENDING_PAYMENT` booking; the amount is
+`Booking.base_amount`, computed server-side (D59). The `201` response carries the
+payment's read fields plus the `client_payload` the browser uses to open Razorpay
+Checkout. Refusals: `BOOKING_NOT_PAYABLE` / `BOOKING_ALREADY_PAID` (409),
+`BOOKING_NOT_FOUND` (404), `PAYMENT_GATEWAY_UNAVAILABLE` (503).
+
+Confirmation has two trusted channels that share one apply core (D60): the
+owner-scoped return verify `POST /api/payments/{id}/confirm/` and the public,
+signature-verified webhook `POST /api/payments/webhook/`. Only a server-side
+signature check can move a booking to `CONFIRMED` (via the D51 seam). A charge
+captured but no longer applicable is recorded `SUCCEEDED` with
+`booking_applied=False` and answered `409 PAYMENT_CAPTURED_NOT_APPLIED`.
+
+A refund is an immutable **ledger event** — a child `Refund` row — never a
+mutation of the captured `Payment` (D61). It runs automatically after a D53
+cancellation refund, and Manager/Admin can retry it with
+`POST /api/payments/{id}/refund/`. Remaining Phase 5 increments: **5.6** extension
+charge, **5.7** walk-in cash, **5.8** receipt, **5.9** transaction views. See
+[`docs/phase-5-payment/`](docs/phase-5-payment/).

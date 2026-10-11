@@ -49,7 +49,6 @@ class Payment(models.Model):
         PENDING = "PENDING", "Pending"
         SUCCEEDED = "SUCCEEDED", "Succeeded"
         FAILED = "FAILED", "Failed"
-        REFUNDED = "REFUNDED", "Refunded"
 
     # ---- what --------------------------------------------------------------
 
