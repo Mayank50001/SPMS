@@ -10,7 +10,7 @@
 > Phase 4 context (the seams Phase 5 calls):
 > [`../phase-4-booking/PROGRESS.md`](../phase-4-booking/PROGRESS.md).
 
-Last updated: **2026-10-11** · **5.1–5.5 are delivered; 5.6 is open (D62 accepted, code pending).**
+Last updated: **2026-10-11** · **5.1–5.6 are delivered; batch B (5.7–5.9) is next.**
 **D56** (revised: Razorpay test mode behind the payment abstraction),
 **D57** (the `Payment` model and states), **D58** (the gateway interface,
 adapter selection and offline test strategy; **revised by D60** to a four-method
@@ -37,20 +37,20 @@ still open and must be settled with the human as each increment opens.
    `cancel_booking`), **D54** (`quote_extension` / `extend_booking`) and
    **D39 revised** (`base_amount`).
 
-**Next session starts here:** batch the remaining Phase 5 work — a session now
-delivers **several progressive increments of the same component** (see the
-batching rule in [`../README.md`](../README.md)). **5.4 and 5.5 are delivered**;
-**5.6 is open** (its decision **D62** is accepted, the code is next):
+**Next session starts here:** **batch B — 5.7 + 5.8 + 5.9** (walk-in cash, receipt,
+transaction views). A session delivers several progressive increments of the same
+component (see the batching rule in [`../README.md`](../README.md)). Each
+increment still settles its open question and records its own `D<n>` before its
+code:
 
-- **5.6 — extension charge** (open question 3, decided as **D62**): a
-  `Payment(purpose=EXTENSION)` that charges the D54 `quote_extension` amount
-  (storing the target `extension_end_time`), then applies it with
-  `bookings.services.extend_booking` on confirmation. Reuses the creation +
-  confirmation core.
+- **5.7 — walk-in cash payment** (open question 4): a Manager records cash against
+  a walk-in booking; no gateway is involved.
+- **5.8 — receipt** (open question 5): the receipt shape and endpoint.
+- **5.9 — transaction views** (open question 6): consumer payment history and a
+  manager/admin transaction listing on `GET /api/payments/` (D59 reserved the
+  route for this).
 
-**Batch B: 5.7 + 5.8 + 5.9** (walk-in cash, receipt, transaction views) follows.
-Each increment still settles its open question and records its own `D<n>` before
-its code. Do **not** start Phase 6.
+Do **not** start Phase 6.
 
 ---
 
@@ -59,9 +59,9 @@ its code. Do **not** start Phase 6.
 > **Draft — confirm at phase open.** The split follows Phase 4's pattern: a
 > coherent feature per increment, decisions surfaced before each. It may be
 > re-cut as the payment surfaces are decided. From 2026-10-10 the remaining
-> increments are **batched** (5.4–5.5 delivered; batch A: 5.6; batch B:
-> 5.7–5.9) because they are progressive stages of the same component — see the
-> batching rule in [`../README.md`](../README.md).
+> increments are **batched** (5.1–5.6 delivered; batch B: 5.7–5.9) because they
+> are progressive stages of the same component — see the batching rule in
+> [`../README.md`](../README.md).
 
 | # | Increment | Status |
 |---|-----------|--------|
@@ -70,7 +70,7 @@ its code. Do **not** start Phase 6.
 | 5.3 | Payment creation for a `PENDING_PAYMENT` booking (Razorpay Order / hosted Checkout) | ✅ Done |
 | 5.4 | Payment confirmation (server verify + signed webhook → `confirm_booking`) | ✅ Done |
 | 5.5 | Refund (drive it from `refund_due_amount`; `POST /api/payments/{id}/refund/`) | ✅ Done |
-| 5.6 | Extension charge (charge the D54 quote, store the target end time → `extend_booking`) | 🔵 Open (D62 accepted; code next) |
+| 5.6 | Extension charge (charge the D54 quote, store the target end time → `extend_booking`) | ✅ Done |
 | 5.7 | Walk-in cash payment recording (Manager) | ⚪ (batch B) |
 | 5.8 | Receipt | ⚪ (batch B) |
 | 5.9 | Payment history / transaction views (consumer, manager/admin) | ⚪ (batch B) |
@@ -107,6 +107,16 @@ its code. Do **not** start Phase 6.
   The captured `Payment.status` is **never mutated**; a failed refund is a
   `FAILED` row, retriable. Ledger-capable for partials; the business rule stays
   all-or-nothing. API + model + auto-refund tests added.
+- **5.6** — extension charge (D62): `Payment.extension_end_time` (migration
+  `payments/0004_payment_extension_end_time` + a purpose/nulling
+  `CheckConstraint`); `create_payment_attempt` gained `purpose`/`end_time`, prices
+  an extension with the D54 `quote_extension`, refuses a duplicate paid extension
+  (`EXTENSION_ALREADY_PAID`) and stores the target end time;
+  `apply_payment_outcome` now branches to `extend_booking` for an `EXTENSION`
+  charge, keeping the captured-but-not-applied policy for a taken window;
+  `confirm_payment_attempt` accepts an online extension as well as a booking
+  charge; `PaymentCreateSerializer` gained `purpose`/`end_time`; `views.py` maps
+  the extension refusal codes. No new route. API tests added.
 
 ---
 

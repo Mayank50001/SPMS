@@ -35,9 +35,11 @@ Phase 5 has delivered **5.1** (the `Payment` model and states, D57), **5.2** (th
 provider-agnostic `PaymentGateway` interface with a `MockGateway` and a
 **Razorpay test-mode** adapter, D58), **5.3** (`POST /api/payments/` creation,
 D59), **5.4** (confirmation: server return-verify + a signature-verified
-webhook, one apply core — D60) and **5.5** (refund as an immutable **ledger
-event**, automatic on cancellation — D61). The next increments are **5.6**
-(extension charge), then **5.7–5.9** (walk-in cash, receipt, transaction views).
+webhook, one apply core — D60), **5.5** (refund as an immutable **ledger
+event**, automatic on cancellation — D61) and **5.6** (extension charge:
+`purpose=EXTENSION` on the same route, applied via `extend_booking` — D62). The
+next increments are **batch B — 5.7–5.9** (walk-in cash, receipt, transaction
+views).
 The authoritative specification is [`PROJECT.md`](PROJECT.md). Documentation is
 split per phase — start at [`docs/README.md`](docs/README.md), the navigation
 entry point, phase tracker and reading protocol.
@@ -614,7 +616,7 @@ Both routes are Consumer-only and scoped to the caller: another consumer's
 booking — or a non-existent id — is a `404 {"error": "BOOKING_NOT_FOUND"}`, never
 a `403` (Invariant 2).
 
-### Payment (Phase 5) — in progress (5.1–5.5)
+### Payment (Phase 5) — in progress (5.1–5.6)
 
 Payment sits behind the §26 provider-agnostic abstraction: **Razorpay in test
 mode** is the concrete gateway and a `MockGateway` keeps the automated suite
@@ -641,6 +643,11 @@ captured but no longer applicable is recorded `SUCCEEDED` with
 A refund is an immutable **ledger event** — a child `Refund` row — never a
 mutation of the captured `Payment` (D61). It runs automatically after a D53
 cancellation refund, and Manager/Admin can retry it with
-`POST /api/payments/{id}/refund/`. Remaining Phase 5 increments: **5.6** extension
-charge, **5.7** walk-in cash, **5.8** receipt, **5.9** transaction views. See
+`POST /api/payments/{id}/refund/`.
+
+An **extension** reuses the same creation route (D62): `POST /api/payments/` with
+`{"booking": <id>, "purpose": "EXTENSION", "end_time": "<new end>"}` prices the
+added hours with the D54 quote, stores the target `extension_end_time`, and moves
+the booking's end time through `extend_booking` on confirmation. Remaining Phase 5
+increments: **5.7** walk-in cash, **5.8** receipt, **5.9** transaction views. See
 [`docs/phase-5-payment/`](docs/phase-5-payment/).
