@@ -16,7 +16,16 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from apps.bookings.models import Booking
-from apps.bookings.services import BookingNotFoundError, BookingRuleError, confirm_booking, is_hold_live
+from apps.bookings.services import (
+    EXTENDABLE_STATUSES,
+    BookingNotExtendableError,
+    BookingNotFoundError,
+    BookingRuleError,
+    confirm_booking,
+    extend_booking,
+    is_hold_live,
+    quote_extension,
+)
 
 from .gateway import PaymentGatewayError, get_payment_gateway
 from .models import Payment, Refund
@@ -35,6 +44,11 @@ class BookingAlreadyPaidError(PaymentError):
     """This booking already has a successful initial charge (D59)."""
 
     code = "BOOKING_ALREADY_PAID"
+
+class ExtensionAlreadyPaidError(PaymentError):
+    """An already-successful extension to this same end time exists (D62)."""
+
+    code = "EXTENSION_ALREADY_PAID"
 
 class PaymentGatewayUnavailableError(PaymentError):
     """The gateway could not be configured or reached (not a card decline)."""
@@ -76,8 +90,19 @@ class PaymentRefundFailedError(PaymentError):
 
     code = "PAYMENT_REFUND_FAILED"
 
-def create_payment_attempt(*, booking_id, user):
-    """Start an initial ONLINE charge for ``user``'s own booking (5.3, D59).
+def create_payment_attempt(
+    *,
+    booking_id,
+    user,
+    purpose=Payment.Purpose.BOOKING,
+    end_time=None,
+):
+    """Start an ONLINE charge for ``user``'s own booking (5.3 D59, 5.6 D62).
+
+    ``purpose=BOOKING`` charges ``Booking.base_amount`` for a live hold.
+    ``purpose=EXTENSION`` prices ``end_time`` with the D54 ``quote_extension``
+    and charges only the added hours, storing the target ``extension_end_time``
+    for confirmation to read back.
 
     Returns ``(payment, client_payload)``.
 
@@ -93,19 +118,53 @@ def create_payment_attempt(*, booking_id, user):
     if booking is None:
         raise BookingNotFoundError("No booking with this id exists.")
 
-    # Payable = a live hold (D6/D50). Everything else -- confirmed, expired,
-    # cancelled, lapsed hold -- is refused.
-    if booking.status != Booking.Status.PENDING_PAYMENT or not is_hold_live(
-        booking, timezone.now()
-    ):
-        raise BookingNotPayableError("This booking is not awaiting payment.")
+    now = timezone.now()
 
-    if Payment.objects.filter(
-        booking=booking,
-        purpose=Payment.Purpose.BOOKING,
-        status=Payment.Status.SUCCEEDED,
-    ).exists():
-        raise BookingAlreadyPaidError("This booking has already been paid.")
+    if purpose == Payment.Purpose.EXTENSION:
+        # D62: eligibility first.
+        if booking.status not in EXTENDABLE_STATUSES:
+            raise BookingNotExtendableError(
+                f"A {booking.status} booking cannot be extended."
+            )
+
+        # The extension twin of BOOKING_ALREADY_PAID: an extension to this exact
+        # end time that already succeeded is not charged again. Checked BEFORE
+        # the quote, because once the extension is applied the booking's end
+        # time IS this value, so the quote would reject it as INVALID_EXTENSION
+        # and mask the honest "already paid" answer.
+        if Payment.objects.filter(
+            booking=booking,
+            purpose=Payment.Purpose.EXTENSION,
+            status=Payment.Status.SUCCEEDED,
+            extension_end_time=end_time,
+        ).exists():
+            raise ExtensionAlreadyPaidError(
+                "This extension has already been paid."
+            )
+
+        # D54 quote -- the same unlocked hint the 4.8 read uses; extend_booking
+        # re-checks the window under the slot lock when the charge is applied.
+        quote = quote_extension(booking=booking, new_end_time=end_time, now=now)
+        amount = quote.extension_amount
+        extension_end_time = quote.new_end_time
+
+    else:
+        # Payable = a live hold (D6/D50). Everything else -- confirmed, expired,
+        # cancelled, lapsed hold -- is refused.
+        if booking.status != Booking.Status.PENDING_PAYMENT or not is_hold_live(
+            booking, now
+        ):
+            raise BookingNotPayableError("This booking is not awaiting payment.")
+
+        if Payment.objects.filter(
+            booking=booking,
+            purpose=Payment.Purpose.BOOKING,
+            status=Payment.Status.SUCCEEDED,
+        ).exists():
+            raise BookingAlreadyPaidError("This booking has already been paid.")
+
+        amount = booking.base_amount
+        extension_end_time = None
 
     # Resolve the adapter first: a missing SDK or missing keys raises here,
     # before a row exists (D58/D59).
@@ -118,10 +177,11 @@ def create_payment_attempt(*, booking_id, user):
     # never supplies it.
     payment = Payment.objects.create(
         booking=booking,
-        purpose=Payment.Purpose.BOOKING,
+        purpose=purpose,
         method=Payment.Method.ONLINE,
-        amount=booking.base_amount,
+        amount=amount,
         status=Payment.Status.PENDING,
+        extension_end_time=extension_end_time
     )
 
     # A unique per-attempt receipt: the public booking reference (D52) plus the
@@ -192,15 +252,31 @@ def apply_payment_outcome(
         ]
     )
 
+    # D62: an EXTENSION charge applies the stored target end time; a BOOKING
+    # charge confirms the pending booking. Both trusted channels (return verify
+    # and webhook) reach this one core, so they cannot drift (D60).
     try:
-        confirm_booking(booking_id=payment.booking_id, now=now)
+        if payment.purpose == Payment.Purpose.EXTENSION:
+            extend_booking(
+                booking_id=payment.booking_id,
+                user=payment.booking.user,
+                new_end_time=payment.extension_end_time,
+                now=now,
+            )
+        else:
+            confirm_booking(booking_id=payment.booking_id, now=now)
     except BookingRuleError as exc:
         # Captured but not applied. Keep SUCCEEDED; flag it for the (deferred)
         # reconciler and the 5.5 refund path, and surface a stable refusal.
-        payment.failure_reason = f"booking_not_confirmable:{exc.code}"
+        prefix = (
+            "booking_not_applied"
+            if payment.purpose == Payment.Purpose.EXTENSION
+            else "booking_not_confirmable"
+        )
+        payment.failure_reason = f"{prefix}:{exc.code}"
         payment.save(update_fields=["failure_reason", "updated_at"])
         raise PaymentCapturedNotAppliedError(
-            "The payment succeeded but the booking could no longer be confirmed."
+            "The payment succeeded but the booking could no longer be updated."
         ) from exc
 
     payment.booking_applied = True
@@ -228,10 +304,9 @@ def confirm_payment_attempt(*, payment_id, user, payload):
 
     if (
         payment.method != Payment.Method.ONLINE
-        or payment.purpose != Payment.Purpose.BOOKING
     ):
         raise PaymentNotConfirmableError(
-            "Only an online booking charge can be confirmed here."
+            "Only an online charge can be confirmed here."
         )
 
     if payment.status == Payment.Status.SUCCEEDED:

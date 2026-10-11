@@ -10,15 +10,17 @@
 > Phase 4 context (the seams Phase 5 calls):
 > [`../phase-4-booking/PROGRESS.md`](../phase-4-booking/PROGRESS.md).
 
-Last updated: **2026-10-10** · **5.1–5.5 are delivered; 5.6+ are next (batched).**
+Last updated: **2026-10-11** · **5.1–5.5 are delivered; 5.6 is open (D62 accepted, code pending).**
 **D56** (revised: Razorpay test mode behind the payment abstraction),
 **D57** (the `Payment` model and states), **D58** (the gateway interface,
 adapter selection and offline test strategy; **revised by D60** to a four-method
 interface), **D59** (the creation surface), **D60** (confirmation: return
-verify + signed webhook, one apply core, captured-but-not-applied policy) and
+verify + signed webhook, one apply core, captured-but-not-applied policy),
 **D61** (refund is a ledger event, automatic on cancellation, Manager/Admin
-retry, `REFUNDED` removed) are accepted. Everything else in
-[`DECISIONS.md`](DECISIONS.md) → "Open questions to decide before coding" is
+retry, `REFUNDED` removed) and **D62** (extension charge: reuse
+`POST /api/payments/` with `purpose=EXTENSION` + `end_time`, store
+`extension_end_time`, apply via `extend_booking`) are accepted. Everything else
+in [`DECISIONS.md`](DECISIONS.md) → "Open questions to decide before coding" is
 still open and must be settled with the human as each increment opens.
 
 ---
@@ -38,11 +40,13 @@ still open and must be settled with the human as each increment opens.
 **Next session starts here:** batch the remaining Phase 5 work — a session now
 delivers **several progressive increments of the same component** (see the
 batching rule in [`../README.md`](../README.md)). **5.4 and 5.5 are delivered**;
-**batch A** finishes with **5.6**:
+**5.6 is open** (its decision **D62** is accepted, the code is next):
 
-- **5.6 — extension charge** (open question 3): a `Payment(purpose=EXTENSION)`
-  that charges the D54 `quote_extension` amount, then calls
-  `bookings.services.extend_booking`. Reuses the creation + confirmation core.
+- **5.6 — extension charge** (open question 3, decided as **D62**): a
+  `Payment(purpose=EXTENSION)` that charges the D54 `quote_extension` amount
+  (storing the target `extension_end_time`), then applies it with
+  `bookings.services.extend_booking` on confirmation. Reuses the creation +
+  confirmation core.
 
 **Batch B: 5.7 + 5.8 + 5.9** (walk-in cash, receipt, transaction views) follows.
 Each increment still settles its open question and records its own `D<n>` before
@@ -66,7 +70,7 @@ its code. Do **not** start Phase 6.
 | 5.3 | Payment creation for a `PENDING_PAYMENT` booking (Razorpay Order / hosted Checkout) | ✅ Done |
 | 5.4 | Payment confirmation (server verify + signed webhook → `confirm_booking`) | ✅ Done |
 | 5.5 | Refund (drive it from `refund_due_amount`; `POST /api/payments/{id}/refund/`) | ✅ Done |
-| 5.6 | Extension charge (charge the D54 quote → `extend_booking`) | ⚪ Next (batch A) |
+| 5.6 | Extension charge (charge the D54 quote, store the target end time → `extend_booking`) | 🔵 Open (D62 accepted; code next) |
 | 5.7 | Walk-in cash payment recording (Manager) | ⚪ (batch B) |
 | 5.8 | Receipt | ⚪ (batch B) |
 | 5.9 | Payment history / transaction views (consumer, manager/admin) | ⚪ (batch B) |
@@ -140,6 +144,12 @@ its code. Do **not** start Phase 6.
   removing the `REFUNDED` state. Triggered automatically on the D53
   cancellation refund, with a Manager/Admin `POST /api/payments/{id}/refund/`
   retry; ledger-capable for partials but the policy stays all-or-nothing. See
+  [`DECISIONS.md`](DECISIONS.md).
+- **D62 (accepted 2026-10-11)** — the **extension charge** reuses
+  `POST /api/payments/` (body gains `purpose=EXTENSION` + `end_time`), stores the
+  target `extension_end_time` on the payment row (server-side, never supplied at
+  confirm time, §46) and applies it by calling the D54 `extend_booking` seam on
+  confirmation; amount is the D54 incremental quote. See
   [`DECISIONS.md`](DECISIONS.md).
 
 ---

@@ -13,12 +13,35 @@ from .models import Payment, Refund
 class PaymentCreateSerializer(serializers.Serializer):
     """Write shape for ``POST /api/payments/`` (5.3, D59).
 
-    A plain ``Serializer``: only the target booking is accepted. Ownership is
-    checked by the service, not here, so a foreign booking is a 404 rather than
-    a per-field error (Invariant 2).
+    A plain ``Serializer``: the target booking plus, for an extension, the new
+    end time. Ownership and pricing are checked by the service, not here, so a
+    foreign booking is a 404 rather than a per-field error (Invariant 2) and the
+    amount is never accepted from the client (§46).
     """
 
     booking = serializers.IntegerField(min_value=1)
+    purpose = serializers.ChoiceField(
+        choices=Payment.Purpose.choices,
+        required=False,
+        default=Payment.Purpose.BOOKING,
+    )
+    end_time = serializers.DateTimeField(required=False)
+
+    def validate(self, attrs):
+        # D62: only an EXTENSION carries a target end time, and it must carry
+        # one. A clean 400 here; the Payment constraint enforces it again in the
+        # database.
+        purpose = attrs.get("purpose", Payment.Purpose.BOOKING)
+        end_time = attrs.get("end_time")
+        if purpose == Payment.Purpose.EXTENSION and end_time is None:
+            raise serializers.ValidationError(
+                {"end_time": "An extension payment requires the new end time."}
+            )
+        if purpose == Payment.Purpose.BOOKING and end_time is not None:
+            raise serializers.ValidationError(
+                {"end_time": "Only an extension payment may set an end time."}
+            )
+        return attrs
 
 
 class PaymentSerializer(serializers.ModelSerializer):
@@ -36,6 +59,7 @@ class PaymentSerializer(serializers.ModelSerializer):
             "currency",
             "provider_order_id",
             "provider_payment_id",
+            "extension_end_time",
             "failure_reason",
             "paid_at",
             "booking_applied",

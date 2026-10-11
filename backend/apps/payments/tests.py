@@ -979,3 +979,153 @@ class CancellationAutoRefundTests(TestCase):
         self.booking.refresh_from_db()
         self.assertEqual(self.booking.refund_due_amount, Decimal("0.00"))
         self.assertEqual(self.payment.refunds.count(), 0)
+
+
+class PaymentExtensionApiTests(TestCase):
+    """Extension charge via POST /api/payments/ (increment 5.6, D62)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com", password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.other = User.objects.create_user(
+            email="other@example.com", password="Tr0ub4dor&3",
+            full_name="Other",
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+        self.now = timezone.now()
+        # A paid, extendable booking: 2 hours starting in an hour, ends +3h.
+        self.booking = Booking.objects.create(
+            user=self.consumer, created_by=self.consumer, vehicle=None,
+            vehicle_plate="KA01AB1234", slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=self.now + timedelta(hours=1),
+            end_time=self.now + timedelta(hours=3),
+            billed_hours=2, hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("40.00"),
+            status=Booking.Status.CONFIRMED, hold_expires_at=None,
+        )
+        # The extension target: +5h, i.e. 2 added hours = 40.00.
+        self.new_end = self.now + timedelta(hours=5)
+
+    def _post(self, payload):
+        return self.client.post("/api/payments/", payload, format="json")
+
+    def _extension_payload(self):
+        return {
+            "booking": self.booking.id,
+            "purpose": Payment.Purpose.EXTENSION,
+            "end_time": self.new_end.isoformat(),
+        }
+
+    def test_consumer_starts_an_extension_payment(self):
+        self.client.force_authenticate(self.consumer)
+        response = self._post(self._extension_payload())
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["purpose"], Payment.Purpose.EXTENSION)
+        self.assertEqual(Decimal(response.data["amount"]), Decimal("40.00"))
+        self.assertIsNotNone(response.data["extension_end_time"])
+
+        payment = Payment.objects.get(pk=response.data["id"])
+        self.assertEqual(payment.extension_end_time, self.new_end)
+
+    def test_extension_requires_an_end_time(self):
+        self.client.force_authenticate(self.consumer)
+        response = self._post(
+            {"booking": self.booking.id, "purpose": Payment.Purpose.EXTENSION}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_booking_purpose_rejects_an_end_time(self):
+        self.client.force_authenticate(self.consumer)
+        response = self._post(
+            {"booking": self.booking.id, "end_time": self.new_end.isoformat()}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_unpaid_booking_cannot_be_extended(self):
+        self.booking.status = Booking.Status.PENDING_PAYMENT
+        self.booking.save(update_fields=["status"])
+        self.client.force_authenticate(self.consumer)
+        response = self._post(self._extension_payload())
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["error"], "BOOKING_NOT_EXTENDABLE")
+
+    def test_end_time_must_lengthen_the_booking(self):
+        self.client.force_authenticate(self.consumer)
+        payload = self._extension_payload()
+        payload["end_time"] = (self.now + timedelta(hours=2)).isoformat()
+        response = self._post(payload)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["error"], "INVALID_EXTENSION")
+
+    def test_confirmation_applies_the_extension(self):
+        self.client.force_authenticate(self.consumer)
+        started = self._post(self._extension_payload())
+        payment_id = started.data["id"]
+
+        response = self.client.post(
+            f"/api/payments/{payment_id}/confirm/", {"payload": {}}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], Payment.Status.SUCCEEDED)
+        self.assertTrue(response.data["booking_applied"])
+
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.end_time, self.new_end)
+        self.assertEqual(self.booking.billed_hours, 4)
+        self.assertEqual(self.booking.base_amount, Decimal("80.00"))
+
+    def test_taken_slot_is_captured_not_applied(self):
+        # A competing confirmed booking takes the added window after the
+        # extension payment is started but before it is confirmed.
+        Booking.objects.create(
+            user=self.other, created_by=self.other, vehicle=None,
+            vehicle_plate="KA01XY9999", slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=self.now + timedelta(hours=3),
+            end_time=self.now + timedelta(hours=4),
+            billed_hours=1, hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("20.00"),
+            status=Booking.Status.CONFIRMED, hold_expires_at=None,
+        )
+        self.client.force_authenticate(self.consumer)
+        started = self._post(self._extension_payload())
+        response = self.client.post(
+            f"/api/payments/{started.data['id']}/confirm/",
+            {"payload": {}}, format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(
+            response.data["error"], "PAYMENT_CAPTURED_NOT_APPLIED"
+        )
+
+        payment = Payment.objects.get(pk=started.data["id"])
+        self.assertEqual(payment.status, Payment.Status.SUCCEEDED)
+        self.assertFalse(payment.booking_applied)
+        self.assertTrue(payment.failure_reason.startswith("booking_not_applied"))
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.end_time, self.now + timedelta(hours=3))
+
+    def test_duplicate_extension_is_refused(self):
+        self.client.force_authenticate(self.consumer)
+        started = self._post(self._extension_payload())
+        self.client.post(
+            f"/api/payments/{started.data['id']}/confirm/", {"payload": {}},
+            format="json",
+        )
+        response = self._post(self._extension_payload())
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["error"], "EXTENSION_ALREADY_PAID")

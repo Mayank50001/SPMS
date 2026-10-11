@@ -20,7 +20,7 @@ context — what each phase built (**PROGRESS**) and the decisions made or pendi
 | 2 | Authentication and users | ✅ Done | [`phase-2-authentication/`](phase-2-authentication/) |
 | 3 | **Parking domain (lots, slots, pricing, assignments)** | ✅ Done (3.1–3.4; reopened once for D45 duration fields) | [`phase-3-parking/`](phase-3-parking/) |
 | 4 | Booking | ✅ Done (4.1–4.9) | [`phase-4-booking/`](phase-4-booking/) |
-| 5 | Payment | 🔵 In progress (5.1–5.5 done; **D56** revised, **D57** model/states, **D58** gateway interface (revised by D60), **D59** creation surface, **D60** confirmation, **D61** refund ledger + auto-refund) | [`phase-5-payment/`](phase-5-payment/) |
+| 5 | Payment | 🔵 In progress (5.1–5.5 done; **5.6** code pending · **D56** revised, **D57** model/states, **D58** gateway interface (revised by D60), **D59** creation surface, **D60** confirmation, **D61** refund ledger + auto-refund, **D62** extension charge) | [`phase-5-payment/`](phase-5-payment/) |
 | 6 | Occupancy simulation | ⚪ Not started | — |
 | 7 | Notifications | ⚪ Not started | — |
 | 8 | Reports | ⚪ Not started | — |

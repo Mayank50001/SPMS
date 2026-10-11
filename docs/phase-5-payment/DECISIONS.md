@@ -25,9 +25,13 @@ Status as of **2026-10-10**:
   **removing** the `REFUNDED` state; triggered automatically on the D53
   cancellation refund, with a Manager/Admin `POST /api/payments/{id}/refund/`
   retry. See the entry below.
-- **Open:** receipts and the transaction views. Each will be surfaced as its own
-  decision when its increment is opened (see "Open questions to decide before
-  coding").
+- **Accepted (2026-10-11):** **D62** — the extension charge reuses
+  `POST /api/payments/` (`purpose=EXTENSION` + `end_time`), stores the target
+  `extension_end_time` on the payment row, and applies it by calling the D54
+  `extend_booking` seam on confirmation. See the entry below.
+- **Open:** walk-in cash, receipts and the transaction views. Each will be
+  surfaced as its own decision when its increment is opened (see "Open questions
+  to decide before coding").
 
 > A "Decision" below is the human's, not the agent's. Rationale/Consequence
 > record why, so the choice can be defended later.
@@ -408,6 +412,66 @@ payment only ever becomes `SUCCEEDED`/`FAILED`.
 
 ---
 
+## D62 — Extension charge: reuse `POST /api/payments/`, store the target end time (accepted 2026-10-11)
+
+Open question 3. D59 starts a `BOOKING` charge; D54 already prices an extension
+and provides the `extend_booking` seam. D62 fixes how the extension's **target
+end time** travels from the client's request to the *asynchronous* confirmation,
+and which surface starts the charge.
+
+- **Decision:**
+  - **Surface: reuse `POST /api/payments/`.** The body gains an optional
+    `purpose` (`BOOKING` default / `EXTENSION`) and, for an extension, a required
+    `end_time`. No new route, so Phase 5 keeps one payment-creation surface
+    (D59) and the future 5.9 history read stays on the same collection.
+  - **The target end time is stored server-side.** New nullable
+    `Payment.extension_end_time`, set at creation from the D54 quote
+    (`quote_extension(...).new_end_time`). Confirmation (return verify *or*
+    webhook) reads it back; the client is never asked for it at confirm time
+    (§45/§46), so a small payment cannot be turned into a large extension.
+  - **Amount = the D54 incremental quote.** `extension_amount` (added hours × the
+    booking's snapshot rate), never the new total and never client-supplied.
+  - **Eligibility at creation:** the booking must be `CONFIRMED`/`IN_PROGRESS`
+    (`BOOKING_NOT_EXTENDABLE`), and the end time must strictly lengthen (§19);
+    the quote re-applies the D45 duration cap (`INVALID_EXTENSION` /
+    `MAX_DURATION_EXCEEDED`). The quote is an *unlocked hint*, exactly like the
+    4.8 read; `extend_booking` re-checks the window under the slot lock when the
+    charge is applied.
+  - **Apply branch:** `apply_payment_outcome` calls `extend_booking` when
+    `purpose=EXTENSION` and `confirm_booking` otherwise, so both trusted channels
+    (return verify and webhook) apply an extension too. A conflict or a
+    no-longer-extendable booking is **captured but not applied** (D60): money
+    stays `SUCCEEDED`, `booking_applied=False`, and D61 owes the refund.
+  - **Duplicate guard:** a second attempt with the *same* stored
+    `extension_end_time` after one already `SUCCEEDED` is
+    `EXTENSION_ALREADY_PAID` (409) -- the extension twin of
+    `BOOKING_ALREADY_PAID`. `extend_booking`'s same-end-time no-op keeps a
+    provider retry harmless. (Two *concurrent* `PENDING` attempts can both be
+    paid; that is the same accepted limitation as D59's concurrent initial
+    charges.)
+  - **Migration:** `payments/0004_payment_extension_end_time` -- `AddField`
+    (nullable) + a `CheckConstraint` tying `purpose` to the field's null-ness. No
+    data change: every existing row is `BOOKING`/NULL.
+  - **Refusals:** `BOOKING_NOT_EXTENDABLE` (409), `INVALID_EXTENSION` (400),
+    `MAX_DURATION_EXCEEDED` (400), `EXTENSION_ALREADY_PAID` (409), on top of
+    D59's.
+
+- **Rationale:** the end time must be fixed when the money is committed, not when
+  it is confirmed; storing it on the payment row is the same "server-side
+  snapshot" pattern as `amount` (D57) and keeps both confirmation channels
+  identical. Reusing the collection route avoids a second creation surface that
+  would duplicate every D59 safety rule.
+
+- **Rejected:** a dedicated `/api/bookings/{id}/extension-payment/` route (a
+  second surface duplicating D59); passing `end_time` at confirm time (lets a
+  client pay for one window and apply another -- §46); deriving it from the
+  amount (ambiguous, rate-dependent); charging the *new total* rather than the
+  added hours (would charge the already-paid base twice).
+
+- **Status:** Accepted (2026-10-11).
+
+---
+
 ## Open questions to decide before coding
 
 These are the Phase 5 decision points (PROJECT.md §9). Each is settled *with
@@ -419,7 +483,9 @@ next session does not have to rediscover them.
    apply core, captured-but-not-applied policy).*
 2. **Refund** — *decided as **D61** (a `Refund` ledger event; automatic on the
    D53 cancellation refund, Manager/Admin retry endpoint, `REFUNDED` removed).*
-3. **Extension charge path** — charge the D54 quote, then call `extend_booking`.
+3. **Extension charge path** — *decided as **D62** (reuse `POST /api/payments/`
+   with `purpose=EXTENSION` + `end_time`; store `extension_end_time`; apply via
+   the D54 `extend_booking` seam).*
 4. **Walk-in cash payment** — the manager-recorded cash path (§3.1, §19).
 5. **Receipt** — shape, endpoint, and whether it is generated from the payment
    record.
@@ -432,6 +498,7 @@ next session does not have to rediscover them.
 > interface, adapter selection and test strategy (D58, revised by D60); the
 > creation surface (D59); confirmation and the captured-but-not-applied policy
 > (D60); the refund ledger event, its automatic cancellation trigger, the
-> Manager/Admin retry surface and the removal of `REFUNDED` (D61).
+> Manager/Admin retry surface and the removal of `REFUNDED` (D61); the extension
+> charge surface, stored target end time and apply branch (D62).
 
 ---

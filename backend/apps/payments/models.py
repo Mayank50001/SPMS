@@ -122,6 +122,15 @@ class Payment(models.Model):
     # history in later increments (D57).
     paid_at = models.DateTimeField(null=True, blank=True)
 
+    # D62: an EXTENSION charge must remember the target end time the consumer
+    # is paying for, because confirmation arrives asynchronously (return
+    # callback or webhook) long after the request. Set at creation from the D54
+    # quote; read back by ``apply_payment_outcome`` to call ``extend_booking``.
+    # NULL for a BOOKING charge, and never accepted from the client at confirm
+    # time (PROJECT.md §45/§46).
+    extension_end_time = models.DateTimeField(
+        null=True, blank=True, editable=False
+    )
 
     # True once a captured charge has been applied to its booking (confirm_booking
     # for an initial charge, extend_booking for an extension). A SUCCEEDED payment
@@ -158,6 +167,20 @@ class Payment(models.Model):
                     provider_payment_id__isnull=True,
                 ),
                 name="payment_cash_has_no_provider_ids",
+            ),
+            # D62: an EXTENSION charge carries its target end time; a BOOKING
+            # charge never does. Enforced in the database so the two cannot
+            # drift.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        purpose="EXTENSION", extension_end_time__isnull=False
+                    )
+                    | models.Q(
+                        purpose="BOOKING", extension_end_time__isnull=True
+                    )
+                ),
+                name="payment_extension_time_matches_purpose",
             ),
         ]
 

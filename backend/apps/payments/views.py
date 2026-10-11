@@ -44,6 +44,10 @@ REFUSAL_STATUS = {
     "INVALID_WEBHOOK_SIGNATURE": status.HTTP_400_BAD_REQUEST,
     "PAYMENT_NOT_REFUNDABLE": status.HTTP_409_CONFLICT,
     "PAYMENT_REFUND_FAILED": status.HTTP_502_BAD_GATEWAY,
+    "BOOKING_NOT_EXTENDABLE": status.HTTP_409_CONFLICT,
+    "INVALID_EXTENSION": status.HTTP_400_BAD_REQUEST,
+    "MAX_DURATION_EXCEEDED": status.HTTP_400_BAD_REQUEST,
+    "EXTENSION_ALREADY_PAID": status.HTTP_409_CONFLICT,
 }
 
 class PaymentCreateView(generics.GenericAPIView):
@@ -66,6 +70,8 @@ class PaymentCreateView(generics.GenericAPIView):
             payment, client_payload = create_payment_attempt(
                 booking_id=serializer.validated_data["booking"],
                 user=request.user,
+                purpose=serializer.validated_data["purpose"],
+                end_time=serializer.validated_data.get("end_time")
             )
         except (BookingRuleError, PaymentError) as exc:
             return Response(

@@ -107,6 +107,7 @@ Full entries: [`phase-5-payment/DECISIONS.md`](phase-5-payment/DECISIONS.md)
 | D59 | Payment creation surface: `POST /api/payments/` | Accepted |
 | D60 | Payment confirmation: return verify + signed webhook, one apply core; captured-but-not-applied policy (`booking_applied`) | Accepted |
 | D61 | Refund is a ledger event (`Refund` row), not a mutation of a captured `Payment`; automatic on cancellation, Manager/Admin retry, `REFUNDED` removed | Accepted (code in 5.5) |
+| D62 | Extension charge: reuse `POST /api/payments/` (`purpose=EXTENSION` + `end_time`), store `extension_end_time`, apply via `extend_booking` | Accepted (code in 5.6) |
 
 > D56 is decided ahead of coding so the first Phase 5 increment has a concrete
 > gateway to build against; it was **revised (Stripe → Razorpay)** on 2026-10-08
