@@ -134,6 +134,6 @@ Full entries: [`phase-6-occupancy/DECISIONS.md`](phase-6-occupancy/DECISIONS.md)
 | D67 | Operator booking reads: one role-scoped `GET /api/bookings/` (consumer own / manager assigned lots / admin all), mirroring D65 | Implemented (2026-10-12; 6.1) |
 | D68 | Occupancy model: `OCCUPIED` is a stored physical flag written by an explicit manager action (dedicated `POST .../occupancy/`) and by entry/exit; occupied bays stay bookable for future windows (only an already-started window is blocked) | Implemented (2026-10-13; 6.2, after 6.3) |
 | D69 | Entry/exit simulation and the `IN_PROGRESS` / `COMPLETED` lifecycle: Manager check-in/check-out on an assigned lot, stored actual times, occupancy follows | Implemented (2026-10-13; 6.3) |
-| D70 | Overstay settlement: `BusinessRule.overstay_multiplier` and the charging surface | **Open** (6.4) |
+| D70 | Overstay settlement: snapshot `overstay_hours`/`overstay_amount` at check-out from `overstay_multiplier` and a grace window (`overstay_grace_minutes`); record the debt, defer collection | Implemented (2026-10-13; 6.4) |
 | D71 | Occupancy board read (per-lot live view) | **Open** (6.5) |
 | D72 | Live occupancy-board delivery: polling vs SSE vs WebSockets (Channels/Redis) | **Open** (6.5) |

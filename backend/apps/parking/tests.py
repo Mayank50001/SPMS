@@ -1390,3 +1390,48 @@ class CancellationCutoffRuleTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(BusinessRule.load().cancellation_cutoff_minutes, 30)
+
+class OverstayRuleTests(TestCase):
+    """D70/§19: the overstay multiplier and grace window are BusinessRules."""
+
+    def setUp(self):
+        BusinessRule.objects.all().delete()
+        self.admin = User.objects.create_user(
+            email="admin@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Admin",
+            role=User.Role.ADMIN,
+        )
+        self.client = APIClient()
+
+    def test_defaults(self):
+        rule = BusinessRule.load()
+        self.assertEqual(rule.overstay_multiplier, Decimal("1.50"))
+        self.assertEqual(rule.overstay_grace_minutes, 15)
+
+    def test_rule_read_exposes_the_overstay_settings(self):
+        response = self.client.get("/api/business-rules/")
+        self.assertEqual(response.status_code, 200)
+        row = page_rows(response)
+        self.assertEqual(row["overstay_multiplier"], "1.50")
+        self.assertEqual(row["overstay_grace_minutes"], 15)
+
+    def test_admin_can_change_the_overstay_rules(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(
+            "/api/business-rules/",
+            {"overstay_multiplier": "2.00", "overstay_grace_minutes": 30},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        rule = BusinessRule.load()
+        self.assertEqual(rule.overstay_multiplier, Decimal("2.00"))
+        self.assertEqual(rule.overstay_grace_minutes, 30)
+
+    def test_a_multiplier_below_one_is_rejected(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(
+            "/api/business-rules/", {"overstay_multiplier": "0.50"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("overstay_multiplier", page_rows(response))

@@ -10,7 +10,7 @@ Reads stay side-effect free: availability filters lapsed holds out with
 """
 
 import math
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import NamedTuple
 from datetime import timedelta, datetime
 
@@ -532,6 +532,31 @@ def _manager_scoped_slot_id(booking_id, user):
         .first()
     )
 
+def overstay_charge(booking, *, rules=None):
+    """The §19 overstay owed for a checked-out booking (D70).
+
+    Returns ``(overstay_hours, amount)``. The penalty clock starts only **after**
+    the grace window (``end_time + overstay_grace_minutes``), so an operator's
+    late check-out click never invents a charge. ``overstay_hours`` is the
+    billable overrun rounded up to whole hours -- "an hour or part thereof", the
+    same D42 rounding -- and the amount uses the booking's snapshotted
+    ``hourly_rate`` times the multiplier. A booking with no actual exit, or one
+    that left within the grace, owes nothing.
+    """
+    if booking.actual_exit_at is None:
+        return 0, Decimal("0.00")
+
+    rules = rules or BusinessRule.load()
+    clock_start = booking.end_time + timedelta(minutes=rules.overstay_grace_minutes)
+    if booking.actual_exit_at <= clock_start:
+        return 0, Decimal("0.00")
+
+    hours = hours_between(clock_start, booking.actual_exit_at)
+    amount = (
+        booking.hourly_rate * rules.overstay_multiplier * hours
+    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return hours, amount
+
 @transaction.atomic
 def check_in_booking(*, booking_id, user, now=None):
     """Simulate a vehicle entering: ``CONFIRMED -> IN_PROGRESS`` (6.3, D69).
@@ -606,8 +631,16 @@ def check_out_booking(*, booking_id, user, now=None):
 
     booking.status = Booking.Status.COMPLETED
     booking.actual_exit_at = now
+    # D70: snapshot the overstay at the moment of exit; the booking still
+    # completes -- an unsettled overstay is a recorded debt, not a blocker.
+    booking.overstay_hours, booking.overstay_amount = overstay_charge(booking)
     booking.updated_at = now
-    booking.save(update_fields=["status", "actual_exit_at", "updated_at"])
+    booking.save(
+        update_fields=[
+            "status", "actual_exit_at", "overstay_hours", "overstay_amount",
+            "updated_at",
+        ]
+    )
 
     set_slot_occupancy(slot, ParkingSlot.Status.AVAILABLE)
     return booking

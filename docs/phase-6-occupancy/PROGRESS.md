@@ -1,4 +1,4 @@
-# Progress — Phase 6 (Occupancy simulation) 🚧 IN PROGRESS — 6.1–6.3 done
+# Progress — Phase 6 (Occupancy simulation) 🚧 IN PROGRESS — 6.1–6.4 done
 
 > **Scope (PROJECT.md §36):** software-controlled slot occupancy, Manager
 > occupancy controls, booking/occupancy interaction and entry/exit simulation.
@@ -10,7 +10,7 @@
 > [`../phase-4-booking/PROGRESS.md`](../phase-4-booking/PROGRESS.md),
 > [`../phase-5-payment/PROGRESS.md`](../phase-5-payment/PROGRESS.md).
 
-Last updated: **2026-10-13** · **6.1–6.3 done; 6.4 next (settle D70).**
+Last updated: **2026-10-13** · **6.1–6.4 done; 6.5 next (settle D71–D72).**
 
 ---
 
@@ -41,9 +41,8 @@ frontend would otherwise be built against half-finished operator flows.
 
 1. [`../README.md`](../README.md) — conventions + reading protocol.
 2. This file — scope, the increment plan, what is next.
-3. [`DECISIONS.md`](DECISIONS.md) — **D67** (6.1), **D68** (6.2) and **D69** (6.3)
-   implemented; D70–D72 open, each to be settled with the human *before* its
-   increment's code.
+3. [`DECISIONS.md`](DECISIONS.md) — **D67–D70** implemented (6.1–6.4); D71–D72
+   open, each to be settled with the human *before* its increment's code.
 4. Only if a task touches them: the "Dependencies on earlier phases" table below.
 
 ---
@@ -66,8 +65,8 @@ frontend would otherwise be built against half-finished operator flows.
 | 6.1 | **Operator booking reads** — role-scoped `GET /api/bookings/` (consumer own / manager assigned lots / admin all) | D67 | ✅ Done (2026-10-12) |
 | 6.3 | **Entry / exit simulation** — booking `CONFIRMED → IN_PROGRESS → COMPLETED`, slot occupancy follows | D69 | ✅ Done (2026-10-13) |
 | 6.2 | **Occupancy controls** — Manager marks a slot `OCCUPIED` / back `AVAILABLE` | D68 | ✅ Done (2026-10-13) |
-| 6.4 | **Overstay settlement** — the §19 `1.5 × hourly rate` rule, `BusinessRule.overstay_multiplier` | D70 | 🔜 Next (settle D70) |
-| 6.5 | **Occupancy board read** — the Manager's live per-lot view | D71 · D72 | ⚪ Not started |
+| 6.4 | **Overstay settlement** — the §19 `1.5 × hourly rate` rule, `BusinessRule.overstay_multiplier` | D70 | ✅ Done (2026-10-13) |
+| 6.5 | **Occupancy board read** — the Manager's live per-lot view | D71 · D72 | 🔜 Next (settle D71–D72) |
 
 ### Brief per increment
 
@@ -88,7 +87,13 @@ frontend would otherwise be built against half-finished operator flows.
   Keeping this distinct from booking reservation and hold is the §18 constraint
   (D33). **Code is drafted; it lands after 6.3** (see the sequencing note).
 - **6.4** implements §19's overstay penalty for a booking that runs past its
-  booked end.
+  booked end. **Delivered 2026-10-13:** `overstay_charge` (`bookings/services.py`)
+  snapshots `overstay_hours`/`overstay_amount` on the booking at check-out,
+  measured from `actual_exit_at` **after** the configurable
+  `BusinessRule.overstay_grace_minutes` (default 15) and scaled by
+  `BusinessRule.overstay_multiplier` (default 1.50). The booking still reaches
+  `COMPLETED` — an unsettled overstay is a **recorded debt**; collection is
+  deferred (cash D63).
 - **6.5** is the read behind the "Occupancy" page: slot states plus the live
   booking on each slot.
 
@@ -120,7 +125,7 @@ Read these **only** when a Phase 6 task touches them.
   entry/exit and occupancy change is a software action.
 - **Don't collapse concepts** — physical occupancy, booking reservation and
   temporary hold stay three separate things (§18, D33).
-- **Decisions before code** — D70–D72 are core logic (§9); each is surfaced with
+- **Decisions before code** — D71–D72 are core logic (§9); each is surfaced with
   options and trade-offs and recorded before its increment.
 - **Manager scoping** — a Manager may only act on their assigned lots
   (Invariant 3); an unassigned lot is a `404`, never a `403`.

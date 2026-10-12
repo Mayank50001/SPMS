@@ -44,9 +44,9 @@ D63) is deferred to a future addition because its prerequisite — a
 Manager-created walk-in booking — is out of the current project's scope.
 
 Phase 6 (occupancy simulation) is underway. **6.1** (operator booking reads —
-D67), **6.3** (entry/exit simulation — D69) and **6.2** (Manager occupancy
-controls — D68) are done; overstay settlement and the live occupancy board
-follow.
+D67), **6.3** (entry/exit simulation — D69), **6.2** (Manager occupancy
+controls — D68) and **6.4** (overstay settlement — D70) are done; the live
+occupancy board follows.
 The authoritative specification is [`PROJECT.md`](PROJECT.md). Documentation is
 split per phase — start at [`docs/README.md`](docs/README.md), the navigation
 entry point, phase tracker and reading protocol.
@@ -675,10 +675,32 @@ POST /api/bookings/1/check-out/    # IN_PROGRESS -> COMPLETED, slot -> AVAILABLE
   `BOOKING_NOT_CHECKOUTABLE`.
 - **Actual times:** entry stamps `actual_entry_at`, exit stamps `actual_exit_at`
   (both returned on every booking read). The booked `start_time`/`end_time` stay
-  the *plan*; overstay (6.4) is measured from `actual_exit_at`.
+  the *plan*; overstay (6.4, below) is measured from `actual_exit_at`.
 - The slot write never overrides `OUT_OF_SERVICE` (a withdrawn bay stays
   withdrawn). A `CONFIRMED` booking whose window passes unentered stays
   `CONFIRMED` and is inert — there is no `NO_SHOW` state (D40).
+
+### Overstay (Phase 6, increment 6.4, D70)
+
+§19 charges `1.5 × hourly rate` for **each additional hour or part** past the
+booked end. Because the true exit is a simulated, human click, the penalty is
+snapshotted at check-out onto the booking — `overstay_hours` and
+`overstay_amount`, both returned on every booking read. **No new route**;
+check-out does the work:
+
+- **Grace window first.** A late check-out is only as accurate as the Manager's
+  click, so nothing is charged until `BusinessRule.overstay_grace_minutes`
+  (default **15**) has elapsed; the overrun is measured from `end_time + grace`.
+  A safety net for a late click, not a free pass.
+- **Whole hours or part thereof.** The overrun rounds up (the D42 `ceil`): 16
+  minutes past the grace bills one hour.
+- **Rate is the booking's snapshot.** `hourly_rate` was fixed at creation, so a
+  later tariff edit cannot rewrite a past bill; the scale is
+  `BusinessRule.overstay_multiplier` (default **1.50**, minimum 1.0).
+- **Recorded, not collected.** The booking still reaches `COMPLETED` and the debt
+  is recorded; collection is deferred (the walk-in/cash path, D63).
+- With the defaults (rate ₹20), 16 minutes late is one hour = **₹30**; 85 minutes
+  late is two hours = **₹60**.
 
 ### Occupancy controls (Phase 6, increment 6.2, D68)
 

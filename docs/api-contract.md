@@ -10,7 +10,7 @@ the root README's API section for the routes themselves.
 > never to PostgreSQL, and must **never invent an endpoint**. If a screen needs
 > data that has no route, emit `// TODO: Backend endpoint required` and stop.
 
-Last updated: **2026-10-13** (occupancy controls — D68).
+Last updated: **2026-10-13** (overstay settlement — D70).
 
 ---
 
@@ -121,7 +121,10 @@ The authoritative page list is PROJECT.md §30. As of this freeze:
   transactions view and the booking list serve consumer, manager and admin with
   the same route and different row shapes — see README. An operator booking row
   adds `lot`, `consumer_email`, `consumer_name` and the
-  `can_check_in`/`can_check_out` hints; D67.)
+  `can_check_in`/`can_check_out` hints; D67. Every booking row also carries the
+  `overstay_hours`/`overstay_amount` snapshot written at check-out, and
+  `PATCH /api/business-rules/` now accepts `overstay_multiplier` and
+  `overstay_grace_minutes`; D70.)
 - **Not yet available — stub the page, do not invent the route:**
   - Manager **Occupancy board** (the live per-lot view; 6.5) and walk-in/cash
     flows (Phase 6; walk-in deferred D63). The occupancy **mark** action

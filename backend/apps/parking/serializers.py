@@ -12,6 +12,8 @@ never from ``models.py`` or ``apps.py``.
 """
 
 from django.contrib.auth import get_user_model
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from .models import City, ParkingLot, ParkingSlot, BusinessRule, Tariff
@@ -327,7 +329,7 @@ class BusinessRuleSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = BusinessRule
-        fields = ["id", "max_hourly_rate","max_booking_hours", "hold_minutes", "cancellation_cutoff_minutes", "updated_at"]
+        fields = ["id", "max_hourly_rate","max_booking_hours", "hold_minutes", "cancellation_cutoff_minutes", "overstay_multiplier", "overstay_grace_minutes", "updated_at"]
         read_only_fields = fields
 
 class BusinessRuleUpdateSerializer(serializers.ModelSerializer):
@@ -340,9 +342,13 @@ class BusinessRuleUpdateSerializer(serializers.ModelSerializer):
     max_booking_hours = serializers.IntegerField(required=False, min_value=1)
     hold_minutes = serializers.IntegerField(required=False, min_value=1)
     cancellation_cutoff_minutes = serializers.IntegerField(required=False, min_value=1)
+    overstay_multiplier = serializers.DecimalField(
+        max_digits=4, decimal_places=2, required=False, min_value=Decimal("1.00")
+    )
+    overstay_grace_minutes = serializers.IntegerField(required=False, min_value=1)
     class Meta:
         model = BusinessRule
-        fields = ["max_hourly_rate", "max_booking_hours", "hold_minutes", "cancellation_cutoff_minutes"]
+        fields = ["max_hourly_rate", "max_booking_hours", "hold_minutes", "cancellation_cutoff_minutes", "overstay_multiplier", "overstay_grace_minutes"]
 
     def validate_max_hourly_rate(self, value):
         if value <= 0:

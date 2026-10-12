@@ -67,6 +67,8 @@ class BookingSerializer(serializers.ModelSerializer):
             "cancelled_at",
             "actual_entry_at",
             "actual_exit_at",
+            "overstay_hours",
+            "overstay_amount",
             "created_at",
             "updated_at",
         ]

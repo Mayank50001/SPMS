@@ -33,7 +33,7 @@ from apps.bookings.services import (
     available_slots, blocking_window_q, cancel_booking, confirm_booking,
     create_booking, effective_status, expire_stale_holds, extend_booking,
     hours_between, is_hold_live, quote_booking, quote_extension, refund_due_for,
-    validate_duration, validate_window, filter_bookings
+    validate_duration, validate_window, filter_bookings, overstay_charge
 )
 
 
@@ -2639,3 +2639,85 @@ class BookingEntryExitApiTests(TestCase):
         row = page_rows(self.client.get("/api/bookings/"))[0]
         self.assertFalse(row["can_check_in"])
         self.assertTrue(row["can_check_out"])
+
+    def test_check_out_records_the_overstay_snapshot(self):
+        booking = self._confirmed()
+        # Move the booked window into the past so the real "now" is an overstay.
+        past_end = timezone.now() - timedelta(hours=2)
+        Booking.objects.filter(pk=booking.pk).update(
+            start_time=past_end - timedelta(hours=2), end_time=past_end
+        )
+        self._post("check-in", booking, self.manager)
+        response = self._post("check-out", booking, self.manager)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(page_rows(response)["overstay_hours"], 2)
+        self.assertEqual(page_rows(response)["overstay_amount"], "60.00")
+        booking.refresh_from_db()
+        self.assertEqual(booking.overstay_hours, 2)
+        self.assertEqual(booking.overstay_amount, Decimal("60.00"))
+
+class OverstayChargeTests(TestCase):
+    """The §19 overstay rule with the D70 grace window."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+        )
+        cls.slot = ParkingSlot.objects.create(lot=cls.lot, number="A-01")
+        BusinessRule.load()
+
+    def _booking(self, *, end, exit_at):
+        return Booking.objects.create(
+            slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=end - timedelta(hours=2),
+            end_time=end,
+            billed_hours=2,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("40.00"),
+            status=Booking.Status.COMPLETED,
+            actual_entry_at=end - timedelta(hours=2),
+            actual_exit_at=exit_at,
+            vehicle_plate="KA01AB1234",
+        )
+
+    def test_exit_within_the_grace_owes_nothing(self):
+        end = timezone.now()
+        booking = self._booking(end=end, exit_at=end + timedelta(minutes=10))
+        self.assertEqual(overstay_charge(booking), (0, Decimal("0.00")))
+
+    def test_exit_exactly_at_the_grace_owes_nothing(self):
+        end = timezone.now()
+        booking = self._booking(end=end, exit_at=end + timedelta(minutes=15))
+        self.assertEqual(overstay_charge(booking), (0, Decimal("0.00")))
+
+    def test_exit_just_past_the_grace_charges_one_hour(self):
+        end = timezone.now()
+        booking = self._booking(end=end, exit_at=end + timedelta(minutes=16))
+        self.assertEqual(overstay_charge(booking), (1, Decimal("30.00")))
+
+    def test_overrun_past_an_hour_after_the_grace_rounds_up(self):
+        # 15 min grace + 70 min over = 1h10m billable -> 2 hours.
+        end = timezone.now()
+        booking = self._booking(end=end, exit_at=end + timedelta(minutes=85))
+        self.assertEqual(overstay_charge(booking), (2, Decimal("60.00")))
+
+    def test_early_exit_owes_nothing(self):
+        end = timezone.now()
+        booking = self._booking(end=end, exit_at=end - timedelta(minutes=5))
+        self.assertEqual(overstay_charge(booking), (0, Decimal("0.00")))
+
+    def test_multiplier_is_applied(self):
+        BusinessRule.objects.filter(pk=1).update(overstay_multiplier=Decimal("2.00"))
+        end = timezone.now()
+        booking = self._booking(end=end, exit_at=end + timedelta(minutes=16))
+        self.assertEqual(overstay_charge(booking), (1, Decimal("40.00")))
+
+    def test_grace_is_configurable(self):
+        BusinessRule.objects.filter(pk=1).update(overstay_grace_minutes=60)
+        end = timezone.now()
+        booking = self._booking(end=end, exit_at=end + timedelta(minutes=30))
+        self.assertEqual(overstay_charge(booking), (0, Decimal("0.00")))

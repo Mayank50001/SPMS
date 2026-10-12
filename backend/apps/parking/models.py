@@ -301,6 +301,8 @@ class BusinessRule(models.Model):
         validators=[MinValueValidator(Decimal("0.01"))],
     )
 
+
+
     # D45: the Administrator's ceiling on any slot's bookable maximum -- the
     # duration analogue of ``max_hourly_rate`` (Invariant 4). A manager may set
     # a slot's maximum up to this value, never above it.
@@ -327,6 +329,21 @@ class BusinessRule(models.Model):
         help_text="Minutes before start time within which cancellation is non-refundable (PROJECT.md §19).",
     )
 
+    # D70/§19: the overstay penalty multiplier (1.5 in the spec) and the grace
+    # window that must pass before the penalty clock even starts, so a manager's
+    # late check-out click does not invent a charge. Both Administrator-settable.
+    overstay_multiplier = models.DecimalField(
+        max_digits=4,
+        decimal_places=2,
+        default=Decimal("1.50"),
+        validators=[MinValueValidator(Decimal("1.00"))],
+    )
+    overstay_grace_minutes = models.PositiveIntegerField(
+        default=15,
+        validators=[MinValueValidator(1)],
+        help_text="Minutes after the booked end before overstay is charged (D70).",
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -348,7 +365,15 @@ class BusinessRule(models.Model):
             models.CheckConstraint(
                 condition=models.Q(cancellation_cutoff_minutes__gt=0),
                 name="business_rule_cancellation_cutoff_positive",
-            )
+            ),
+            models.CheckConstraint(
+                condition=models.Q(overstay_multiplier__gte=1),
+                name="business_rule_overstay_multiplier_at_least_one",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(overstay_grace_minutes__gt=0),
+                name="business_rule_overstay_grace_positive",
+            ),
         ]
 
     def __str__(self):

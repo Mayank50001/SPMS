@@ -128,7 +128,7 @@ def set_tariff(*, lot, slot_type, hourly_rate, instance=None):
     return instance
 
 @transaction.atomic
-def set_business_rules(*, max_hourly_rate=None, max_booking_hours=None, hold_minutes=None, cancellation_cutoff_minutes=None):
+def set_business_rules(*, max_hourly_rate=None, max_booking_hours=None, hold_minutes=None, cancellation_cutoff_minutes=None, overstay_multiplier=None, overstay_grace_minutes=None):
     """Update the singleton's ceilings, refusing to break an invariant at rest.
 
     Any argument may be omitted to leave that value unchanged. All checks run
@@ -159,6 +159,12 @@ def set_business_rules(*, max_hourly_rate=None, max_booking_hours=None, hold_min
 
     if cancellation_cutoff_minutes is not None:
         rule.cancellation_cutoff_minutes = cancellation_cutoff_minutes
+
+    if overstay_multiplier is not None:
+        rule.overstay_multiplier = overstay_multiplier
+
+    if overstay_grace_minutes is not None:
+        rule.overstay_grace_minutes = overstay_grace_minutes
 
     rule.save()
     return rule

@@ -189,6 +189,18 @@ class Booking(models.Model):
     actual_entry_at = models.DateTimeField(null=True, blank=True)
     actual_exit_at = models.DateTimeField(null=True, blank=True)
 
+    # D70/§19: the overstay snapshotted at check-out. ``overstay_hours`` is the
+    # overrun past the grace window rounded up to whole hours; ``overstay_amount``
+    # is that × the booking's snapshotted ``hourly_rate`` × the multiplier. Stored
+    # (not derived) so a later rule/tariff change cannot rewrite a past bill.
+    overstay_hours = models.PositiveIntegerField(default=0)
+    overstay_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

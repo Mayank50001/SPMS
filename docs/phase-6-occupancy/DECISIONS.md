@@ -1,8 +1,8 @@
 # Phase 6 decisions (D67–D72)
 
-Decisions the occupancy phase made or must make. **D67** (6.1), **D68** (6.2) and
-**D69** (6.3) are **implemented**; **D70–D72** are **open** and must be settled
-with the human before their increment's code (PROJECT.md §9). Entries are added here, and indexed in
+Decisions the occupancy phase made or must make. **D67** (6.1), **D68** (6.2),
+**D69** (6.3) and **D70** (6.4) are **implemented**; **D71–D72** are **open** and
+must be settled with the human before their increment's code (PROJECT.md §9). Entries are added here, and indexed in
 [`../decisions-index.md`](../decisions-index.md), as each is decided.
 
 ---
@@ -127,25 +127,41 @@ Settle before 6.3's code. Owns `IN_PROGRESS` and `COMPLETED`. **Decided
 
 ---
 
-## D70 — Overstay settlement (OPEN)
+## D70 — Overstay settlement
 
-Settle before 6.4's code.
+Settle before 6.4's code. **Decided 2026-10-13 (code in 6.4).**
 
-- **Multiplier source:** `BusinessRule.overstay_multiplier`, default `1.5`
-  (§19) — a new singleton field the Administrator may change (migration).
-- **Rule:** `1.5 × hourly_rate` for **each additional hour or part thereof**
-  beyond the booked end (the same whole-hour rounding as D42), measured from the
-  actual exit time.
-- **Charging surface:** reuse `POST /api/payments/` with a new
-  `purpose = OVERSTAY` (a `Payment.Purpose` enum value + migration), or record
-  the amount owed on the booking without an online charge? Reusing the payment
-  abstraction keeps one money path; the manager-recorded cash path (D63) may be
-  what actually settles it.
-- **Settlement timing:** is the overstay charged at **check-out** (6.3)? Does an
-  unsettled overstay block `COMPLETED`, or complete with a recorded debt?
-- **Scope note:** if the charging surface needs the deferred walk-in/cash flow
-  (D63), say so and keep 6.4 to **computing and recording** the overstay, not
-  collecting it.
+- **Rule (§19):** `overstay_hours × booking.hourly_rate × overstay_multiplier`.
+  `booking.hourly_rate` is the creation snapshot, not today's tariff, so a later
+  price change cannot rewrite a past bill (the `base_amount` reasoning).
+- **Grace window (revised from a bare §19 reading):** check-out is a *human*
+  click, so a customer who left on time must not be penalised for the operator's
+  latency, and a small harmless overrun should be forgiven. The overstay clock
+  therefore starts **after** the grace:
+  `billable = actual_exit_at − (end_time + overstay_grace_minutes)`, rounded up;
+  within the grace there is no overstay. The true `actual_exit_at` is still
+  stored — only the penalty is affected. It is operational tolerance, not a free
+  pass, and it is a tunable rule.
+- **Rounding:** the overrun is charged per whole hour **or part thereof** — the
+  same `hours_between` `ceil` used for billed hours (D42), reused rather than
+  re-implemented.
+- **Multiplier source:** `BusinessRule.overstay_multiplier`, `Decimal(4,2)`
+  default `1.50`, `>= 1` (a penalty is never a discount), Administrator-settable.
+  Grace: `BusinessRule.overstay_grace_minutes`, default `15`, `>= 1`. Both are a
+  migration.
+- **Storage:** snapshot on the booking at check-out — `overstay_hours`
+  (`PositiveIntegerField`, default 0) and `overstay_amount` (`Decimal(12,2)`,
+  default 0.00). Migration, defaults, no backfill.
+- **Settlement timing:** check-out always reaches `COMPLETED`; an unsettled
+  overstay is a **recorded debt**, it never blocks the transition (the car has
+  left and §17/D40 make `COMPLETED` terminal).
+- **Charging surface:** 6.4 **computes and records only**; **collection is
+  deferred**. The natural settlement is cash at the gate — D63, deferred — and an
+  online `OVERSTAY` charge (`Payment.Purpose` + migration) would be a flow
+  nothing initiates after the vehicle has left. D70's scope note sanctions
+  "computing and recording, not collecting".
+- **Reads:** `overstay_hours` / `overstay_amount` are exposed on the booking read
+  (consumer detail and the operator row), so the debt is visible.
 
 ---
 
