@@ -15,6 +15,8 @@ from apps.parking.models import ParkingSlot
 from .models import Booking
 from .services import (
     CANCELLABLE_STATUSES,
+    CHECKINABLE_STATUSES,
+    CHECKOUTABLE_STATUSES,
     EXTENDABLE_STATUSES,
     effective_status as compute_effective_status
 )
@@ -63,6 +65,8 @@ class BookingSerializer(serializers.ModelSerializer):
             "refund_due_amount",
             "hold_expires_at",
             "cancelled_at",
+            "actual_entry_at",
+            "actual_exit_at",
             "created_at",
             "updated_at",
         ]
@@ -210,4 +214,42 @@ class BookingDetailSerializer(BookingSerializer):
             "slot_floor",
             "can_cancel",
             "can_extend",
+        ]
+
+
+class BookingOperatorSerializer(BookingSerializer):
+    """Operator read shape for the booking listing (increment 6.1, D67).
+
+    Everything a consumer sees, plus who booked (the payer's email and name) and
+    the lot id, so a Manager/Administrator can reconcile a booking against a lot.
+    Selected by role in the view, so these operator-only fields never reach a
+    consumer response. Read-only in 6.1: operator *actions* on a booking arrive
+    with increments 6.2-6.4.
+    """
+
+    lot = serializers.IntegerField(source="slot.lot_id", read_only=True)
+    consumer_email = serializers.SerializerMethodField()
+    consumer_name = serializers.SerializerMethodField()
+    can_check_in = serializers.SerializerMethodField()
+    can_check_out = serializers.SerializerMethodField()
+
+    def get_consumer_email(self, obj):
+        return obj.user.email if obj.user else None
+
+    def get_consumer_name(self, obj):
+        return obj.user.full_name if obj.user else None
+
+    def get_can_check_in(self, obj):
+        return obj.status in CHECKINABLE_STATUSES
+
+    def get_can_check_out(self, obj):
+        return obj.status in CHECKOUTABLE_STATUSES
+
+    class Meta(BookingSerializer.Meta):
+        fields = BookingSerializer.Meta.fields + [
+            "lot",
+            "consumer_email",
+            "consumer_name",
+            "can_check_in",
+            "can_check_out",
         ]

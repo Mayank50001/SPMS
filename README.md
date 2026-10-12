@@ -42,6 +42,11 @@ event**, automatic on cancellation — D61) and **5.6** (extension charge:
 **transaction views** on `GET /api/payments/` — D65). Only **5.7** (walk-in cash,
 D63) is deferred to a future addition because its prerequisite — a
 Manager-created walk-in booking — is out of the current project's scope.
+
+Phase 6 (occupancy simulation) is underway. **6.1** (operator booking reads —
+D67), **6.3** (entry/exit simulation — D69) and **6.2** (Manager occupancy
+controls — D68) are done; overstay settlement and the live occupancy board
+follow.
 The authoritative specification is [`PROJECT.md`](PROJECT.md). Documentation is
 split per phase — start at [`docs/README.md`](docs/README.md), the navigation
 entry point, phase tracker and reading protocol.
@@ -204,6 +209,7 @@ npm run build
 | POST   | `/api/parking-lots/{lot}/slots/` | Admin/Manager | Add a slot         |
 | GET    | `/api/parking-lots/{lot}/slots/{id}/` | Public | Retrieve a slot     |
 | PATCH  | `/api/parking-lots/{lot}/slots/{id}/` | Admin/Manager | Edit a slot |
+| POST   | `/api/parking-lots/{lot}/slots/{id}/occupancy/` | Manager | Mark a slot `OCCUPIED` / back `AVAILABLE` (6.2) |
 | GET    | `/api/parking-lots/{lot}/tariffs/` | Public | List a lot's tariffs    |
 | POST   | `/api/parking-lots/{lot}/tariffs/` | Admin/Manager | Add a tariff     |
 | GET    | `/api/parking-lots/{lot}/tariffs/{id}/` | Public | Retrieve a tariff |
@@ -211,11 +217,13 @@ npm run build
 | GET    | `/api/business-rules/` | Public     | The max-hourly-rate singleton    |
 | PATCH  | `/api/business-rules/` | Admin      | Change the rate/duration ceilings, hold length or refund cutoff |
 | GET    | `/api/parking-lots/{lot}/availability/` | Public | Slots bookable for `?start=&end=` (4.3) |
-| GET    | `/api/bookings/`       | Consumer   | List/filter the caller's own bookings (4.4/4.9) |
+| GET    | `/api/bookings/`       | Role-scoped | List/filter visible bookings: own / assigned lots / all (4.4/4.9/6.1) |
 | GET    | `/api/bookings/{id}/`  | Consumer   | Read one own booking: lot location + `can_cancel`/`can_extend` (4.9) |
 | POST   | `/api/bookings/`       | Consumer   | Create a booking (4.4) |
 | POST   | `/api/bookings/{id}/cancel/` | Consumer | Cancel an own booking, recording the refund due (4.7) |
 | GET    | `/api/bookings/{id}/extension-quote/` | Consumer | Price extending an own booking's end time (4.8) |
+| POST   | `/api/bookings/{id}/check-in/` | Manager | Simulate entry: `CONFIRMED → IN_PROGRESS`, slot `OCCUPIED` (6.3) |
+| POST   | `/api/bookings/{id}/check-out/` | Manager | Simulate exit: `IN_PROGRESS → COMPLETED`, slot `AVAILABLE` (6.3) |
 | POST   | `/api/payments/`      | Consumer    | Start a payment attempt for an own `PENDING_PAYMENT` booking (5.3) |
 | POST   | `/api/payments/{id}/confirm/` | Consumer | Server-verify a Checkout return and confirm the booking (5.4) |
 | POST   | `/api/payments/webhook/` | Public   | Signature-verified Razorpay webhook (5.4) |
@@ -236,6 +244,10 @@ npm run build
 > `MAX_RATE_BELOW_TARIFF`, and lowering `max_booking_hours` below an existing
 > slot's maximum is a `409` `MAX_DURATION_BELOW_SLOT`. A slot whose
 > `max_booking_hours` exceeds the cap is a `409` `MAX_DURATION_ABOVE_CAP`.
+> `GET /api/bookings/` is **role-scoped** like `GET /api/payments/`: a Consumer
+> lists their own bookings, a Manager those in their assigned lots, an
+> Administrator all (D67, 6.1) — a caller who owns none gets an empty list,
+> never a `403`.
 
 ### Vehicles
 
@@ -472,8 +484,10 @@ Creation refusals use the §33 `{"error": "CODE", "message": ...}` shape (D48):
 re-checked under a per-slot row lock, so two simultaneous requests cannot both
 win the same slot (Invariant 1, D41).
 
-`GET /api/bookings/` lists only the caller's own bookings (Invariant 2). While a
-booking is `PENDING_PAYMENT`, a lapsed hold is reported as
+`GET /api/bookings/` lists the bookings the caller may see, scoped by role
+(Invariant 2/3; D67): a Consumer their own, a Manager those in their assigned
+lots, an Administrator all. While a booking is `PENDING_PAYMENT`, a lapsed hold
+is reported as
 `"effective_status": "EXPIRED"` **without** changing the stored `status` — expiry
 is lazy and reads never write (D6/D43/D50). Clients should render
 `effective_status`; `status` and `hold_expires_at` stay in the payload for
@@ -570,11 +584,13 @@ BOOKING_CONFLICT`); re-sending the same `end_time` is an idempotent no-op.
 
 ### Booking history and detail (Phase 4, increment 4.9)
 
-`GET /api/bookings/` lists only the caller's own bookings and is now
-**filterable** (D55); `GET /api/bookings/{id}/` reads one of them in full. Both
-are read-only: they never persist lazy hold expiry, so a lapsed
-`PENDING_PAYMENT` is still returned by `?status=PENDING_PAYMENT` while its body
-`effective_status` reads `EXPIRED` (D6/D43/D50).
+`GET /api/bookings/` lists the caller's **visible** bookings and is
+**filterable** (D55); since 6.1 it is role-scoped (Consumer own / Manager
+assigned lots / Administrator all — D67). `GET /api/bookings/{id}/` reads one of
+the caller's own bookings in full. Both are read-only: they never persist lazy
+hold expiry, so a lapsed `PENDING_PAYMENT` is still returned by
+`?status=PENDING_PAYMENT` while its body `effective_status` reads `EXPIRED`
+(D6/D43/D50).
 
 ```text
 GET /api/bookings/?status=CONFIRMED,IN_PROGRESS&scope=upcoming&lot=1&ordering=-start_time
@@ -589,7 +605,8 @@ GET /api/bookings/1/
 | `ordering` | `start_time` / `-start_time` / `end_time` / `-end_time` / `created_at` / `-created_at`; default is the model's `-start_time`, `-id`. |
 
 The filters combine as an AND, so `?scope=upcoming&status=CONFIRMED` is the
-"upcoming confirmed" tab. The list is **not paginated** (Phase 10).
+"upcoming confirmed" tab. The list is **paginated** with the shared D66 envelope
+(page-number, `?page_size=` up to 100).
 
 The detail response is the list shape plus the lot/slot location
 (`lot`, `lot_name`, `lot_address_line`, `lot_city`, `lot_state`,
@@ -614,9 +631,76 @@ deliberately absent until Phase 5's `Payment`. Example (excerpt):
 }
 ```
 
-Both routes are Consumer-only and scoped to the caller: another consumer's
-booking — or a non-existent id — is a `404 {"error": "BOOKING_NOT_FOUND"}`, never
-a `403` (Invariant 2).
+The **detail** route is Consumer-only and scoped to the caller: another
+consumer's booking — or a non-existent id — is a `404
+{"error": "BOOKING_NOT_FOUND"}`, never a `403` (Invariant 2).
+
+### Operator booking reads (Phase 6, increment 6.1, D67)
+
+`GET /api/bookings/` is the one route for both the consumer "My Bookings" list
+and the operator booking list: the queryset is scoped by role in the backend, so
+a caller never has to pass a filter to stay inside their authority (Invariant
+2/3). A Consumer receives the same row shape as before; a **Manager** (bookings
+on their assigned lots) and an **Administrator** (all bookings) receive an
+**operator row** — the consumer fields plus:
+
+| Field | Meaning |
+|-------|---------|
+| `lot` | The lot id, for grouping/reconciling by lot. |
+| `consumer_email` | The payer's e-mail (`null` for a future walk-in). |
+| `consumer_name` | The payer's full name. |
+| `can_check_in` | `true` when the booking is `CONFIRMED` (the entry action applies). |
+| `can_check_out` | `true` when the booking is `IN_PROGRESS` (the exit action applies). |
+
+The 4.9 filters and the D66 pagination envelope apply unchanged; `?lot=`
+narrows *within* the caller's scope, so a Manager asking for an unassigned lot
+gets an empty list, not a `403`. The two `can_*` hints (6.3) tell the list which
+operator action to offer without a second request. The Manager's occupancy mark
+is a separate route (6.2, below). `POST /api/bookings/` remains Consumer-only.
+
+### Entry / exit simulation (Phase 6, increment 6.3, D69)
+
+The simulated gate. Hardware is excluded (§4), so the lot's **Manager** records
+that a vehicle entered or left, and both the booking and the slot follow:
+
+```text
+POST /api/bookings/1/check-in/     # CONFIRMED -> IN_PROGRESS, slot -> OCCUPIED
+POST /api/bookings/1/check-out/    # IN_PROGRESS -> COMPLETED, slot -> AVAILABLE
+```
+
+- **Manager-only**, scoped to the booking's assigned lot: a booking in a lot the
+  caller is not assigned to is a `404` `BOOKING_NOT_FOUND`, never a `403`.
+- Check-in requires `CONFIRMED`, check-out requires `IN_PROGRESS`; a repeat is
+  **idempotent**. Refusals are `409` `BOOKING_NOT_CHECKINABLE` /
+  `BOOKING_NOT_CHECKOUTABLE`.
+- **Actual times:** entry stamps `actual_entry_at`, exit stamps `actual_exit_at`
+  (both returned on every booking read). The booked `start_time`/`end_time` stay
+  the *plan*; overstay (6.4) is measured from `actual_exit_at`.
+- The slot write never overrides `OUT_OF_SERVICE` (a withdrawn bay stays
+  withdrawn). A `CONFIRMED` booking whose window passes unentered stays
+  `CONFIRMED` and is inert — there is no `NO_SHOW` state (D40).
+
+### Occupancy controls (Phase 6, increment 6.2, D68)
+
+Because there is no hardware (§4), a **Manager** records that a bay is physically
+taken — an unauthorised car, or a bay a booking has not captured. It needs no
+booking and toggles only between the two usable states:
+
+```text
+POST /api/parking-lots/1/slots/7/occupancy/
+{ "status": "OCCUPIED" }
+```
+
+- **Manager-only**, on an assigned lot (`404` for an unassigned one, never `403`).
+- Only `AVAILABLE` ↔ `OCCUPIED`: `OUT_OF_SERVICE` is the separate lifecycle axis
+  (the slot `PATCH`), so marking a withdrawn bay occupied is a `409`
+  `SLOT_NOT_OCCUPIABLE`, and sending `OUT_OF_SERVICE` here is a `400`.
+- **Bookability:** an occupied bay is unavailable only for a window that has
+  **already begun** (`start <= now`) — the car is there *now*. A future window
+  does not overlap it, so a momentarily-full lot still accepts later bookings.
+  A bay that should leave the bookable pool entirely is `OUT_OF_SERVICE`.
+- Entry/exit (6.3) writes the same field through the same helper; `OUT_OF_SERVICE`
+  is never overridden, and the last write wins (D68's composition rule).
 
 ### Payment (Phase 5) — complete (5.1–5.6, 5.8–5.9)
 

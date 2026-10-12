@@ -17,8 +17,8 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import User, Vehicle
 from apps.parking.models import BusinessRule, City, ParkingLot, ParkingSlot, Tariff
-
 from apps.bookings.models import Booking
+from apps.test_support import page_rows
 
 from apps.bookings.references import (
     REFERENCE_ALPHABET, REFERENCE_LENGTH, generate_reference,
@@ -622,6 +622,17 @@ class AvailabilityQueryTests(TestCase):
         self.assertNotIn(other_slot.id, ids)
         self.assertIn(self.slot.id, ids)
 
+    def test_occupied_slot_is_hidden_for_a_started_window(self):
+        # D68: occupied is a *now*-fact, so a window that has already begun
+        # cannot use the bay.
+        self.slot.status = ParkingSlot.Status.OCCUPIED
+        self.slot.save(update_fields=["status"])
+        now = timezone.now()
+        ids = self._available_ids(
+            now - timedelta(minutes=30), now + timedelta(hours=1)
+        )
+        self.assertNotIn(self.slot.id, ids)
+
 class CreateBookingServiceTests(TestCase):
     """``create_booking`` (increment 4.4; D3/D41 and Invariants 1/5/6)."""
     @classmethod
@@ -781,6 +792,21 @@ class CreateBookingServiceTests(TestCase):
         with self.assertRaises(MaxDurationExceededError):
             self._create(start, end)
 
+    def test_occupied_slot_is_refused_for_a_started_window(self):
+        self.slot.status = ParkingSlot.Status.OCCUPIED
+        self.slot.save(update_fields=["status"])
+        now = timezone.now()
+        with self.assertRaises(SlotUnavailableError):
+            self._create(now - timedelta(minutes=30), now + timedelta(hours=1))
+
+    def test_occupied_slot_is_bookable_for_a_future_window(self):
+        # D68: a momentarily-full lot must still accept tomorrow's booking.
+        self.slot.status = ParkingSlot.Status.OCCUPIED
+        self.slot.save(update_fields=["status"])
+        start, end = self._window()  # now + 2h .. now + 4h
+        booking = self._create(start, end)
+        self.assertEqual(booking.status, Booking.Status.PENDING_PAYMENT)
+
 class CreateBookingConcurrencyTests(TransactionTestCase):
     """Two simultaneous creates for one slot: exactly one may win (D3/D41).
 
@@ -914,15 +940,27 @@ class CreateBookingApiTests(TestCase):
         response = self.client.post("/api/bookings/", self._payload(start, end), format="json")
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    def test_manager_cannot_create(self):
+        manager = User.objects.create_user(
+            email="manager@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Manager",
+            role=User.Role.MANAGER,
+        )
+        self.client.force_authenticate(manager)
+        start, end = self._window()
+        response = self.client.post("/api/bookings/", self._payload(start, end), format="json")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        
     def test_consumer_creates_booking(self):
         self.client.force_authenticate(self.consumer)
         start, end = self._window()
         response = self.client.post("/api/bookings/", self._payload(start, end), format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["status"], Booking.Status.PENDING_PAYMENT)
-        self.assertEqual(response.data["vehicle_plate"], "KA01AB1234")
-        self.assertEqual(response.data["billed_hours"], 2)
-        self.assertIsNotNone(response.data["hold_expires_at"])
+        self.assertEqual(page_rows(response)["status"], Booking.Status.PENDING_PAYMENT)
+        self.assertEqual(page_rows(response)["vehicle_plate"], "KA01AB1234")
+        self.assertEqual(page_rows(response)["billed_hours"], 2)
+        self.assertIsNotNone(page_rows(response)["hold_expires_at"])
 
     def test_consumer_cannot_use_another_consumers_vehicle(self):
         self.client.force_authenticate(self.consumer)
@@ -933,7 +971,7 @@ class CreateBookingApiTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("vehicle", response.data)
+        self.assertIn("vehicle", page_rows(response))
 
     def test_overlapping_create_returns_conflict(self):
         self.client.force_authenticate(self.consumer)
@@ -964,7 +1002,7 @@ class CreateBookingApiTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.data["error"], "WINDOW_IN_PAST")
+        self.assertEqual(page_rows(response)["error"], "WINDOW_IN_PAST")
 
     def test_out_of_service_slot_is_a_409(self):
         self.slot.status = ParkingSlot.Status.OUT_OF_SERVICE
@@ -973,7 +1011,7 @@ class CreateBookingApiTests(TestCase):
         start, end = self._window()
         response = self.client.post("/api/bookings/", self._payload(start, end), format="json")
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "SLOT_UNAVAILABLE")
+        self.assertEqual(page_rows(response)["error"], "SLOT_UNAVAILABLE")
 
     def test_inactive_lot_is_a_404(self):
         self.lot.is_active = False
@@ -982,7 +1020,7 @@ class CreateBookingApiTests(TestCase):
         start, end = self._window()
         response = self.client.post("/api/bookings/", self._payload(start, end), format="json")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(response.data["error"], "LOT_NOT_BOOKABLE")
+        self.assertEqual(page_rows(response)["error"], "LOT_NOT_BOOKABLE")
 
     def test_list_returns_only_the_callers_bookings(self):
         # A booking owned by someone else, created directly.
@@ -1003,7 +1041,7 @@ class CreateBookingApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self.client.get("/api/bookings/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data, [])
+        self.assertEqual(page_rows(response), [])
 
     # ---- effective status (increment 4.5, D50) ----------------------------
 
@@ -1012,8 +1050,8 @@ class CreateBookingApiTests(TestCase):
         start, end = self._window()
         response = self.client.post("/api/bookings/", self._payload(start, end), format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["status"], Booking.Status.PENDING_PAYMENT)
-        self.assertEqual(response.data["effective_status"], Booking.Status.PENDING_PAYMENT)
+        self.assertEqual(page_rows(response)["status"], Booking.Status.PENDING_PAYMENT)
+        self.assertEqual(page_rows(response)["effective_status"], Booking.Status.PENDING_PAYMENT)
 
     def test_list_reports_a_lapsed_hold_as_expired_without_persisting(self):
         now = timezone.now()
@@ -1035,10 +1073,10 @@ class CreateBookingApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self.client.get("/api/bookings/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
+        self.assertEqual(len(page_rows(response)), 1)
         # The reader sees EXPIRED; the row is untouched (D43, 4.5-Q4).
-        self.assertEqual(response.data[0]["effective_status"], Booking.Status.EXPIRED)
-        self.assertEqual(response.data[0]["status"], Booking.Status.PENDING_PAYMENT)
+        self.assertEqual(page_rows(response)[0]["effective_status"], Booking.Status.EXPIRED)
+        self.assertEqual(page_rows(response)[0]["status"], Booking.Status.PENDING_PAYMENT)
         booking.refresh_from_db()
         self.assertEqual(booking.status, Booking.Status.PENDING_PAYMENT)
 
@@ -1049,7 +1087,7 @@ class CreateBookingApiTests(TestCase):
         start, end = self._window()
         response = self.client.post("/api/bookings/", self._payload(start, end), format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        reference = response.data["reference"]
+        reference = page_rows(response)["reference"]
         self.assertEqual(len(reference), REFERENCE_LENGTH)
         self.assertTrue(all(ch in REFERENCE_ALPHABET for ch in reference))
 
@@ -1064,7 +1102,7 @@ class CreateBookingApiTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertNotEqual(response.data["reference"], "MINE123456")
+        self.assertNotEqual(page_rows(response)["reference"], "MINE123456")
 
 class ReferenceTests(TestCase):
     """The public reference code (increment 4.6, D52)."""
@@ -1502,9 +1540,9 @@ class CancelBookingApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self.client.post(self._url(booking))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["status"], Booking.Status.CANCELLED)
-        self.assertEqual(response.data["refund_due_amount"], "0.00")
-        self.assertIsNotNone(response.data["cancelled_at"])
+        self.assertEqual(page_rows(response)["status"], Booking.Status.CANCELLED)
+        self.assertEqual(page_rows(response)["refund_due_amount"], "0.00")
+        self.assertIsNotNone(page_rows(response)["cancelled_at"])
 
     def test_cancel_confirmed_returns_the_refund_due(self):
         booking = self._create()
@@ -1512,15 +1550,15 @@ class CancelBookingApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self.client.post(self._url(booking))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["status"], Booking.Status.CANCELLED)
-        self.assertEqual(response.data["refund_due_amount"], "40.00")
+        self.assertEqual(page_rows(response)["status"], Booking.Status.CANCELLED)
+        self.assertEqual(page_rows(response)["refund_due_amount"], "40.00")
 
     def test_another_consumers_booking_is_a_404(self):
         booking = self._create(owner=self.other, vehicle=self.other_vehicle)
         self.client.force_authenticate(self.consumer)
         response = self.client.post(self._url(booking))
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(response.data["error"], "BOOKING_NOT_FOUND")
+        self.assertEqual(page_rows(response)["error"], "BOOKING_NOT_FOUND")
 
     def test_non_cancellable_state_is_a_409(self):
         booking = self._create()
@@ -1530,7 +1568,7 @@ class CancelBookingApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self.client.post(self._url(booking))
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "BOOKING_NOT_CANCELLABLE")
+        self.assertEqual(page_rows(response)["error"], "BOOKING_NOT_CANCELLABLE")
 
     def test_repeat_cancel_is_idempotent(self):
         booking = self._create()
@@ -1557,7 +1595,7 @@ class CancelBookingApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self.client.post("/api/bookings/999999/cancel/")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(response.data["error"], "BOOKING_NOT_FOUND")
+        self.assertEqual(page_rows(response)["error"], "BOOKING_NOT_FOUND")
 
 class ExtensionQuoteTests(TestCase):
     """``quote_extension``: the §19 whole-window recompute (increment 4.8, D54)."""
@@ -1913,23 +1951,23 @@ class ExtensionQuoteApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self._get(booking, booking.end_time + timedelta(hours=1))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["added_hours"], 1)
-        self.assertEqual(response.data["extension_amount"], "20.00")
-        self.assertEqual(response.data["new_base_amount"], "60.00")
+        self.assertEqual(page_rows(response)["added_hours"], 1)
+        self.assertEqual(page_rows(response)["extension_amount"], "20.00")
+        self.assertEqual(page_rows(response)["new_base_amount"], "60.00")
 
     def test_another_consumers_booking_is_a_404(self):
         booking = self._confirmed()
         self.client.force_authenticate(self.other)
         response = self._get(booking, booking.end_time + timedelta(hours=1))
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(response.data["error"], "BOOKING_NOT_FOUND")
+        self.assertEqual(page_rows(response)["error"], "BOOKING_NOT_FOUND")
 
     def test_non_lengthening_end_time_is_a_400(self):
         booking = self._confirmed()
         self.client.force_authenticate(self.consumer)
         response = self._get(booking, booking.end_time)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.data["error"], "INVALID_EXTENSION")
+        self.assertEqual(page_rows(response)["error"], "INVALID_EXTENSION")
 
     def test_manager_cannot_quote(self):
         booking = self._confirmed()
@@ -2118,11 +2156,32 @@ class BookingHistoryApiTests(TestCase):
     def setUpTestData(cls):
         City.objects.all().delete()
         city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.manager = User.objects.create_user(
+            email="manager@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Manager",
+            role=User.Role.MANAGER,
+        )
+        cls.admin = User.objects.create_user(
+            email="admin@example.com",
+            password="Tr0ub4dor&3",
+            full_name="Admin",
+            role=User.Role.ADMIN,
+        )
         cls.lot = ParkingLot.objects.create(
             city=city, number=1, name="MG Road", address_line="1 MG Road",
+            manager=cls.manager,
+        )
+        cls.other_lot = ParkingLot.objects.create(
+            city=city, number=2, name="Indiranagar",
+            address_line="2 100ft Road",
         )
         cls.slot = ParkingSlot.objects.create(
             lot=cls.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        cls.other_slot = ParkingSlot.objects.create(
+            lot=cls.other_lot, number="B-01",
+            slot_type=ParkingSlot.SlotType.REGULAR,
         )
         Tariff.objects.create(
             lot=cls.lot,
@@ -2152,9 +2211,10 @@ class BookingHistoryApiTests(TestCase):
 
     def _booking(
         self, *, owner=None, booking_status=Booking.Status.PENDING_PAYMENT,
-        start_hours=2, end_hours=3,
+        slot=None, start_hours=2, end_hours=3,
     ):
         owner = owner or self.consumer
+        slot = slot or self.slot
         now = timezone.now()
         hours = end_hours - start_hours
         return Booking.objects.create(
@@ -2162,7 +2222,7 @@ class BookingHistoryApiTests(TestCase):
             created_by=owner,
             vehicle=self.vehicle if owner == self.consumer else self.other_vehicle,
             vehicle_plate="",
-            slot=self.slot,
+            slot=slot,
             slot_type=ParkingSlot.SlotType.REGULAR,
             start_time=now + timedelta(hours=start_hours),
             end_time=now + timedelta(hours=end_hours),
@@ -2182,8 +2242,8 @@ class BookingHistoryApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self.client.get("/api/bookings/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([row["id"] for row in response.data], [mine.id])
-        self.assertEqual(response.data[0]["lot_name"], "MG Road")
+        self.assertEqual([row["id"] for row in page_rows(response)], [mine.id])
+        self.assertEqual(page_rows(response)[0]["lot_name"], "MG Road")
 
     def test_status_filter(self):
         confirmed = self._booking(booking_status=Booking.Status.CONFIRMED)
@@ -2193,7 +2253,7 @@ class BookingHistoryApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self.client.get("/api/bookings/", {"status": "CONFIRMED"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([row["id"] for row in response.data], [confirmed.id])
+        self.assertEqual([row["id"] for row in page_rows(response)], [confirmed.id])
 
     def test_status_filter_accepts_multiple_values(self):
         confirmed = self._booking(booking_status=Booking.Status.CONFIRMED)
@@ -2209,7 +2269,7 @@ class BookingHistoryApiTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
-            {row["id"] for row in response.data}, {confirmed.id, in_progress.id}
+            {row["id"] for row in page_rows(response)}, {confirmed.id, in_progress.id}
         )
 
     def test_unknown_status_is_a_400(self):
@@ -2227,7 +2287,7 @@ class BookingHistoryApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self.client.get("/api/bookings/", {"scope": "past"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([row["id"] for row in response.data], [past.id])
+        self.assertEqual([row["id"] for row in page_rows(response)], [past.id])
 
     def test_invalid_scope_is_a_400(self):
         self.client.force_authenticate(self.consumer)
@@ -2239,16 +2299,51 @@ class BookingHistoryApiTests(TestCase):
         response = self.client.get("/api/bookings/", {"ordering": "plate"})
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_manager_cannot_list(self):
-        manager = User.objects.create_user(
-            email="manager@example.com",
-            password="Tr0ub4dor&3",
-            full_name="Manager",
-            role=User.Role.MANAGER,
-        )
-        self.client.force_authenticate(manager)
+    def test_manager_may_list(self):
+        self.client.force_authenticate(self.manager)
         response = self.client.get("/api/bookings/")
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_manager_sees_only_assigned_lots(self):
+        mine = self._booking()
+        self._booking(
+            owner=self.other, slot=self.other_slot, start_hours=4, end_hours=5,
+        )
+        self.client.force_authenticate(self.manager)
+        response = self.client.get("/api/bookings/")
+        self.assertEqual([row["id"] for row in page_rows(response)], [mine.id])
+
+    def test_manager_shape_names_the_payer(self):
+        self._booking()
+        self.client.force_authenticate(self.manager)
+        response = self.client.get("/api/bookings/")
+        row = page_rows(response)[0]
+        self.assertEqual(row["consumer_email"], self.consumer.email)
+        self.assertEqual(row["consumer_name"], "Consumer")
+        self.assertEqual(row["lot"], self.lot.id)
+        self.assertEqual(row["vehicle_plate"], "KA01AB1234")
+
+    def test_manager_lot_filter_cannot_reach_an_unassigned_lot(self):
+        self._booking(owner=self.other, slot=self.other_slot)
+        self.client.force_authenticate(self.manager)
+        response = self.client.get("/api/bookings/", {"lot": self.other_lot.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(page_rows(response), [])
+
+    def test_admin_sees_all(self):
+        self._booking()
+        self._booking(
+            owner=self.other, slot=self.other_slot, start_hours=4, end_hours=5,
+        )
+        self.client.force_authenticate(self.admin)
+        response = self.client.get("/api/bookings/")
+        self.assertEqual(len(page_rows(response)), 2)
+
+    def test_consumer_row_names_no_payer(self):
+        self._booking()
+        self.client.force_authenticate(self.consumer)
+        response = self.client.get("/api/bookings/")
+        self.assertNotIn("consumer_email", page_rows(response)[0])
 
 
 class BookingDetailApiTests(TestCase):
@@ -2315,26 +2410,26 @@ class BookingDetailApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self.client.get(f"/api/bookings/{booking.pk}/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["reference"], booking.reference)
-        self.assertEqual(response.data["effective_status"], Booking.Status.CONFIRMED)
+        self.assertEqual(page_rows(response)["reference"], booking.reference)
+        self.assertEqual(page_rows(response)["effective_status"], Booking.Status.CONFIRMED)
         # Rich detail fields (4.9/Q3).
-        self.assertEqual(response.data["lot"], self.lot.id)
-        self.assertEqual(response.data["lot_name"], "MG Road")
-        self.assertEqual(response.data["lot_address_line"], "1 MG Road")
-        self.assertEqual(response.data["lot_city"], "Bengaluru")
-        self.assertEqual(response.data["lot_state"], "Karnataka")
-        self.assertEqual(response.data["lot_postal_code"], "560001")
-        self.assertEqual(response.data["slot_floor"], "G")
-        self.assertTrue(response.data["can_cancel"])
-        self.assertTrue(response.data["can_extend"])
+        self.assertEqual(page_rows(response)["lot"], self.lot.id)
+        self.assertEqual(page_rows(response)["lot_name"], "MG Road")
+        self.assertEqual(page_rows(response)["lot_address_line"], "1 MG Road")
+        self.assertEqual(page_rows(response)["lot_city"], "Bengaluru")
+        self.assertEqual(page_rows(response)["lot_state"], "Karnataka")
+        self.assertEqual(page_rows(response)["lot_postal_code"], "560001")
+        self.assertEqual(page_rows(response)["slot_floor"], "G")
+        self.assertTrue(page_rows(response)["can_cancel"])
+        self.assertTrue(page_rows(response)["can_extend"])
 
     def test_pending_action_flags(self):
         booking = self._pending()
         self.client.force_authenticate(self.consumer)
         response = self.client.get(f"/api/bookings/{booking.pk}/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertTrue(response.data["can_cancel"])
-        self.assertFalse(response.data["can_extend"])
+        self.assertTrue(page_rows(response)["can_cancel"])
+        self.assertFalse(page_rows(response)["can_extend"])
 
     def test_cancelled_booking_has_no_actions(self):
         booking = self._confirmed()
@@ -2342,21 +2437,21 @@ class BookingDetailApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self.client.get(f"/api/bookings/{booking.pk}/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertFalse(response.data["can_cancel"])
-        self.assertFalse(response.data["can_extend"])
+        self.assertFalse(page_rows(response)["can_cancel"])
+        self.assertFalse(page_rows(response)["can_extend"])
 
     def test_another_consumers_booking_is_a_404_with_the_booking_code(self):
         booking = self._confirmed()
         self.client.force_authenticate(self.other)
         response = self.client.get(f"/api/bookings/{booking.pk}/")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(response.data["error"], "BOOKING_NOT_FOUND")
+        self.assertEqual(page_rows(response)["error"], "BOOKING_NOT_FOUND")
 
     def test_unknown_booking_is_a_404(self):
         self.client.force_authenticate(self.consumer)
         response = self.client.get("/api/bookings/999999/")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(response.data["error"], "BOOKING_NOT_FOUND")
+        self.assertEqual(page_rows(response)["error"], "BOOKING_NOT_FOUND")
 
     def test_manager_cannot_read(self):
         booking = self._confirmed()
@@ -2370,3 +2465,177 @@ class BookingDetailApiTests(TestCase):
         response = self.client.get(f"/api/bookings/{booking.pk}/")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+class BookingEntryExitApiTests(TestCase):
+    """Check-in / check-out of the simulated gate (6.3, D69)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.manager = User.objects.create_user(
+            email="manager@example.com", password="Tr0ub4dor&3",
+            full_name="Manager", role=User.Role.MANAGER,
+        )
+        cls.other_manager = User.objects.create_user(
+            email="othermanager@example.com", password="Tr0ub4dor&3",
+            full_name="Other Manager", role=User.Role.MANAGER,
+        )
+        cls.consumer = User.objects.create_user(
+            email="consumer@example.com", password="Tr0ub4dor&3",
+            full_name="Consumer",
+        )
+        cls.admin = User.objects.create_user(
+            email="admin@example.com", password="Tr0ub4dor&3",
+            full_name="Admin", role=User.Role.ADMIN,
+        )
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+            manager=cls.manager,
+        )
+        cls.slot = ParkingSlot.objects.create(
+            lot=cls.lot, number="A-01", slot_type=ParkingSlot.SlotType.REGULAR,
+        )
+        Tariff.objects.create(
+            lot=cls.lot, slot_type=ParkingSlot.SlotType.REGULAR,
+            hourly_rate=Decimal("20.00"),
+        )
+        cls.vehicle = Vehicle.objects.create(
+            owner=cls.consumer, registration_number="KA01AB1234",
+        )
+        BusinessRule.load()
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _confirmed(self):
+        now = timezone.now()
+        booking = create_booking(
+            slot_id=self.slot.id,
+            start_time=now + timedelta(hours=2),
+            end_time=now + timedelta(hours=4),
+            user=self.consumer,
+            vehicle=self.vehicle,
+        )
+        confirm_booking(booking_id=booking.pk)
+        booking.refresh_from_db()
+        return booking
+
+    def _post(self, action, booking, as_user):
+        self.client.force_authenticate(as_user)
+        return self.client.post(f"/api/bookings/{booking.pk}/{action}/")
+
+    # --- authorisation / scope ------------------------------------------
+
+    def test_anonymous_cannot_check_in(self):
+        booking = self._confirmed()
+        response = self.client.post(f"/api/bookings/{booking.pk}/check-in/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_consumer_cannot_check_in(self):
+        booking = self._confirmed()
+        response = self._post("check-in", booking, self.consumer)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_cannot_check_in(self):
+        booking = self._confirmed()
+        response = self._post("check-in", booking, self.admin)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_unassigned_manager_gets_404(self):
+        booking = self._confirmed()
+        response = self._post("check-in", booking, self.other_manager)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(page_rows(response)["error"], "BOOKING_NOT_FOUND")
+
+    def test_unknown_booking_is_404(self):
+        self.client.force_authenticate(self.manager)
+        self.assertEqual(
+            self.client.post("/api/bookings/999999/check-in/").status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    # --- check-in -------------------------------------------------------
+
+    def test_manager_checks_in_a_confirmed_booking(self):
+        booking = self._confirmed()
+        response = self._post("check-in", booking, self.manager)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(page_rows(response)["status"], Booking.Status.IN_PROGRESS)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.IN_PROGRESS)
+        self.assertIsNotNone(booking.actual_entry_at)
+        self.slot.refresh_from_db()
+        self.assertEqual(self.slot.status, ParkingSlot.Status.OCCUPIED)
+
+    def test_check_in_is_idempotent(self):
+        booking = self._confirmed()
+        first = self._post("check-in", booking, self.manager)
+        entry = page_rows(first)["actual_entry_at"]
+        second = self._post("check-in", booking, self.manager)
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(page_rows(second)["actual_entry_at"], entry)
+
+    def test_pending_booking_cannot_check_in(self):
+        now = timezone.now()
+        booking = create_booking(
+            slot_id=self.slot.id,
+            start_time=now + timedelta(hours=2),
+            end_time=now + timedelta(hours=4),
+            user=self.consumer, vehicle=self.vehicle,
+        )
+        response = self._post("check-in", booking, self.manager)
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(page_rows(response)["error"], "BOOKING_NOT_CHECKINABLE")
+
+    # --- check-out ------------------------------------------------------
+
+    def test_manager_checks_out_an_in_progress_booking(self):
+        booking = self._confirmed()
+        self._post("check-in", booking, self.manager)
+        response = self._post("check-out", booking, self.manager)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(page_rows(response)["status"], Booking.Status.COMPLETED)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.COMPLETED)
+        self.assertIsNotNone(booking.actual_exit_at)
+        self.slot.refresh_from_db()
+        self.assertEqual(self.slot.status, ParkingSlot.Status.AVAILABLE)
+
+    def test_check_out_is_idempotent(self):
+        booking = self._confirmed()
+        self._post("check-in", booking, self.manager)
+        first = self._post("check-out", booking, self.manager)
+        second = self._post("check-out", booking, self.manager)
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+
+    def test_confirmed_booking_cannot_check_out(self):
+        booking = self._confirmed()
+        response = self._post("check-out", booking, self.manager)
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(page_rows(response)["error"], "BOOKING_NOT_CHECKOUTABLE")
+
+    # --- occupancy composition (D68) ------------------------------------
+
+    def test_entry_does_not_override_out_of_service(self):
+        booking = self._confirmed()
+        self.slot.status = ParkingSlot.Status.OUT_OF_SERVICE
+        self.slot.save(update_fields=["status"])
+        self._post("check-in", booking, self.manager)
+        self.slot.refresh_from_db()
+        self.assertEqual(self.slot.status, ParkingSlot.Status.OUT_OF_SERVICE)
+
+    # --- operator hints -------------------------------------------------
+
+    def test_operator_row_has_entry_exit_hints(self):
+        booking = self._confirmed()
+        self.client.force_authenticate(self.manager)
+        row = page_rows(self.client.get("/api/bookings/"))[0]
+        self.assertTrue(row["can_check_in"])
+        self.assertFalse(row["can_check_out"])
+
+        self._post("check-in", booking, self.manager)
+        row = page_rows(self.client.get("/api/bookings/"))[0]
+        self.assertFalse(row["can_check_in"])
+        self.assertTrue(row["can_check_out"])

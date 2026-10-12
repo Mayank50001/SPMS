@@ -7,20 +7,32 @@ statuses (Q10, PROJECT.md §33).
 """
 
 from rest_framework import generics, status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from apps.accounts.permissions import IsConsumer
+from apps.accounts.models import User
+from apps.accounts.permissions import IsConsumer, IsManager
 
 from .models import Booking
 from .serializers import (
     BookingCreateSerializer,
     BookingDetailSerializer,
     BookingHistoryQuerySerializer,
+    BookingOperatorSerializer,
     BookingSerializer,
     ExtensionQuoteQuerySerializer,
     ExtensionQuoteSerializer,
 )
-from .services import BookingRuleError, cancel_booking, create_booking, filter_bookings, quote_extension
+from .services import (
+    BookingRuleError,
+    cancel_booking,
+    check_in_booking,
+    check_out_booking,
+    create_booking,
+    filter_bookings,
+    quote_extension,
+)
+
 from apps.payments.services import refund_booking
 
 #: Stable refusal code -> HTTP status (Q10). Shape/client errors are 400,
@@ -39,7 +51,26 @@ REFUSAL_STATUS = {
     "BOOKING_NOT_CANCELLABLE": status.HTTP_409_CONFLICT,
     "BOOKING_NOT_EXTENDABLE": status.HTTP_409_CONFLICT,
     "INVALID_EXTENSION": status.HTTP_400_BAD_REQUEST,
+    "BOOKING_NOT_CHECKINABLE": status.HTTP_409_CONFLICT,
+    "BOOKING_NOT_CHECKOUTABLE": status.HTTP_409_CONFLICT,
 }
+
+def _visible_bookings(request):
+    """Bookings a caller may list (6.1, D67; Invariant 2/3).
+
+    Consumer -> their own bookings. Manager -> bookings on the lots assigned to
+    them (``slot.lot.manager``). Administrator -> all. Scoping is done here, in
+    the queryset, so a caller who owns none gets an empty list -- never a 403.
+    (The permissions module documents why "is this mine?" cannot be a permission
+    class.)
+    """
+    queryset = Booking.objects.select_related("slot__lot__city", "vehicle")
+    user = request.user
+    if user.role == User.Role.ADMIN:
+        return queryset
+    if user.role == User.Role.MANAGER:
+        return queryset.filter(slot__lot__manager=user)
+    return queryset.filter(user=user)
 
 class BookingListCreateView(generics.ListCreateAPIView):
     """List the caller's bookings, or create one (Invariant 2, PROJECT.md §16).
@@ -53,12 +84,13 @@ class BookingListCreateView(generics.ListCreateAPIView):
     another Consumer's bookings.
     """
 
-    permission_classes = [IsConsumer]
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsConsumer()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
-        queryset = (
-            Booking.objects.filter(user=self.request.user).select_related("slot__lot__city", "vehicle")
-        )
+        queryset = _visible_bookings(self.request)
         if self.request.method == "GET":
             history = BookingHistoryQuerySerializer(data=self.request.query_params)
             history.is_valid(raise_exception=True)
@@ -69,10 +101,14 @@ class BookingListCreateView(generics.ListCreateAPIView):
                 ordering=history.validated_data.get("ordering"),
             )
         return queryset
+            
 
     def get_serializer_class(self):
         if self.request.method == "POST":
             return BookingCreateSerializer
+        user = self.request.user
+        if user.role in (User.Role.ADMIN, User.Role.MANAGER):
+            return BookingOperatorSerializer
         return BookingSerializer
 
     def create(self, request, *args, **kwargs):
@@ -203,3 +239,51 @@ class BookingDetailView(generics.GenericAPIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
         return Response(BookingDetailSerializer(booking).data)
+
+class BookingCheckInView(generics.GenericAPIView):
+    """Simulate a vehicle entering an assigned lot (6.3, D69).
+
+    ``POST /api/bookings/{id}/check-in/`` -> the booking as ``IN_PROGRESS`` with
+    ``actual_entry_at`` stamped and the slot marked ``OCCUPIED``.
+
+    Manager-only and scoped to the booking's assigned lot: a foreign booking, or
+    one in a lot this manager is not assigned to, is a ``404``
+    (``BOOKING_NOT_FOUND``), never a ``403`` (Invariant 2/3). Only a
+    ``CONFIRMED`` booking may enter; a repeat is idempotent.
+    """
+
+    permission_classes = [IsManager]
+    serializer_class = BookingOperatorSerializer
+
+    def post(self, request, *args, **kwargs):
+        try:
+            booking = check_in_booking(booking_id=kwargs["pk"], user=request.user)
+        except BookingRuleError as exc:
+            return Response(
+                {"error": exc.code, "message": str(exc)},
+                status=REFUSAL_STATUS.get(exc.code, status.HTTP_400_BAD_REQUEST),
+            )
+        return Response(BookingOperatorSerializer(booking).data)
+
+class BookingCheckOutView(generics.GenericAPIView):
+    """Simulate a vehicle leaving an assigned lot (6.3, D69).
+
+    ``POST /api/bookings/{id}/check-out/`` -> the booking as ``COMPLETED`` with
+    ``actual_exit_at`` stamped and the slot returned to ``AVAILABLE``.
+
+    Same Manager-only, assigned-lot scope and 404-not-403 rule as check-in. Only
+    an ``IN_PROGRESS`` booking may leave; a repeat is idempotent.
+    """
+
+    permission_classes = [IsManager]
+    serializer_class = BookingOperatorSerializer
+
+    def post(self, request, *args, **kwargs):
+        try:
+            booking = check_out_booking(booking_id=kwargs["pk"], user=request.user)
+        except BookingRuleError as exc:
+            return Response(
+                {"error": exc.code, "message": str(exc)},
+                status=REFUSAL_STATUS.get(exc.code, status.HTTP_400_BAD_REQUEST),
+            )
+        return Response(BookingOperatorSerializer(booking).data)

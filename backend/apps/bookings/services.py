@@ -19,6 +19,7 @@ from django.db.models import Q, Exists, OuterRef
 from django.utils import timezone
 
 from apps.parking.models import Tariff, ParkingSlot, BusinessRule
+from apps.parking.services import set_slot_occupancy
 
 from .models import Booking
 
@@ -117,6 +118,18 @@ class BookingNotExtendableError(BookingRuleError):
 
     code = "BOOKING_NOT_EXTENDABLE"
 
+class BookingNotCheckinableError(BookingRuleError):
+    """The booking is not a CONFIRMED one, so it cannot be checked in (D69)."""
+
+    code = "BOOKING_NOT_CHECKINABLE"
+
+class BookingNotCheckoutableError(BookingRuleError):
+    """The booking is not IN_PROGRESS, so it cannot be checked out (D69)."""
+
+    code = "BOOKING_NOT_CHECKOUTABLE"
+
+    
+
 class InvalidExtensionError(BookingRuleError):
     """The requested end time does not lengthen the booking (D54)."""
 
@@ -138,6 +151,12 @@ EXTENDABLE_STATUSES = (Booking.Status.CONFIRMED, Booking.Status.IN_PROGRESS)
 #: The states a consumer may cancel: a live hold or a paid booking (D53). Shared
 #: with the history read's ``can_cancel`` hint so the two cannot drift (4.9).
 CANCELLABLE_STATUSES = (Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED)
+
+#: The states a manager may check in: a paid, not-yet-entered booking (D69).
+CHECKINABLE_STATUSES = (Booking.Status.CONFIRMED,)
+
+#: The states a manager may check out (D69).
+CHECKOUTABLE_STATUSES = (Booking.Status.IN_PROGRESS,)
 
 class BookingQuote(NamedTuple):
     """The priced result of a window, ready to snapshot onto a ``Booking``."""
@@ -277,8 +296,10 @@ def available_slots(*, lot, start_time, end_time, now=None):
 
     A slot is returned when it is not ``OUT_OF_SERVICE`` (Invariant 5), the
     window fits its per-slot duration policy (D45), and no blocking booking
-    overlaps it (D41). ``OCCUPIED`` is deliberately not excluded -- it is
-    physical, time-unbounded state owned by Phase 6 (PROJECT.md §28).
+    overlaps it (D41). An ``OCCUPIED`` bay is excluded **only for a window that
+    has already begun** (D68): the car is there *now*, but a future window does
+    not overlap it, so a momentarily-full lot can still take a later booking.
+    ``create_booking`` applies the same rule, so this read and the write agree.
 
     The overlap test is a correlated ``EXISTS``, so the whole lot is answered in
     one query (using ``booking_slot_window_idx``) rather than one query per slot.
@@ -292,14 +313,21 @@ def available_slots(*, lot, start_time, end_time, now=None):
         blocking_window_q(start_time, end_time, now)
     )
 
-    return  (
+    queryset = (
         ParkingSlot.objects.filter(
             lot=lot,
             min_booking_hours__lte=billed_hours,
             max_booking_hours__gte=billed_hours,
         )
         .exclude(status=ParkingSlot.Status.OUT_OF_SERVICE)
-        .annotate(is_booked=Exists(blocking))
+    )
+    # D68: occupied is a *now*-fact, so it hides the bay only for a window that
+    # has already started. OUT_OF_SERVICE (above) leaves the pool entirely.
+    if start_time <= now:
+        queryset = queryset.exclude(status=ParkingSlot.Status.OCCUPIED)
+
+    return (
+        queryset.annotate(is_booked=Exists(blocking))
         .filter(is_booked=False)
         .select_related("lot")
     )
@@ -378,7 +406,9 @@ def create_booking(*, slot_id, start_time, end_time, user, vehicle):
         raise LotNotBookableError("This parking lot is not accepting bookings.")
     if slot.status == ParkingSlot.Status.OUT_OF_SERVICE:
         raise SlotUnavailableError("This slot is out of service.")
-
+    if slot.status == ParkingSlot.Status.OCCUPIED and start_time <= now:
+        raise SlotUnavailableError("This slot is currently occupied.")
+    
     # Price + duration policy (4.2). May raise INVALID_WINDOW,
     # MIN_DURATION_NOT_MET, MAX_DURATION_EXCEEDED or NO_TARIFF.
     quote = quote_booking(slot=slot, start_time=start_time, end_time=end_time)
@@ -487,6 +517,99 @@ def confirm_booking(*, booking_id, now=None):
     booking.hold_expires_at = None
     booking.updated_at = now
     booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
+    return booking
+
+def _manager_scoped_slot_id(booking_id, user):
+    """The slot id of a booking on a lot assigned to ``user``, or None (D69).
+
+    Combines ownership and Invariant 3 into one lookup: a booking in a lot this
+    manager is not assigned to is simply not found -- a 404, never a 403. The
+    unlocked read only locates the row to lock, exactly as confirmation does.
+    """
+    return (
+        Booking.objects.filter(pk=booking_id, slot__lot__manager=user)
+        .values_list("slot_id", flat=True)
+        .first()
+    )
+
+@transaction.atomic
+def check_in_booking(*, booking_id, user, now=None):
+    """Simulate a vehicle entering: ``CONFIRMED -> IN_PROGRESS`` (6.3, D69).
+
+    Manager-only, scoped to the booking's assigned lot. The **slot** row is
+    locked first, mirroring create/confirm/cancel (D49/D51/D53), so entry cannot
+    race a cancel, confirm or extension. Entry stamps ``actual_entry_at`` and
+    marks the slot ``OCCUPIED`` (never overriding ``OUT_OF_SERVICE``, D68).
+
+    Idempotent: checking in an already-``IN_PROGRESS`` booking returns it
+    unchanged. Any other state is refused with ``BOOKING_NOT_CHECKINABLE``.
+    """
+    now = now or timezone.now()
+
+    slot_id = _manager_scoped_slot_id(booking_id, user)
+    if slot_id is None:
+        raise BookingNotFoundError("No booking with this id exists.")
+
+    slot = (
+        ParkingSlot.objects.select_for_update(of=("self",))
+        .filter(pk=slot_id)
+        .first()
+    )
+    booking = Booking.objects.get(pk=booking_id)
+
+    if booking.status == Booking.Status.IN_PROGRESS:
+        return booking
+    if booking.status != Booking.Status.CONFIRMED:
+        raise BookingNotCheckinableError(
+            f"A {booking.status} booking cannot be checked in."
+        )
+
+    booking.status = Booking.Status.IN_PROGRESS
+    booking.actual_entry_at = now
+    booking.updated_at = now
+    booking.save(update_fields=["status", "actual_entry_at", "updated_at"])
+
+    set_slot_occupancy(slot, ParkingSlot.Status.OCCUPIED)
+    return booking
+
+@transaction.atomic
+def check_out_booking(*, booking_id, user, now=None):
+    """Simulate a vehicle leaving: ``IN_PROGRESS -> COMPLETED`` (6.3, D69).
+
+    Manager-only and assigned-lot scoped, taking the same shared slot lock as
+    entry/confirm/cancel. Exit stamps ``actual_exit_at`` (what 6.4 measures
+    overstay against) and returns the slot to ``AVAILABLE`` (never overriding
+    ``OUT_OF_SERVICE``, D68).
+
+    Idempotent: an already-``COMPLETED`` booking returns unchanged. Any other
+    state is refused with ``BOOKING_NOT_CHECKOUTABLE``.
+    """
+    now = now or timezone.now()
+
+    slot_id = _manager_scoped_slot_id(booking_id, user)
+    if slot_id is None:
+        raise BookingNotFoundError("No booking with this id exists.")
+
+    slot = (
+        ParkingSlot.objects.select_for_update(of=("self",))
+        .filter(pk=slot_id)
+        .first()
+    )
+    booking = Booking.objects.get(pk=booking_id)
+
+    if booking.status == Booking.Status.COMPLETED:
+        return booking
+    if booking.status != Booking.Status.IN_PROGRESS:
+        raise BookingNotCheckoutableError(
+            f"A {booking.status} booking cannot be checked out."
+        )
+
+    booking.status = Booking.Status.COMPLETED
+    booking.actual_exit_at = now
+    booking.updated_at = now
+    booking.save(update_fields=["status", "actual_exit_at", "updated_at"])
+
+    set_slot_occupancy(slot, ParkingSlot.Status.AVAILABLE)
     return booking
 
 def refund_due_for(booking, *, now, cutoff_minutes):

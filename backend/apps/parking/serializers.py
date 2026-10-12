@@ -306,6 +306,22 @@ class TariffWriteSerializer(serializers.ModelSerializer):
                 )
         return attrs
 
+class SlotOccupancySerializer(serializers.Serializer):
+    """Write shape for the occupancy action (6.2, D68).
+
+    Accepts only the two states a Manager may toggle: ``OCCUPIED`` and
+    ``AVAILABLE``. ``OUT_OF_SERVICE`` is deliberately absent -- it is the
+    separate lifecycle axis set through the slot ``PATCH`` -- so sending it is a
+    clean 400.
+    """
+
+    status = serializers.ChoiceField(
+        choices=[
+            (ParkingSlot.Status.AVAILABLE.value, ParkingSlot.Status.AVAILABLE.label),
+            (ParkingSlot.Status.OCCUPIED.value, ParkingSlot.Status.OCCUPIED.label),
+        ]
+    )
+
 class BusinessRuleSerializer(serializers.ModelSerializer):
     """Read representation of the business-rule singleton (D35)."""
 

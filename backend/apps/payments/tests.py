@@ -24,6 +24,7 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.bookings.models import Booking
 from apps.parking.models import City, ParkingLot, ParkingSlot
+from apps.test_support import page_rows
 
 from apps.payments.gateway import (
     MockGateway,
@@ -295,15 +296,15 @@ class PaymentCreationApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self._post()
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["status"], Payment.Status.PENDING)
-        self.assertEqual(response.data["method"], Payment.Method.ONLINE)
-        self.assertEqual(response.data["purpose"], Payment.Purpose.BOOKING)
-        self.assertEqual(Decimal(response.data["amount"]), Decimal("40.00"))
-        self.assertEqual(response.data["currency"], "INR")
-        self.assertTrue(response.data["provider_order_id"].startswith("order_mock_"))
-        self.assertEqual(response.data["client_payload"]["gateway"], "mock")
+        self.assertEqual(page_rows(response)["status"], Payment.Status.PENDING)
+        self.assertEqual(page_rows(response)["method"], Payment.Method.ONLINE)
+        self.assertEqual(page_rows(response)["purpose"], Payment.Purpose.BOOKING)
+        self.assertEqual(Decimal(page_rows(response)["amount"]), Decimal("40.00"))
+        self.assertEqual(page_rows(response)["currency"], "INR")
+        self.assertTrue(page_rows(response)["provider_order_id"].startswith("order_mock_"))
+        self.assertEqual(page_rows(response)["client_payload"]["gateway"], "mock")
 
-        payment = Payment.objects.get(pk=response.data["id"])
+        payment = Payment.objects.get(pk=page_rows(response)["id"])
         self.assertEqual(payment.booking, self.booking)
         self.assertEqual(payment.amount, Decimal("40.00"))
 
@@ -314,14 +315,14 @@ class PaymentCreationApiTests(TestCase):
             {"booking": self.booking.id, "amount": "0.01", "currency": "USD"}
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(Decimal(response.data["amount"]), Decimal("40.00"))
-        self.assertEqual(response.data["currency"], "INR")
+        self.assertEqual(Decimal(page_rows(response)["amount"]), Decimal("40.00"))
+        self.assertEqual(page_rows(response)["currency"], "INR")
 
     def test_foreign_booking_is_a_404(self):
         self.client.force_authenticate(self.other)
         response = self._post()
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(response.data["error"], "BOOKING_NOT_FOUND")
+        self.assertEqual(page_rows(response)["error"], "BOOKING_NOT_FOUND")
 
     def test_unknown_booking_is_a_404(self):
         self.client.force_authenticate(self.consumer)
@@ -335,7 +336,7 @@ class PaymentCreationApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self._post()
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "BOOKING_NOT_PAYABLE")
+        self.assertEqual(page_rows(response)["error"], "BOOKING_NOT_PAYABLE")
 
     def test_lapsed_hold_is_not_payable(self):
         self.booking.hold_expires_at = timezone.now() - timedelta(minutes=1)
@@ -343,7 +344,7 @@ class PaymentCreationApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self._post()
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "BOOKING_NOT_PAYABLE")
+        self.assertEqual(page_rows(response)["error"], "BOOKING_NOT_PAYABLE")
 
     def test_already_succeeded_is_refused(self):
         Payment.objects.create(
@@ -356,7 +357,7 @@ class PaymentCreationApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self._post()
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "BOOKING_ALREADY_PAID")
+        self.assertEqual(page_rows(response)["error"], "BOOKING_ALREADY_PAID")
 
     @override_settings(PAYMENT_GATEWAY="razorpay")
     def test_gateway_unavailable_is_a_503_and_writes_no_row(self):
@@ -366,7 +367,7 @@ class PaymentCreationApiTests(TestCase):
         before = Payment.objects.count()
         response = self._post()
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
-        self.assertEqual(response.data["error"], "PAYMENT_GATEWAY_UNAVAILABLE")
+        self.assertEqual(page_rows(response)["error"], "PAYMENT_GATEWAY_UNAVAILABLE")
         self.assertEqual(Payment.objects.count(), before)
 
     def test_repeat_requests_get_distinct_order_ids(self):
@@ -512,7 +513,7 @@ class PaymentConfirmationApiTests(TestCase):
         self.client.force_authenticate(self.other)
         response = self._post()
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(response.data["error"], "PAYMENT_NOT_FOUND")
+        self.assertEqual(page_rows(response)["error"], "PAYMENT_NOT_FOUND")
 
     def test_unknown_payment_is_a_404(self):
         self.client.force_authenticate(self.consumer)
@@ -525,9 +526,9 @@ class PaymentConfirmationApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self._post()
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["status"], Payment.Status.SUCCEEDED)
-        self.assertTrue(response.data["booking_applied"])
-        self.assertIsNotNone(response.data["paid_at"])
+        self.assertEqual(page_rows(response)["status"], Payment.Status.SUCCEEDED)
+        self.assertTrue(page_rows(response)["booking_applied"])
+        self.assertIsNotNone(page_rows(response)["paid_at"])
 
         self.payment.refresh_from_db()
         self.booking.refresh_from_db()
@@ -540,7 +541,7 @@ class PaymentConfirmationApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self._post(payload={"outcome": "failure"})
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "PAYMENT_VERIFICATION_FAILED")
+        self.assertEqual(page_rows(response)["error"], "PAYMENT_VERIFICATION_FAILED")
         self.payment.refresh_from_db()
         self.booking.refresh_from_db()
         self.assertEqual(self.payment.status, Payment.Status.FAILED)
@@ -556,7 +557,7 @@ class PaymentConfirmationApiTests(TestCase):
         response = self._post()
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
         self.assertEqual(
-            response.data["error"], "PAYMENT_CAPTURED_NOT_APPLIED"
+            page_rows(response)["error"], "PAYMENT_CAPTURED_NOT_APPLIED"
         )
         self.payment.refresh_from_db()
         self.booking.refresh_from_db()
@@ -585,7 +586,7 @@ class PaymentConfirmationApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self._post(payment_id=cash.id)
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "PAYMENT_NOT_CONFIRMABLE")
+        self.assertEqual(page_rows(response)["error"], "PAYMENT_NOT_CONFIRMABLE")
 
     @override_settings(PAYMENT_GATEWAY="razorpay")
     def test_gateway_unavailable_is_a_503(self):
@@ -661,7 +662,7 @@ class PaymentWebhookApiTests(TestCase):
     def test_unsigned_webhook_is_a_400(self):
         response = self._post(self._body(), signed=False)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.data["error"], "INVALID_WEBHOOK_SIGNATURE")
+        self.assertEqual(page_rows(response)["error"], "INVALID_WEBHOOK_SIGNATURE")
 
     def test_captured_webhook_confirms(self):
         response = self._post(self._body())
@@ -831,9 +832,9 @@ class PaymentRefundApiTests(TestCase):
         self.client.force_authenticate(self.manager)
         response = self._refund()
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["status"], Refund.Status.SUCCEEDED)
-        self.assertEqual(Decimal(response.data["amount"]), Decimal("40.00"))
-        self.assertTrue(response.data["provider_refund_id"].startswith("rfnd_mock_"))
+        self.assertEqual(page_rows(response)["status"], Refund.Status.SUCCEEDED)
+        self.assertEqual(Decimal(page_rows(response)["amount"]), Decimal("40.00"))
+        self.assertTrue(page_rows(response)["provider_refund_id"].startswith("rfnd_mock_"))
 
         # D61: the captured payment is NOT mutated.
         self.payment.refresh_from_db()
@@ -844,7 +845,7 @@ class PaymentRefundApiTests(TestCase):
         self.client.force_authenticate(self.admin)
         response = self._refund()
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "PAYMENT_NOT_REFUNDABLE")
+        self.assertEqual(page_rows(response)["error"], "PAYMENT_NOT_REFUNDABLE")
         self.assertEqual(self.payment.refunds.count(), 0)
 
     def test_captured_not_applied_is_refundable(self):
@@ -856,7 +857,7 @@ class PaymentRefundApiTests(TestCase):
         self.client.force_authenticate(self.admin)
         response = self._refund()
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(Decimal(response.data["amount"]), Decimal("40.00"))
+        self.assertEqual(Decimal(page_rows(response)["amount"]), Decimal("40.00"))
 
     def test_repeat_refund_is_idempotent(self):
         self._cancel()
@@ -895,7 +896,7 @@ class PaymentRefundApiTests(TestCase):
         get_gateway.return_value = FailingRefundGateway()
         response = self._refund()
         self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
-        self.assertEqual(response.data["error"], "PAYMENT_REFUND_FAILED")
+        self.assertEqual(page_rows(response)["error"], "PAYMENT_REFUND_FAILED")
         self.assertEqual(
             self.payment.refunds.get().status, Refund.Status.FAILED
         )
@@ -1035,11 +1036,11 @@ class PaymentExtensionApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self._post(self._extension_payload())
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["purpose"], Payment.Purpose.EXTENSION)
-        self.assertEqual(Decimal(response.data["amount"]), Decimal("40.00"))
-        self.assertIsNotNone(response.data["extension_end_time"])
+        self.assertEqual(page_rows(response)["purpose"], Payment.Purpose.EXTENSION)
+        self.assertEqual(Decimal(page_rows(response)["amount"]), Decimal("40.00"))
+        self.assertIsNotNone(page_rows(response)["extension_end_time"])
 
-        payment = Payment.objects.get(pk=response.data["id"])
+        payment = Payment.objects.get(pk=page_rows(response)["id"])
         self.assertEqual(payment.extension_end_time, self.new_end)
 
     def test_extension_requires_an_end_time(self):
@@ -1062,7 +1063,7 @@ class PaymentExtensionApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self._post(self._extension_payload())
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "BOOKING_NOT_EXTENDABLE")
+        self.assertEqual(page_rows(response)["error"], "BOOKING_NOT_EXTENDABLE")
 
     def test_end_time_must_lengthen_the_booking(self):
         self.client.force_authenticate(self.consumer)
@@ -1070,7 +1071,7 @@ class PaymentExtensionApiTests(TestCase):
         payload["end_time"] = (self.now + timedelta(hours=2)).isoformat()
         response = self._post(payload)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.data["error"], "INVALID_EXTENSION")
+        self.assertEqual(page_rows(response)["error"], "INVALID_EXTENSION")
 
     def test_confirmation_applies_the_extension(self):
         self.client.force_authenticate(self.consumer)
@@ -1081,8 +1082,8 @@ class PaymentExtensionApiTests(TestCase):
             f"/api/payments/{payment_id}/confirm/", {"payload": {}}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["status"], Payment.Status.SUCCEEDED)
-        self.assertTrue(response.data["booking_applied"])
+        self.assertEqual(page_rows(response)["status"], Payment.Status.SUCCEEDED)
+        self.assertTrue(page_rows(response)["booking_applied"])
 
         self.booking.refresh_from_db()
         self.assertEqual(self.booking.end_time, self.new_end)
@@ -1110,7 +1111,7 @@ class PaymentExtensionApiTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
         self.assertEqual(
-            response.data["error"], "PAYMENT_CAPTURED_NOT_APPLIED"
+            page_rows(response)["error"], "PAYMENT_CAPTURED_NOT_APPLIED"
         )
 
         payment = Payment.objects.get(pk=started.data["id"])
@@ -1129,7 +1130,7 @@ class PaymentExtensionApiTests(TestCase):
         )
         response = self._post(self._extension_payload())
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "EXTENSION_ALREADY_PAID")
+        self.assertEqual(page_rows(response)["error"], "EXTENSION_ALREADY_PAID")
 
 class PaymentReceiptApiTests(TestCase):
     """``GET /api/payments/{id}/receipt/`` (increment 5.8, D64)."""
@@ -1196,20 +1197,20 @@ class PaymentReceiptApiTests(TestCase):
         response = self._get()
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
-            response.data["receipt_number"],
+            page_rows(response)["receipt_number"],
             f"{self.booking.reference}-{self.payment.id}",
         )
-        self.assertEqual(Decimal(response.data["amount"]), Decimal("40.00"))
-        self.assertEqual(response.data["currency"], "INR")
-        self.assertEqual(response.data["method"], Payment.Method.ONLINE)
-        self.assertEqual(response.data["purpose"], Payment.Purpose.BOOKING)
-        self.assertEqual(response.data["transaction_id"], "pay_rcpt_1")
+        self.assertEqual(Decimal(page_rows(response)["amount"]), Decimal("40.00"))
+        self.assertEqual(page_rows(response)["currency"], "INR")
+        self.assertEqual(page_rows(response)["method"], Payment.Method.ONLINE)
+        self.assertEqual(page_rows(response)["purpose"], Payment.Purpose.BOOKING)
+        self.assertEqual(page_rows(response)["transaction_id"], "pay_rcpt_1")
         self.assertEqual(
-            response.data["booking_reference"], self.booking.reference
+            page_rows(response)["booking_reference"], self.booking.reference
         )
-        self.assertEqual(response.data["slot_number"], "A-01")
-        self.assertEqual(response.data["lot_name"], "MG Road")
-        self.assertEqual(response.data["billed_hours"], 2)
+        self.assertEqual(page_rows(response)["slot_number"], "A-01")
+        self.assertEqual(page_rows(response)["lot_name"], "MG Road")
+        self.assertEqual(page_rows(response)["billed_hours"], 2)
 
     def test_receipt_number_is_the_gateway_receipt(self):
         # D64: the receipt number is the same value D59 sends the gateway.
@@ -1228,7 +1229,7 @@ class PaymentReceiptApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self._get()
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "RECEIPT_NOT_AVAILABLE")
+        self.assertEqual(page_rows(response)["error"], "RECEIPT_NOT_AVAILABLE")
 
     def test_foreign_payment_is_a_404(self):
         self.client.force_authenticate(self.other)
@@ -1238,7 +1239,7 @@ class PaymentReceiptApiTests(TestCase):
         self.client.force_authenticate(self.consumer)
         response = self._get(payment_id=999999)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(response.data["error"], "PAYMENT_NOT_FOUND")
+        self.assertEqual(page_rows(response)["error"], "PAYMENT_NOT_FOUND")
 
 
 class PaymentHistoryApiTests(TestCase):
@@ -1333,11 +1334,11 @@ class PaymentHistoryApiTests(TestCase):
         )
         response = self._get(as_user=self.consumer)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([row["id"] for row in response.data], [self.payment.id])
+        self.assertEqual([row["id"] for row in page_rows(response)], [self.payment.id])
 
     def test_consumer_shape_has_receipt_hint_and_no_payer(self):
         response = self._get(as_user=self.consumer)
-        row = response.data[0]
+        row = page_rows(response)[0]
         self.assertTrue(row["receipt_available"])
         self.assertEqual(row["booking_reference"], self.booking.reference)
         self.assertEqual(row["lot_name"], "MG Road")
@@ -1351,7 +1352,7 @@ class PaymentHistoryApiTests(TestCase):
             update_fields=["status", "provider_payment_id", "paid_at"]
         )
         response = self._get(as_user=self.consumer)
-        self.assertFalse(response.data[0]["receipt_available"])
+        self.assertFalse(page_rows(response)[0]["receipt_available"])
 
     def test_refunded_amount_is_derived(self):
         Refund.objects.create(
@@ -1360,7 +1361,7 @@ class PaymentHistoryApiTests(TestCase):
         )
         response = self._get(as_user=self.consumer)
         self.assertEqual(
-            Decimal(response.data[0]["refunded_amount"]), Decimal("40.00")
+            Decimal(page_rows(response)[0]["refunded_amount"]), Decimal("40.00")
         )
 
     def test_manager_sees_only_assigned_lots(self):
@@ -1372,11 +1373,11 @@ class PaymentHistoryApiTests(TestCase):
             provider_payment_id="pay_hist_2",
         )
         response = self._get(as_user=self.manager)
-        self.assertEqual([row["id"] for row in response.data], [self.payment.id])
+        self.assertEqual([row["id"] for row in page_rows(response)], [self.payment.id])
 
     def test_manager_shape_has_payer(self):
         response = self._get(as_user=self.manager)
-        row = response.data[0]
+        row = page_rows(response)[0]
         self.assertEqual(row["consumer_email"], self.consumer.email)
         self.assertEqual(row["vehicle_plate"], "KA01AB1234")
         self.assertEqual(row["lot"], self.lot.id)
@@ -1390,12 +1391,12 @@ class PaymentHistoryApiTests(TestCase):
             provider_payment_id="pay_hist_2",
         )
         response = self._get(as_user=self.admin)
-        self.assertEqual(len(response.data), 2)
+        self.assertEqual(len(page_rows(response)), 2)
 
     def test_filter_by_status(self):
         self._payment(self.booking, amount=Decimal("10.00"))
         response = self._get({"status": "SUCCEEDED"}, as_user=self.consumer)
-        self.assertEqual([row["id"] for row in response.data], [self.payment.id])
+        self.assertEqual([row["id"] for row in page_rows(response)], [self.payment.id])
 
     def test_filter_by_purpose_and_method(self):
         self._payment(
@@ -1404,11 +1405,11 @@ class PaymentHistoryApiTests(TestCase):
             extension_end_time=self.now + timedelta(hours=5),
         )
         cash = self._get({"method": "CASH"}, as_user=self.consumer)
-        self.assertEqual(len(cash.data), 1)
-        self.assertEqual(cash.data[0]["method"], "CASH")
+        self.assertEqual(len(page_rows(cash)), 1)
+        self.assertEqual(page_rows(cash)[0]["method"], "CASH")
         ext = self._get({"purpose": "EXTENSION"}, as_user=self.consumer)
-        self.assertEqual(len(ext.data), 1)
-        self.assertEqual(ext.data[0]["purpose"], "EXTENSION")
+        self.assertEqual(len(page_rows(ext)), 1)
+        self.assertEqual(page_rows(ext)[0]["purpose"], "EXTENSION")
 
     def test_filter_by_lot_as_admin(self):
         other_booking = self._booking(
@@ -1419,7 +1420,7 @@ class PaymentHistoryApiTests(TestCase):
             provider_payment_id="pay_hist_2",
         )
         response = self._get({"lot": self.other_lot.id}, as_user=self.admin)
-        self.assertEqual([row["id"] for row in response.data], [other_payment.id])
+        self.assertEqual([row["id"] for row in page_rows(response)], [other_payment.id])
 
     def test_ordering_by_amount(self):
         bigger = self._payment(
@@ -1428,7 +1429,7 @@ class PaymentHistoryApiTests(TestCase):
         )
         response = self._get({"ordering": "-amount"}, as_user=self.consumer)
         self.assertEqual(
-            [row["id"] for row in response.data], [bigger.id, self.payment.id]
+            [row["id"] for row in page_rows(response)], [bigger.id, self.payment.id]
         )
 
     def test_unknown_status_is_a_400(self):
@@ -1438,4 +1439,4 @@ class PaymentHistoryApiTests(TestCase):
     def test_empty_history_is_ok(self):
         response = self._get(as_user=self.other)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data, [])
+        self.assertEqual(page_rows(response), [])

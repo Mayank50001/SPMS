@@ -39,6 +39,8 @@ class SlotDurationAboveMaximumError(Exception):
 class MaxDurationBelowSlotError(Exception):
     """Lowering the maximum would leave an existing slot above it."""
 
+class SlotNotOccupiableError(Exception):
+    """A slot that is OUT_OF_SERVICE cannot be marked occupied or available (D68)."""
 
 def _locked_business_rule():
     BusinessRule.load()
@@ -71,6 +73,38 @@ def save_slot(*, serializer, **save_kwargs):
             f"max_booking_hours must not exceed the maximum of {rule.max_booking_hours}."
         )
     return serializer.save(**save_kwargs)
+
+def set_slot_occupancy(slot, status):
+    """Set a slot's stored physical occupancy, AVAILABLE <-> OCCUPIED (D68).
+
+    The one writer of ``ParkingSlot.status`` for occupancy, shared by the
+    simulated entry/exit (6.3) and the manual Mark Occupied control (6.2).
+    ``OUT_OF_SERVICE`` is a separate axis and is never overridden -- a withdrawn
+    bay stays withdrawn. Saves only when the value actually changes, so it is
+    safe to call idempotently.
+    """
+    if slot.status == ParkingSlot.Status.OUT_OF_SERVICE:
+        return slot
+    if slot.status != status:
+        slot.status = status
+        # auto_now only fires for fields named in update_fields.
+        slot.save(update_fields=["status", "updated_at"])
+    return slot
+
+def set_occupancy(*, slot, status):
+    """The Manager's manual Mark Occupied / free control (6.2, D68).
+
+    Refuses a withdrawn bay outright: ``OUT_OF_SERVICE`` is the separate
+    lifecycle axis (the slot PATCH), so this is a 409, not a silent no-op. The
+    entry/exit writer (6.3) skips such a slot instead -- that is D68's
+    composition rule -- while the manual control must tell the operator.
+    Otherwise it delegates to ``set_slot_occupancy``, the one occupancy writer.
+    """
+    if slot.status == ParkingSlot.Status.OUT_OF_SERVICE:
+        raise SlotNotOccupiableError(
+            "A slot that is out of service cannot be marked occupied or available."
+        )
+    return set_slot_occupancy(slot, status)
 
 @transaction.atomic
 def set_tariff(*, lot, slot_type, hourly_rate, instance=None):

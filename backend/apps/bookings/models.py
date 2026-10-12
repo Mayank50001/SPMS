@@ -181,6 +181,14 @@ class Booking(models.Model):
         validators=[MinValueValidator(Decimal("0.00"))],
     )
 
+    # D69/§36: the simulated gate's actual instants, written by 6.3's check-in /
+    # check-out. ``start_time``/``end_time`` above stay the *plan* (a snapshot);
+    # overstay (6.4) is measured from ``actual_exit_at`` against the booked
+    # ``end_time``. Nullable: a booking that never entered, or a no-show, keeps
+    # them null.
+    actual_entry_at = models.DateTimeField(null=True, blank=True)
+    actual_exit_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

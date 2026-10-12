@@ -16,7 +16,7 @@ from rest_framework.test import APIClient
 from django.utils import timezone
 from apps.accounts.models import User
 from apps.bookings.models import Booking
-
+from apps.test_support import page_rows
 from .models import City, ParkingLot, ParkingSlot, Tariff, BusinessRule
 from .services import MaxRateExceededError, MaxRateBelowTariffError, set_tariff, set_max_hourly_rate, MaxDurationBelowSlotError, set_business_rules
 
@@ -128,7 +128,7 @@ class ParkingApiTests(TestCase):
     def test_anonymous_can_list_active_lots(self):
         response = self.client.get("/api/parking-lots/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([lot["code"] for lot in response.data], ["BLR-001"])
+        self.assertEqual([lot["code"] for lot in page_rows(response)], ["BLR-001"])
 
     def test_anonymous_gets_404_for_inactive_lot(self):
         response = self.client.get(f"/api/parking-lots/{self.inactive.id}/")
@@ -142,7 +142,7 @@ class ParkingApiTests(TestCase):
     def test_filter_by_city_code_and_search(self):
         response = self.client.get("/api/parking-lots/?city=blr&search=MG")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
+        self.assertEqual(len(page_rows(response)), 1)
 
     # --- writes are Administrator-only ---------------------------------
 
@@ -166,8 +166,8 @@ class ParkingApiTests(TestCase):
         }
         response = self.client.post("/api/parking-lots/", payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["code"], "BLR-007")
-        self.assertTrue(response.data["is_active"])
+        self.assertEqual(page_rows(response)["code"], "BLR-007")
+        self.assertTrue(page_rows(response)["is_active"])
 
     def test_duplicate_number_in_city_is_rejected(self):
         self._login(self.admin)
@@ -179,14 +179,14 @@ class ParkingApiTests(TestCase):
         }
         response = self.client.post("/api/parking-lots/", payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("number", response.data)
+        self.assertIn("number", page_rows(response))
 
     def test_unknown_city_code_is_rejected(self):
         self._login(self.admin)
         payload = {"city_code": "ZZZ", "number": 9, "name": "X", "address_line": "Y"}
         response = self.client.post("/api/parking-lots/", payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("city_code", response.data)
+        self.assertIn("city_code", page_rows(response))
 
     def test_admin_can_assign_a_manager(self):
         self._login(self.admin)
@@ -207,7 +207,7 @@ class ParkingApiTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("manager", response.data)
+        self.assertIn("manager", page_rows(response))
 
     def test_delete_and_put_are_not_allowed(self):
         self._login(self.admin)
@@ -227,7 +227,7 @@ class ParkingApiTests(TestCase):
     def test_cities_are_publicly_listable(self):
         response = self.client.get("/api/cities/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([c["code"] for c in response.data], ["BLR"])
+        self.assertEqual([c["code"] for c in page_rows(response)], ["BLR"])
 
     def test_only_admin_can_create_a_city(self):
         self._login(self.consumer)
@@ -241,7 +241,7 @@ class ParkingApiTests(TestCase):
             "/api/cities/", {"code": "MAA", "name": "Chennai"}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["code"], "MAA")
+        self.assertEqual(page_rows(response)["code"], "MAA")
 
     def test_duplicate_city_code_is_rejected_case_insensitively(self):
         self._login(self.admin)
@@ -249,7 +249,7 @@ class ParkingApiTests(TestCase):
             "/api/cities/", {"code": "blr", "name": "Dup"}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("code", response.data)
+        self.assertIn("code", page_rows(response))
 
 class ParkingSlotModelTests(TestCase):
     """Model rules for slots (increment 3.2)."""
@@ -369,10 +369,13 @@ class ParkingSlotApiTests(TestCase):
     def _slot_url(self, lot, slot):
         return f"/api/parking-lots/{lot.id}/slots/{slot.id}/"
 
+    def _occupancy_url(self, lot, slot):
+        return f"/api/parking-lots/{lot.id}/slots/{slot.id}/occupancy/"
+    
     def test_anonymous_can_list_slots_of_an_active_lot(self):
         response = self.client.get(self._slots_url(self.lot))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([s["number"] for s in response.data], ["A-01"])
+        self.assertEqual([s["number"] for s in page_rows(response)], ["A-01"])
 
     def test_anonymous_gets_404_for_slots_of_an_inactive_lot(self):
         response = self.client.get(self._slots_url(self.inactive_lot))
@@ -386,7 +389,7 @@ class ParkingSlotApiTests(TestCase):
     def test_listing_returns_only_that_lots_slots(self):
         ParkingSlot.objects.create(lot=self.other_lot, number="B-01")
         response = self.client.get(self._slots_url(self.lot))
-        self.assertEqual([s["number"] for s in response.data], ["A-01"])
+        self.assertEqual([s["number"] for s in page_rows(response)], ["A-01"])
 
     # --- writes: Admin or the lot's Manager -----------------------------
 
@@ -410,10 +413,10 @@ class ParkingSlotApiTests(TestCase):
         payload = {"number": "A-02", "floor": "G", "slot_type": "EV"}
         response = self.client.post(self._slots_url(self.lot), payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["number"], "A-02")
-        self.assertEqual(response.data["slot_type"], "EV")
-        self.assertEqual(response.data["status"], "AVAILABLE")
-        self.assertEqual(response.data["lot_code"], "BLR-001")
+        self.assertEqual(page_rows(response)["number"], "A-02")
+        self.assertEqual(page_rows(response)["slot_type"], "EV")
+        self.assertEqual(page_rows(response)["status"], "AVAILABLE")
+        self.assertEqual(page_rows(response)["lot_code"], "BLR-001")
 
     def test_admin_can_create_slot_and_defaults_apply(self):
         self._login(self.admin)
@@ -421,8 +424,8 @@ class ParkingSlotApiTests(TestCase):
             self._slots_url(self.lot), {"number": "A-03"}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["slot_type"], "REGULAR")
-        self.assertEqual(response.data["status"], "AVAILABLE")
+        self.assertEqual(page_rows(response)["slot_type"], "REGULAR")
+        self.assertEqual(page_rows(response)["status"], "AVAILABLE")
 
     def test_duplicate_number_in_lot_is_rejected(self):
         self._login(self.admin)
@@ -431,7 +434,7 @@ class ParkingSlotApiTests(TestCase):
             self._slots_url(self.lot), {"number": "a-01"}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("number", response.data)
+        self.assertIn("number", page_rows(response))
 
     def test_same_number_in_another_lot_is_allowed(self):
         self._login(self.admin)
@@ -448,7 +451,7 @@ class ParkingSlotApiTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("slot_type", response.data)
+        self.assertIn("slot_type", page_rows(response))
 
     def test_blank_number_is_rejected(self):
         self._login(self.admin)
@@ -456,7 +459,7 @@ class ParkingSlotApiTests(TestCase):
             self._slots_url(self.lot), {"number": "   "}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("number", response.data)
+        self.assertIn("number", page_rows(response))
 
     # --- status changes -------------------------------------------------
 
@@ -480,7 +483,72 @@ class ParkingSlotApiTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("status", response.data)
+        self.assertIn("status", page_rows(response))
+
+    def test_anonymous_cannot_change_occupancy(self):
+        response = self.client.post(
+            self._occupancy_url(self.lot, self.slot),
+            {"status": "OCCUPIED"}, format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_consumer_cannot_change_occupancy(self):
+        self._login(self.consumer)
+        response = self.client.post(
+            self._occupancy_url(self.lot, self.slot),
+            {"status": "OCCUPIED"}, format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_cannot_change_occupancy(self):
+        self._login(self.admin)
+        response = self.client.post(
+            self._occupancy_url(self.lot, self.slot),
+            {"status": "OCCUPIED"}, format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_unassigned_manager_gets_404_on_occupancy(self):
+        self._login(self.other_manager)
+        response = self.client.post(
+            self._occupancy_url(self.lot, self.slot),
+            {"status": "OCCUPIED"}, format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_manager_marks_a_slot_occupied_then_available(self):
+        self._login(self.manager)
+        url = self._occupancy_url(self.lot, self.slot)
+
+        response = self.client.post(url, {"status": "OCCUPIED"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(page_rows(response)["status"], "OCCUPIED")
+        self.slot.refresh_from_db()
+        self.assertEqual(self.slot.status, "OCCUPIED")
+
+        response = self.client.post(url, {"status": "AVAILABLE"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.slot.refresh_from_db()
+        self.assertEqual(self.slot.status, "AVAILABLE")
+
+    def test_out_of_service_slot_cannot_be_marked_occupied(self):
+        self.slot.status = ParkingSlot.Status.OUT_OF_SERVICE
+        self.slot.save(update_fields=["status"])
+        self._login(self.manager)
+        response = self.client.post(
+            self._occupancy_url(self.lot, self.slot),
+            {"status": "OCCUPIED"}, format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(page_rows(response)["error"], "SLOT_NOT_OCCUPIABLE")
+
+    def test_out_of_service_is_not_a_valid_occupancy_status(self):
+        self._login(self.manager)
+        response = self.client.post(
+            self._occupancy_url(self.lot, self.slot),
+            {"status": "OUT_OF_SERVICE"}, format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     # --- lifecycle ------------------------------------------------------
 
@@ -504,7 +572,7 @@ class ParkingSlotApiTests(TestCase):
             format = "json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("slot_type", response.data)
+        self.assertIn("slot_type", page_rows(response))
 
 class TariffModelTests(TestCase):
     """Model rules for tariffs and the business-rule singleton (increment 3.3)."""
@@ -698,7 +766,7 @@ class TariffApiTests(TestCase):
     def test_anonymous_can_list_tariffs_of_an_active_lot(self):
         response = self.client.get(self._tariffs_url(self.lot))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([t["slot_type"] for t in response.data], ["REGULAR"])
+        self.assertEqual([t["slot_type"] for t in page_rows(response)], ["REGULAR"])
 
     def test_anonymous_gets_404_for_tariffs_of_an_inactive_lot(self):
         response = self.client.get(self._tariffs_url(self.inactive_lot))
@@ -707,7 +775,7 @@ class TariffApiTests(TestCase):
     def test_business_rule_is_publicly_readable(self):
         response = self.client.get("/api/business-rules/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["max_hourly_rate"], "50.00")
+        self.assertEqual(page_rows(response)["max_hourly_rate"], "50.00")
 
     def test_anonymous_cannot_create_tariff(self):
         response = self.client.post(self._tariffs_url(self.lot), {}, format="json")
@@ -729,30 +797,30 @@ class TariffApiTests(TestCase):
         payload = {"slot_type": "EV", "hourly_rate": "30.00"}
         response = self.client.post(self._tariffs_url(self.lot), payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["slot_type"], "EV")
-        self.assertEqual(response.data["hourly_rate"], "30.00")
-        self.assertEqual(response.data["lot_code"], "BLR-001")
+        self.assertEqual(page_rows(response)["slot_type"], "EV")
+        self.assertEqual(page_rows(response)["hourly_rate"], "30.00")
+        self.assertEqual(page_rows(response)["lot_code"], "BLR-001")
 
     def test_tariff_above_the_cap_is_rejected(self):
         self._login(self.manager)
         payload = {"slot_type": "EV", "hourly_rate": "60.00"}
         response = self.client.post(self._tariffs_url(self.lot), payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertIn("hourly_rate", response.data)
+        self.assertIn("hourly_rate", page_rows(response))
 
     def test_zero_or_negative_rate_is_rejected(self):
         self._login(self.manager)
         payload = {"slot_type": "EV", "hourly_rate": "0.00"}
         response = self.client.post(self._tariffs_url(self.lot), payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("hourly_rate", response.data)
+        self.assertIn("hourly_rate", page_rows(response))
 
     def test_duplicate_slot_type_in_lot_is_rejected(self):
         self._login(self.manager)
         payload = {"slot_type": "REGULAR", "hourly_rate": "25.00"}
         response = self.client.post(self._tariffs_url(self.lot), payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("slot_type", response.data)
+        self.assertIn("slot_type", page_rows(response))
 
     def test_manager_can_update_a_tariff(self):
         self._login(self.manager)
@@ -791,7 +859,7 @@ class TariffApiTests(TestCase):
             "/api/business-rules/", {"max_hourly_rate": "80.00"}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["max_hourly_rate"], "80.00")
+        self.assertEqual(page_rows(response)["max_hourly_rate"], "80.00")
 
     def test_admin_cannot_lower_the_cap_below_a_tariff(self):
         self._login(self.admin)
@@ -799,7 +867,7 @@ class TariffApiTests(TestCase):
             "/api/business-rules/", {"max_hourly_rate": "10.00"}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "MAX_RATE_BELOW_TARIFF")
+        self.assertEqual(page_rows(response)["error"], "MAX_RATE_BELOW_TARIFF")
         
 class ManagerScopedLotReadTests(TestCase):
     """Manager-scoped lot catalogue reads (increment 3.4; D37, D38)."""
@@ -880,7 +948,7 @@ class ManagerScopedLotReadTests(TestCase):
     def _list_ids(self):
         response = self.client.get("/api/parking-lots/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        return {lot["id"] for lot in response.data}
+        return {lot["id"] for lot in page_rows(response)}
 
     # --- manager listing: assigned-only (3.4 decision 1a) ---------------
 
@@ -915,14 +983,14 @@ class ManagerScopedLotReadTests(TestCase):
         response = self.client.get("/api/parking-lots/?search=Depot")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
-            [lot["id"] for lot in response.data], [self.assigned_closed.id]
+            [lot["id"] for lot in page_rows(response)], [self.assigned_closed.id]
         )
 
     def test_manager_city_filter_still_applies(self):
         self._login(self.manager)
         response = self.client.get("/api/parking-lots/?city=BLR")
         self.assertEqual(
-            {lot["id"] for lot in response.data},
+            {lot["id"] for lot in page_rows(response)},
             {self.assigned.id, self.assigned_closed.id},
         )
 
@@ -1079,8 +1147,8 @@ class SlotDurationPolicyTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["min_booking_hours"], 2)
-        self.assertEqual(response.data["max_booking_hours"], 4)
+        self.assertEqual(page_rows(response)["min_booking_hours"], 2)
+        self.assertEqual(page_rows(response)["max_booking_hours"], 4)
 
     def test_slot_max_above_the_cap_is_a_409(self):
         set_business_rules(max_booking_hours=24)
@@ -1091,7 +1159,7 @@ class SlotDurationPolicyTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "MAX_DURATION_ABOVE_CAP")
+        self.assertEqual(page_rows(response)["error"], "MAX_DURATION_ABOVE_CAP")
 
     def test_patching_slot_max_above_the_cap_is_a_409(self):
         slot = ParkingSlot.objects.create(lot=self.lot, number="B-03")
@@ -1103,7 +1171,7 @@ class SlotDurationPolicyTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "MAX_DURATION_ABOVE_CAP")
+        self.assertEqual(page_rows(response)["error"], "MAX_DURATION_ABOVE_CAP")
 
     def test_min_greater_than_max_is_a_400(self):
         self._login(self.manager)
@@ -1113,21 +1181,21 @@ class SlotDurationPolicyTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("max_booking_hours", response.data)
+        self.assertIn("max_booking_hours", page_rows(response))
 
     def test_public_can_read_slot_duration_fields(self):
         ParkingSlot.objects.create(lot=self.lot, number="B-06")
         response = self.client.get(f"/api/parking-lots/{self.lot.id}/slots/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data[0]["min_booking_hours"], 1)
-        self.assertEqual(response.data[0]["max_booking_hours"], 24)
+        self.assertEqual(page_rows(response)[0]["min_booking_hours"], 1)
+        self.assertEqual(page_rows(response)[0]["max_booking_hours"], 24)
 
     # --- API: the Administrator's duration cap --------------------------
 
     def test_business_rule_exposes_the_duration_cap(self):
         response = self.client.get("/api/business-rules/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["max_booking_hours"], 72)
+        self.assertEqual(page_rows(response)["max_booking_hours"], 72)
 
     def test_admin_can_raise_the_duration_cap(self):
         self._login(self.admin)
@@ -1135,7 +1203,7 @@ class SlotDurationPolicyTests(TestCase):
             "/api/business-rules/", {"max_booking_hours": 96}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["max_booking_hours"], 96)
+        self.assertEqual(page_rows(response)["max_booking_hours"], 96)
 
     def test_admin_cannot_lower_duration_cap_below_a_slot(self):
         ParkingSlot.objects.create(
@@ -1146,7 +1214,7 @@ class SlotDurationPolicyTests(TestCase):
             "/api/business-rules/", {"max_booking_hours": 12}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "MAX_DURATION_BELOW_SLOT")
+        self.assertEqual(page_rows(response)["error"], "MAX_DURATION_BELOW_SLOT")
 
     def test_empty_business_rule_patch_is_rejected(self):
         self._login(self.admin)
@@ -1199,7 +1267,7 @@ class AvailabilityApiTests(TestCase):
             self._url(), {"start": start.isoformat(), "end": end.isoformat()}
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([s["number"] for s in response.data], ["A-01"])
+        self.assertEqual([s["number"] for s in page_rows(response)], ["A-01"])
 
     def test_missing_window_params_are_rejected(self):
         self.assertEqual(
@@ -1216,14 +1284,14 @@ class AvailabilityApiTests(TestCase):
             self._url(), {"start": start.isoformat(), "end": start.isoformat()}
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.data["error"], "INVALID_WINDOW")
+        self.assertEqual(page_rows(response)["error"], "INVALID_WINDOW")
 
     def test_out_of_service_slot_is_absent(self):
         start, end = self._window()
         response = self.client.get(
             self._url(), {"start": start.isoformat(), "end": end.isoformat()}
         )
-        self.assertNotIn("A-02", [s["number"] for s in response.data])
+        self.assertNotIn("A-02", [s["number"] for s in page_rows(response)])
 
     def test_confirmed_overlap_is_absent(self):
         start, end = self._window()
@@ -1236,7 +1304,7 @@ class AvailabilityApiTests(TestCase):
         response = self.client.get(
             self._url(), {"start": start.isoformat(), "end": end.isoformat()}
         )
-        self.assertEqual(response.data, [])
+        self.assertEqual(page_rows(response), [])
 
     def test_inactive_lot_is_404_for_anonymous(self):
         start, end = self._window()
@@ -1254,7 +1322,7 @@ class AvailabilityApiTests(TestCase):
             {"start": start.isoformat(), "end": end.isoformat()},
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data, [])
+        self.assertEqual(page_rows(response), [])
 
 class HoldMinutesRuleTests(TestCase):
     """D6/§19: the hold length is part of the BusinessRule singleton (4.4)."""
@@ -1277,7 +1345,7 @@ class HoldMinutesRuleTests(TestCase):
             "/api/business-rules/", {"hold_minutes": 10}, format="json"
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["hold_minutes"], 10)
+        self.assertEqual(page_rows(response)["hold_minutes"], 10)
         self.assertEqual(BusinessRule.load().hold_minutes, 10)
 
 class CancellationCutoffRuleTests(TestCase):
@@ -1299,7 +1367,7 @@ class CancellationCutoffRuleTests(TestCase):
     def test_rule_read_exposes_the_cutoff(self):
         response = self.client.get("/api/business-rules/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["cancellation_cutoff_minutes"], 30)
+        self.assertEqual(page_rows(response)["cancellation_cutoff_minutes"], 30)
 
     def test_admin_can_update_cutoff(self):
         self.client.force_authenticate(self.admin)
@@ -1307,7 +1375,7 @@ class CancellationCutoffRuleTests(TestCase):
             "/api/business-rules/", {"cancellation_cutoff_minutes": 60}, format="json"
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["cancellation_cutoff_minutes"], 60)
+        self.assertEqual(page_rows(response)["cancellation_cutoff_minutes"], 60)
         self.assertEqual(BusinessRule.load().cancellation_cutoff_minutes, 60)
 
     def test_non_admin_cannot_update_cutoff(self):

@@ -19,7 +19,7 @@ from rest_framework.views import APIView
 
 from apps.bookings.services import InvalidWindowError, available_slots
 from apps.accounts.models import User
-from apps.accounts.permissions import IsAdmin, IsAdminOrManager
+from apps.accounts.permissions import IsAdmin, IsAdminOrManager, IsManager
 
 from .models import City, ParkingLot, ParkingSlot, Tariff, BusinessRule
 
@@ -32,10 +32,19 @@ from .serializers import (
     TariffSerializer, TariffWriteSerializer,
     BusinessRuleSerializer, BusinessRuleUpdateSerializer,
     AvailabilityQuerySerializer,
+    SlotOccupancySerializer,
 )
 
 from .services import (
-    MaxRateBelowTariffError, MaxRateExceededError, save_slot, set_tariff, set_business_rules, MaxDurationBelowSlotError, SlotDurationAboveMaximumError
+    MaxRateBelowTariffError, 
+    MaxRateExceededError, 
+    save_slot, 
+    set_tariff, 
+    set_business_rules, 
+    MaxDurationBelowSlotError, 
+    SlotDurationAboveMaximumError,
+    SlotNotOccupiableError,
+    set_occupancy,
 )
 
 from apps.bookings.services import InvalidWindowError, available_slots
@@ -274,6 +283,41 @@ class ParkingSlotDetailView(LotScopedMixin, generics.RetrieveUpdateAPIView):
         except SlotDurationAboveMaximumError as exc:
             return Response(
                 {"error": "MAX_DURATION_ABOVE_CAP", "max_booking_hours": [str(exc)]},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(ParkingSlotSerializer(slot).data)
+
+class SlotOccupancyView(LotScopedMixin, generics.GenericAPIView):
+    """Mark a slot OCCUPIED, or return it to AVAILABLE (6.2, D68).
+
+    ``POST /api/parking-lots/{lot_pk}/slots/{pk}/occupancy/`` with
+    ``{"status": "OCCUPIED" | "AVAILABLE"}``.
+
+    The §28 simulated-occupancy control. Because hardware is excluded, a Manager
+    records that a bay is physically taken; it needs no booking (an unauthorised
+    car is the point) and it only toggles between AVAILABLE and OCCUPIED.
+    ``OUT_OF_SERVICE`` stays the separate lifecycle axis (the slot PATCH), so
+    marking a withdrawn slot occupied is a 409. Lot scoping comes from
+    ``LotScopedMixin``: an unassigned lot is a 404, never a 403 (Invariant 3).
+    """
+
+    permission_classes = [IsManager]
+    serializer_class = SlotOccupancySerializer
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        slot = get_object_or_404(
+            ParkingSlot.objects.select_related("lot"),
+            lot=self.get_lot(),
+            pk=kwargs["pk"],
+        )
+        try:
+            slot = set_occupancy(slot=slot, status=serializer.validated_data["status"])
+        except SlotNotOccupiableError as exc:
+            return Response(
+                {"error": "SLOT_NOT_OCCUPIABLE", "message": str(exc)},
                 status=status.HTTP_409_CONFLICT,
             )
         return Response(ParkingSlotSerializer(slot).data)

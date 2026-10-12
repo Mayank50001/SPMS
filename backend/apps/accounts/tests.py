@@ -19,6 +19,8 @@ from rest_framework.test import APIClient, APIRequestFactory
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.test_support import page_rows
+
 from .models import User, Vehicle
 from .permissions import IsAdmin, IsConsumer, IsManager
 from .serializers import RegisterSerializer
@@ -111,7 +113,7 @@ class RolePermissionTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(
-            response.data["detail"],
+            page_rows(response)["detail"],
             "This endpoint is available to parking managers only.",
         )
 
@@ -165,9 +167,9 @@ class RegisterSerializerTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertNotIn("password", response.data)
-        self.assertNotIn("password_confirm", response.data)
-        self.assertNotIn("pbkdf2", str(response.data))
+        self.assertNotIn("password", page_rows(response))
+        self.assertNotIn("password_confirm", page_rows(response))
+        self.assertNotIn("pbkdf2", str(page_rows(response)))
 
     def test_serialising_an_existing_user_omits_the_hash(self):
         user = User.objects.create_user(
@@ -221,7 +223,7 @@ class EmailNormalisationTests(TestCase):
                     format="json",
                 )
                 self.assertEqual(response.status_code, status.HTTP_200_OK)
-                self.assertIn("access", response.data)
+                self.assertIn("access", page_rows(response))
 
 class PasswordSimilarityTest(TestCase):
     """B4: the similarity validator must compare against ``full_name`` too.
@@ -252,7 +254,7 @@ class PasswordSimilarityTest(TestCase):
         response = self._register("Mayank@123")
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("password", response.data)
+        self.assertIn("password", page_rows(response))
 
     def test_unrelated_strong_password_is_accepted(self):
         response = self._register("correct-horse-battery-staple")
@@ -285,13 +287,13 @@ class PhoneFieldTests(TestCase):
         response = self._register("call-me-maybe")
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("phone", response.data)
+        self.assertIn("phone", page_rows(response))
 
     def test_too_short_phone_is_rejected(self):
         response = self._register("123")
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("phone", response.data)
+        self.assertIn("phone", page_rows(response))
 
     def test_blank_phone_is_stored_as_none(self):
         response = self._register("")
@@ -347,8 +349,8 @@ class ProfileUpdateTests(TestCase):
         self.assertEqual(self.user.full_name, "Updated Name")
         self.assertEqual(self.user.phone, "919000011111")
         # The response is the full read shape, matching GET.
-        self.assertEqual(response.data["full_name"], "Updated Name")
-        self.assertIn("role", response.data)
+        self.assertEqual(page_rows(response)["full_name"], "Updated Name")
+        self.assertIn("role", page_rows(response))
 
     def test_patch_cannot_change_email_or_role(self):
         response = self.client.patch(
@@ -377,7 +379,7 @@ class ProfileUpdateTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("full_name", response.data)
+        self.assertIn("full_name", page_rows(response))
 
     def test_patch_requires_authentication(self):
         self.client.credentials()
@@ -441,8 +443,8 @@ class AdminUserManagementTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["role"], "MANAGER")
-        self.assertNotIn("password", response.data)
+        self.assertEqual(page_rows(response)["role"], "MANAGER")
+        self.assertNotIn("password", page_rows(response))
         created = User.objects.get(email="newmanager@example.com")
         self.assertTrue(created.check_password("correct-horse-battery-staple"))
 
@@ -469,7 +471,7 @@ class AdminUserManagementTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("role", response.data)
+        self.assertIn("role", page_rows(response))
 
     def test_weak_password_is_rejected(self):
         self._authenticate(self.admin)
@@ -478,7 +480,7 @@ class AdminUserManagementTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("password", response.data)
+        self.assertIn("password", page_rows(response))
 
     def test_duplicate_email_is_rejected_case_insensitively(self):
         self._authenticate(self.admin)
@@ -489,7 +491,7 @@ class AdminUserManagementTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("email", response.data)
+        self.assertIn("email", page_rows(response))
 
     def test_non_admin_cannot_create(self):
         for actor in (self.manager, self.consumer):
@@ -513,7 +515,7 @@ class AdminUserManagementTests(TestCase):
         response = self.client.get("/api/users/", {"role": "ADMIN"})
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        emails = [row["email"] for row in response.data]
+        emails = [row["email"] for row in page_rows(response)]
         self.assertIn("admin@example.com", emails)
         self.assertNotIn("consumer@example.com", emails)
 
@@ -523,8 +525,8 @@ class AdminUserManagementTests(TestCase):
         response = self.client.get(f"/api/users/{self.consumer.pk}/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["email"], "consumer@example.com")
-        self.assertNotIn("password", response.data)
+        self.assertEqual(page_rows(response)["email"], "consumer@example.com")
+        self.assertNotIn("password", page_rows(response))
 
     def test_consumer_cannot_retrieve_a_user(self):
         self._authenticate(self.consumer)
@@ -578,8 +580,8 @@ class UserAccessUpdateTests(TestCase):
         response = self._patch(self.consumer.pk, role="MANAGER")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertNotIn("password", response.data)
-        self.assertIn("created_at", response.data)
+        self.assertNotIn("password", page_rows(response))
+        self.assertIn("created_at", page_rows(response))
         self.consumer.refresh_from_db()
         self.assertEqual(self.consumer.role, User.Role.MANAGER)
 
@@ -602,7 +604,7 @@ class UserAccessUpdateTests(TestCase):
         response = self._patch(self.admin.pk, role="MANAGER")
 
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["error"], "LAST_ADMINISTRATOR")
+        self.assertEqual(page_rows(response)["error"], "LAST_ADMINISTRATOR")
         self.admin.refresh_from_db()
         self.assertEqual(self.admin.role, User.Role.ADMIN)
 
@@ -651,7 +653,7 @@ class UserAccessUpdateTests(TestCase):
         response = self._patch(self.consumer.pk, role="SUPERUSER")
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("role", response.data)
+        self.assertIn("role", page_rows(response))
 
     def test_empty_payload_is_rejected(self):
         self._authenticate(self.admin)
@@ -749,11 +751,11 @@ class VehicleApiTests(TestCase):
         response = self.client.post("/api/vehicles/", self._payload(), format="json")
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["registration_number"], "KA01AB1234")
+        self.assertEqual(page_rows(response)["registration_number"], "KA01AB1234")
         # The read shape echoes the four segments back for the UI.
-        self.assertEqual(response.data["state_code"], "KA")
-        self.assertEqual(response.data["unique_number"], "1234")
-        self.assertEqual(response.data["make"], "Maruti")
+        self.assertEqual(page_rows(response)["state_code"], "KA")
+        self.assertEqual(page_rows(response)["unique_number"], "1234")
+        self.assertEqual(page_rows(response)["make"], "Maruti")
 
         vehicle = Vehicle.objects.get()
         self.assertEqual(vehicle.owner, self.consumer)
@@ -766,7 +768,7 @@ class VehicleApiTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["registration_number"], "KA01AB1234")
+        self.assertEqual(page_rows(response)["registration_number"], "KA01AB1234")
 
     def test_all_four_segments_are_required(self):
         response = self.client.post(
@@ -775,7 +777,7 @@ class VehicleApiTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         for field in ("state_code", "rto_code", "series", "unique_number"):
-            self.assertIn(field, response.data)
+            self.assertIn(field, page_rows(response))
 
     def test_unknown_state_code_is_rejected(self):
         response = self.client.post(
@@ -783,7 +785,7 @@ class VehicleApiTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("state_code", response.data)
+        self.assertIn("state_code", page_rows(response))
 
     def test_rto_code_must_be_two_digits(self):
         response = self.client.post(
@@ -791,7 +793,7 @@ class VehicleApiTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("rto_code", response.data)
+        self.assertIn("rto_code", page_rows(response))
 
     def test_series_must_be_two_letters(self):
         response = self.client.post(
@@ -799,7 +801,7 @@ class VehicleApiTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("series", response.data)
+        self.assertIn("series", page_rows(response))
 
     def test_unique_number_must_be_four_digits(self):
         response = self.client.post(
@@ -807,7 +809,7 @@ class VehicleApiTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("unique_number", response.data)
+        self.assertIn("unique_number", page_rows(response))
 
     def test_plate_is_globally_unique_across_owners(self):
         Vehicle.objects.create(owner=self.other, registration_number="KA01AB1234")
@@ -815,7 +817,7 @@ class VehicleApiTests(TestCase):
         response = self.client.post("/api/vehicles/", self._payload(), format="json")
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("registration_number", response.data)
+        self.assertIn("registration_number", page_rows(response))
 
     def test_list_returns_only_the_callers_own_vehicles(self):
         mine = Vehicle.objects.create(
@@ -826,8 +828,8 @@ class VehicleApiTests(TestCase):
         response = self.client.get("/api/vehicles/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["id"], mine.pk)
+        self.assertEqual(len(page_rows(response)), 1)
+        self.assertEqual(page_rows(response)[0]["id"], mine.pk)
 
     def test_cannot_retrieve_another_consumers_vehicle(self):
         theirs = Vehicle.objects.create(
@@ -849,8 +851,8 @@ class VehicleApiTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["color"], "Black")
-        self.assertEqual(response.data["registration_number"], "KA01AB1234")
+        self.assertEqual(page_rows(response)["color"], "Black")
+        self.assertEqual(page_rows(response)["registration_number"], "KA01AB1234")
 
     def test_patch_with_a_partial_segment_set_is_rejected(self):
         mine = Vehicle.objects.create(
@@ -901,7 +903,7 @@ class VehicleApiTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("registration_number", response.data)
+        self.assertIn("registration_number", page_rows(response))
 
     def test_consumer_can_delete_their_own_vehicle(self):
         mine = Vehicle.objects.create(

@@ -613,6 +613,8 @@ def filter_payments(
     if ordering:
         # ``-id`` keeps the page stable regardless of the chosen sort key.
         queryset = queryset.order_by(ordering, "-id")
+    else:
+        queryset = queryset.order_by("-created_at", "-id")
     return queryset
 
 def annotate_refunded_amount(queryset):

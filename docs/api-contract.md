@@ -10,7 +10,7 @@ the root README's API section for the routes themselves.
 > never to PostgreSQL, and must **never invent an endpoint**. If a screen needs
 > data that has no route, emit `// TODO: Backend endpoint required` and stop.
 
-Last updated: **2026-10-11** (pagination frozen — D66).
+Last updated: **2026-10-13** (occupancy controls — D68).
 
 ---
 
@@ -114,13 +114,18 @@ The authoritative page list is PROJECT.md §30. As of this freeze:
 
 - **Fully buildable now:** the entire consumer journey; admin Users / Managers /
   Parking Lots / Business Rules / Transactions; manager My Lots / Lot Details /
-  Slot Management / Tariff (pricing) management / Profile. (`GET /api/payments/`
-  is role-scoped, so the transactions view serves consumer, manager and admin
-  with the same route and different row shapes — see README.)
+  Slot Management / Tariff (pricing) management / Profile; manager/admin
+  **bookings-for-a-lot list**, including its **entry/exit actions**
+  (`POST /api/bookings/{id}/check-in/` and `.../check-out/`; D69). (`GET
+  /api/payments/` and `GET /api/bookings/` are both role-scoped, so the
+  transactions view and the booking list serve consumer, manager and admin with
+  the same route and different row shapes — see README. An operator booking row
+  adds `lot`, `consumer_email`, `consumer_name` and the
+  `can_check_in`/`can_check_out` hints; D67.)
 - **Not yet available — stub the page, do not invent the route:**
-  - Manager/Admin **bookings-for-a-lot list** (there is currently no operator
-    booking-list route; `GET /api/bookings/` is consumer-owner-scoped only).
-  - Manager **Occupancy** and walk-in/cash flows (Phase 6; walk-in deferred D63).
+  - Manager **Occupancy board** (the live per-lot view; 6.5) and walk-in/cash
+    flows (Phase 6; walk-in deferred D63). The occupancy **mark** action
+    (`POST /api/parking-lots/{lot}/slots/{id}/occupancy/`, 6.2) is available now.
   - **Notifications** (Phase 7; model exists, no API surface yet).
   - **Reports / dashboards / audit logs** (Phase 8; audit deferred).
 
