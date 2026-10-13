@@ -91,6 +91,8 @@ ALLOWED_HOSTS = [
 # ---------------------------------------------------------------------------
 
 INSTALLED_APPS = [
+    # Third-party — "daphne" MUST stay first so runserver serves ASGI (D72).
+    "daphne",
     # Django contrib
     "django.contrib.admin",
     "django.contrib.auth",
@@ -99,6 +101,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     # Third-party
+    "channels",
     "rest_framework_simplejwt.token_blacklist",
     "rest_framework",
     "corsheaders",
@@ -281,6 +284,15 @@ CORS_ALLOWED_ORIGINS = [
     ).split(",")
     if o.strip()
 ]
+
+CHANNEL_LAYERS = {
+    "default" : {
+        "BACKEND" : "channels_redis.core.RedisChannelLayer",
+        "CONFIG" : {
+            "hosts" : [os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0")],
+        },
+    },
+}
 
 # No cross-site cookies are needed: JWT will be sent in the Authorization
 # header (not cookies), so credentials are intentionally left disabled to

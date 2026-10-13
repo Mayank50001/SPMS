@@ -1,4 +1,4 @@
-# Progress — Phase 6 (Occupancy simulation) 🚧 IN PROGRESS — 6.1–6.4 done
+# Progress — Phase 6 (Occupancy simulation) ✅ COMPLETE — 6.1–6.5 done
 
 > **Scope (PROJECT.md §36):** software-controlled slot occupancy, Manager
 > occupancy controls, booking/occupancy interaction and entry/exit simulation.
@@ -10,7 +10,7 @@
 > [`../phase-4-booking/PROGRESS.md`](../phase-4-booking/PROGRESS.md),
 > [`../phase-5-payment/PROGRESS.md`](../phase-5-payment/PROGRESS.md).
 
-Last updated: **2026-10-13** · **6.1–6.4 done; 6.5 next (settle D71–D72).**
+Last updated: **2026-10-14** · **6.1–6.5 done; D67–D72 implemented (§12 Channels + Redis exception applied to the occupancy board only).**
 
 ---
 
@@ -41,8 +41,7 @@ frontend would otherwise be built against half-finished operator flows.
 
 1. [`../README.md`](../README.md) — conventions + reading protocol.
 2. This file — scope, the increment plan, what is next.
-3. [`DECISIONS.md`](DECISIONS.md) — **D67–D70** implemented (6.1–6.4); D71–D72
-   open, each to be settled with the human *before* its increment's code.
+3. [`DECISIONS.md`](DECISIONS.md) — **D67–D72** implemented (6.1–6.5).
 4. Only if a task touches them: the "Dependencies on earlier phases" table below.
 
 ---
@@ -66,7 +65,7 @@ frontend would otherwise be built against half-finished operator flows.
 | 6.3 | **Entry / exit simulation** — booking `CONFIRMED → IN_PROGRESS → COMPLETED`, slot occupancy follows | D69 | ✅ Done (2026-10-13) |
 | 6.2 | **Occupancy controls** — Manager marks a slot `OCCUPIED` / back `AVAILABLE` | D68 | ✅ Done (2026-10-13) |
 | 6.4 | **Overstay settlement** — the §19 `1.5 × hourly rate` rule, `BusinessRule.overstay_multiplier` | D70 | ✅ Done (2026-10-13) |
-| 6.5 | **Occupancy board read** — the Manager's live per-lot view | D71 · D72 | 🔜 Next (settle D71–D72) |
+| 6.5 | **Occupancy board read** — the Manager's live per-lot view | D71 · D72 | ✅ Done (2026-10-14) |
 
 ### Brief per increment
 
@@ -95,7 +94,15 @@ frontend would otherwise be built against half-finished operator flows.
   `COMPLETED` — an unsettled overstay is a **recorded debt**; collection is
   deferred (cash D63).
 - **6.5** is the read behind the "Occupancy" page: slot states plus the live
-  booking on each slot.
+  booking on each slot. **Delivered 2026-10-14:** `build_occupancy_board`
+  (`bookings/services.py`) composes the whole-lot snapshot — summary counts plus,
+  per bay, the stored `status` and its live `IN_PROGRESS` `current_booking`.
+  `GET /api/parking-lots/{lot}/occupancy/` serves it (Manager on an assigned lot,
+  Admin any; unassigned is `404`), and an `OccupancyConsumer` pushes the identical
+  snapshot over `ws://…/ws/parking-lots/{lot}/occupancy/` — **WebSockets via
+  Channels + Redis** (D72, the approved §12 exception), one group per lot.
+  Occupancy writes announce their lot on commit via `notify_board_changed`. No
+  migration.
 
 ---
 
@@ -125,8 +132,12 @@ Read these **only** when a Phase 6 task touches them.
   entry/exit and occupancy change is a software action.
 - **Don't collapse concepts** — physical occupancy, booking reservation and
   temporary hold stay three separate things (§18, D33).
-- **Decisions before code** — D71–D72 are core logic (§9); each is surfaced with
-  options and trade-offs and recorded before its increment.
+- **Decisions before code** — each increment surfaces its decision (§9) with
+  options and trade-offs and records it before the code. All Phase 6 decisions
+  (D67–D72) are now settled.
+- **Approved infrastructure exception (D72)** — Channels + Redis is sanctioned
+  *for the occupancy board only* (§12/§47). Do not spread ASGI/Redis to other
+  features without a new decision.
 - **Manager scoping** — a Manager may only act on their assigned lots
   (Invariant 3); an unassigned lot is a `404`, never a `403`.
 - **Small, scoped commits** in `feat(domain): ...` style (PROJECT.md §43).

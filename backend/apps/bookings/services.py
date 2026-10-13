@@ -20,6 +20,7 @@ from django.utils import timezone
 
 from apps.parking.models import Tariff, ParkingSlot, BusinessRule
 from apps.parking.services import set_slot_occupancy
+from apps.parking.occupancy import notify_board_changed
 
 from .models import Booking
 
@@ -595,6 +596,9 @@ def check_in_booking(*, booking_id, user, now=None):
     booking.save(update_fields=["status", "actual_entry_at", "updated_at"])
 
     set_slot_occupancy(slot, ParkingSlot.Status.OCCUPIED)
+    # The booking state changed even if the slot write was a no-op (a withdrawn
+    # bay): announce the lot so the live board re-reads (D72).
+    notify_board_changed(slot.lot_id)
     return booking
 
 @transaction.atomic
@@ -643,6 +647,7 @@ def check_out_booking(*, booking_id, user, now=None):
     )
 
     set_slot_occupancy(slot, ParkingSlot.Status.AVAILABLE)
+    notify_board_changed(slot.lot_id)
     return booking
 
 def refund_due_for(booking, *, now, cutoff_minutes):
@@ -834,3 +839,70 @@ def extend_booking(*, booking_id, user, new_end_time, now=None):
         update_fields=["end_time", "billed_hours", "base_amount", "updated_at"]
     )
     return booking
+
+def build_occupancy_board(lot):
+    """The live occupancy board for one lot (6.5, D71/D72).
+
+    Returns a **JSON-ready** dict (datetimes are ISO strings) so the HTTP view
+    and the WebSocket consumer push byte-identical shapes:
+
+        {"lot": ..., "generated_at": ..., "summary": {...}, "slots": [...]}
+
+    Each row carries the bay's stored physical ``status`` **and** its
+    ``current_booking`` -- the single live ``IN_PROGRESS`` booking on it, or
+    ``None``. The status is authoritative (written by 6.3 entry/exit and 6.2's
+    manual mark); the booking is derived. The two are deliberately not collapsed
+    (D33). Whole-lot, not paginated -- a board shows every bay (D66 opts out).
+    """
+    live = (
+        Booking.objects.filter(slot__lot=lot, status=Booking.Status.IN_PROGRESS)
+        .select_related("user")
+        .order_by("id")
+    )
+    live_by_slot = {booking.slot_id: booking for booking in live}
+
+    summary = {"total": 0, "available": 0, "occupied": 0, "out_of_service": 0}
+    count_key = {
+        ParkingSlot.Status.AVAILABLE: "available",
+        ParkingSlot.Status.OCCUPIED: "occupied",
+        ParkingSlot.Status.OUT_OF_SERVICE: "out_of_service",
+    }
+
+    def _iso(value):
+        return value.isoformat() if value else None
+
+    slots = []
+    for slot in ParkingSlot.objects.filter(lot=lot).order_by("number"):
+        summary["total"] += 1
+        summary[count_key[slot.status]] += 1
+        booking = live_by_slot.get(slot.id)
+        slots.append(
+            {
+                "id": slot.id,
+                "number": slot.number,
+                "floor": slot.floor,
+                "slot_type": slot.slot_type,
+                "status": slot.status,
+                "current_booking": None
+                if booking is None
+                else {
+                    "id": booking.id,
+                    "reference": booking.reference,
+                    "vehicle_plate": booking.vehicle_plate,
+                    "status": booking.status,
+                    "start_time": _iso(booking.start_time),
+                    "end_time": _iso(booking.end_time),
+                    "actual_entry_at": _iso(booking.actual_entry_at),
+                    "consumer_email": booking.user.email
+                    if booking.user_id
+                    else None,
+                },
+            }
+        )
+
+    return {
+        "lot": {"id": lot.id, "code": lot.code, "name": lot.name},
+        "generated_at": timezone.now().isoformat(),
+        "summary": summary,
+        "slots": slots,
+    }

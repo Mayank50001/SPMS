@@ -121,9 +121,12 @@ later.
 
 ## Repository hygiene
 
-- `requirements.txt` pins `redis==8.1.0` and `pillow==12.3.0`, neither of which
-  is imported anywhere. D6 avoids Redis and §12 forbids introducing it without
-  approval. Left in place pending a decision; they are currently misleading.
+- `requirements.txt` pins `pillow==12.3.0`, which is not imported anywhere; left
+  in place pending a decision. The `redis==8.1.0` pin is no longer misleading —
+  **D72** (the approved §12 exception) uses a Redis channel layer for the live
+  occupancy board, with `channels` / `channels-redis` / `daphne` pinned alongside
+  it. D6's "no Redis for expiry" still holds: Redis serves only the WebSocket
+  channel layer, never a scheduler or queue.
 
 ---
 

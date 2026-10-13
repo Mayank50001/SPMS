@@ -7,18 +7,29 @@ so the tests never assert against production seed data or assume an empty table.
 """
 
 from decimal import Decimal
+import mock
+from datetime import timedelta
+
 from django.db import IntegrityError, transaction
 from django.db.models import ProtectedError
 from django.test import TestCase
-from datetime import timedelta
+from django.utils import timezone
+
 from rest_framework import status
 from rest_framework.test import APIClient
-from django.utils import timezone
+
+
 from apps.accounts.models import User
 from apps.bookings.models import Booking
+from apps.bookings.services import check_in_booking
 from apps.test_support import page_rows
+
 from .models import City, ParkingLot, ParkingSlot, Tariff, BusinessRule
-from .services import MaxRateExceededError, MaxRateBelowTariffError, set_tariff, set_max_hourly_rate, MaxDurationBelowSlotError, set_business_rules
+from .services import (
+    MaxRateExceededError, MaxRateBelowTariffError, set_tariff,
+    set_max_hourly_rate, MaxDurationBelowSlotError, set_business_rules,
+    set_occupancy, set_slot_occupancy, SlotNotOccupiableError,
+)
 
 class CityModelTests(TestCase):
     def setUp(self):
@@ -1435,3 +1446,216 @@ class OverstayRuleTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("overstay_multiplier", page_rows(response))
+
+class OccupancyBoardApiTests(TestCase):
+    """D71: the whole, unpaginated per-lot occupancy board (6.5)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        BusinessRule.objects.all().delete()
+        BusinessRule.load()
+        cls.city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.manager = User.objects.create_user(
+            email="mgr@example.com", password="Tr0ub4dor&3",
+            full_name="Mgr", role=User.Role.MANAGER,
+        )
+        cls.other_manager = User.objects.create_user(
+            email="mgr2@example.com", password="Tr0ub4dor&3",
+            full_name="Mgr2", role=User.Role.MANAGER,
+        )
+        cls.admin = User.objects.create_user(
+            email="admin@example.com", password="Tr0ub4dor&3",
+            full_name="Admin", role=User.Role.ADMIN,
+        )
+        cls.consumer = User.objects.create_user(
+            email="user@example.com", password="Tr0ub4dor&3",
+            full_name="User", role=User.Role.CONSUMER,
+        )
+        cls.lot = ParkingLot.objects.create(
+            city=cls.city, number=1, name="MG Road", address_line="1 MG Road",
+            manager=cls.manager,
+        )
+        cls.other_lot = ParkingLot.objects.create(
+            city=cls.city, number=2, name="Indiranagar", address_line="2 100ft",
+            manager=cls.other_manager,
+        )
+        ParkingSlot.objects.create(lot=cls.lot, number="A-01")
+        ParkingSlot.objects.create(
+            lot=cls.lot, number="A-02", status=ParkingSlot.Status.OCCUPIED
+        )
+        ParkingSlot.objects.create(
+            lot=cls.lot, number="A-03", status=ParkingSlot.Status.OUT_OF_SERVICE
+        )
+        cls.live_slot = ParkingSlot.objects.create(
+            lot=cls.lot, number="A-04", status=ParkingSlot.Status.OCCUPIED
+        )
+        now = timezone.now()
+        Booking.objects.create(
+            slot=cls.live_slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            user=cls.consumer,
+            vehicle_plate="KA01AB1234",
+            reference="SPM-TEST0001",
+            start_time=now - timedelta(minutes=30),
+            end_time=now + timedelta(hours=1),
+            billed_hours=2,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("40.00"),
+            status=Booking.Status.IN_PROGRESS,
+            actual_entry_at=now - timedelta(minutes=30),
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _url(self, lot=None):
+        return f"/api/parking-lots/{(lot or self.lot).id}/occupancy/"
+
+    def _slot(self, body, number):
+        return next(s for s in body["slots"] if s["number"] == number)
+
+    def test_manager_sees_the_whole_board(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        body = page_rows(response)
+        self.assertEqual(body["lot"]["code"], "BLR-001")
+        self.assertEqual(len(body["slots"]), 4)
+        self.assertEqual(
+            body["summary"],
+            {"total": 4, "available": 1, "occupied": 2, "out_of_service": 1},
+        )
+        self.assertNotIn("results", body)  # not a D66 page
+
+    def test_live_booking_is_nested_on_its_slot(self):
+        self.client.force_authenticate(self.manager)
+        body = page_rows(self.client.get(self._url()))
+        current = self._slot(body, "A-04")["current_booking"]
+        self.assertEqual(current["reference"], "SPM-TEST0001")
+        self.assertEqual(current["status"], "IN_PROGRESS")
+        self.assertEqual(current["vehicle_plate"], "KA01AB1234")
+
+    def test_a_manually_occupied_bay_has_no_booking(self):
+        self.client.force_authenticate(self.manager)
+        body = page_rows(self.client.get(self._url()))
+        marked = self._slot(body, "A-02")
+        self.assertEqual(marked["status"], "OCCUPIED")
+        self.assertIsNone(marked["current_booking"])
+
+    def test_a_withdrawn_bay_is_shown_and_counted(self):
+        self.client.force_authenticate(self.manager)
+        body = page_rows(self.client.get(self._url()))
+        self.assertEqual(self._slot(body, "A-03")["status"], "OUT_OF_SERVICE")
+
+    def test_admin_can_read_any_lot(self):
+        self.client.force_authenticate(self.admin)
+        self.assertEqual(
+            self.client.get(self._url(self.other_lot)).status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_manager_cannot_read_an_unassigned_lot(self):
+        self.client.force_authenticate(self.manager)
+        self.assertEqual(
+            self.client.get(self._url(self.other_lot)).status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_a_consumer_is_forbidden(self):
+        self.client.force_authenticate(self.consumer)
+        self.assertEqual(
+            self.client.get(self._url()).status_code, status.HTTP_403_FORBIDDEN
+        )
+
+    def test_an_anonymous_caller_is_unauthorized(self):
+        self.assertEqual(
+            self.client.get(self._url()).status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+
+class OccupancyBroadcastTests(TestCase):
+    """D72: an occupancy action announces its lot on commit."""
+
+    @classmethod
+    def setUpTestData(cls):
+        City.objects.all().delete()
+        BusinessRule.objects.all().delete()
+        BusinessRule.load()
+        city = City.objects.create(code="BLR", name="Bengaluru")
+        cls.manager = User.objects.create_user(
+            email="mgr@example.com", password="Tr0ub4dor&3",
+            full_name="Mgr", role=User.Role.MANAGER,
+        )
+        cls.lot = ParkingLot.objects.create(
+            city=city, number=1, name="MG Road", address_line="1 MG Road",
+            manager=cls.manager,
+        )
+        cls.slot = ParkingSlot.objects.create(lot=cls.lot, number="A-01")
+
+    def _sent_for(self, action):
+        sent = []
+
+        class FakeLayer:
+            async def group_send(self, group, message):
+                sent.append((group, message))
+
+        with mock.patch(
+            "apps.parking.occupancy.get_channel_layer", return_value=FakeLayer()
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                action()
+        return sent
+
+    def test_a_manual_mark_announces_the_lot(self):
+        sent = self._sent_for(
+            lambda: set_occupancy(
+                slot=self.slot, status=ParkingSlot.Status.OCCUPIED
+            )
+        )
+        self.assertEqual(
+            sent, [(f"occupancy.{self.lot.id}", {"type": "board.changed"})]
+        )
+
+    def test_a_withdrawn_bay_refuses_and_does_not_announce(self):
+        ParkingSlot.objects.filter(pk=self.slot.pk).update(
+            status=ParkingSlot.Status.OUT_OF_SERVICE
+        )
+        self.slot.refresh_from_db()
+        sent = []
+
+        class FakeLayer:
+            async def group_send(self, group, message):
+                sent.append((group, message))
+
+        with mock.patch(
+            "apps.parking.occupancy.get_channel_layer", return_value=FakeLayer()
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                with self.assertRaises(SlotNotOccupiableError):
+                    set_occupancy(
+                        slot=self.slot, status=ParkingSlot.Status.OCCUPIED
+                    )
+        self.assertEqual(sent, [])
+
+    def test_a_check_in_announces_the_lot(self):
+        now = timezone.now()
+        booking = Booking.objects.create(
+            slot=self.slot,
+            slot_type=ParkingSlot.SlotType.REGULAR,
+            start_time=now,
+            end_time=now + timedelta(hours=2),
+            billed_hours=2,
+            hourly_rate=Decimal("20.00"),
+            base_amount=Decimal("40.00"),
+            status=Booking.Status.CONFIRMED,
+            vehicle_plate="KA01AB1234",
+            reference="SPM-TEST0002",
+        )
+        sent = self._sent_for(
+            lambda: check_in_booking(booking_id=booking.id, user=self.manager)
+        )
+        self.assertEqual(
+            sent, [(f"occupancy.{self.lot.id}", {"type": "board.changed"})]
+        )

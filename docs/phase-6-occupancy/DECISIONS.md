@@ -1,8 +1,7 @@
 # Phase 6 decisions (D67–D72)
 
-Decisions the occupancy phase made or must make. **D67** (6.1), **D68** (6.2),
-**D69** (6.3) and **D70** (6.4) are **implemented**; **D71–D72** are **open** and
-must be settled with the human before their increment's code (PROJECT.md §9). Entries are added here, and indexed in
+Decisions the occupancy phase made. **D67–D72** are **implemented** (6.1–6.5).
+Entries are added here, and indexed in
 [`../decisions-index.md`](../decisions-index.md), as each is decided.
 
 ---
@@ -165,44 +164,80 @@ Settle before 6.4's code. **Decided 2026-10-13 (code in 6.4).**
 
 ---
 
-## D71 — Occupancy board read (OPEN)
+## D71 — Occupancy board read
 
-Settle before 6.5's code.
+Settle before 6.5's code. **Decided 2026-10-14 · implemented in 6.5 (2026-10-14).**
 
-- **Route:** e.g. `GET /api/parking-lots/{lot}/occupancy/`, Manager-only and
-  scoped to an assigned lot (Invariant 3; unassigned → `404`).
-- **Response:** per-slot `status` plus the current/live booking on each slot
-  (reference, plate, window, state) and summary counts (total / available /
-  occupied / out-of-service). Whether it is paginated (D66) or returned whole for
-  a grid.
-- **Time basis:** is "occupied now" the stored physical `status`, the live
-  `IN_PROGRESS` booking, or both?
-- **Freshness:** ~~polling only — no websockets or push (§47)~~ **REOPENED
-  2026-10-12.** The human wants a genuinely live board (a static board "reads
-  naively"); this is now its own decision, **D72**, to be settled at 6.5. See
-  the new entry below.
+- **Route:** `GET /api/parking-lots/{lot}/occupancy/` — the lot's **Manager**
+  (scoped to an assigned lot) and an **Administrator** (any lot). An unassigned
+  lot is a `404`, never a `403` (Invariant 3).
+- **Response — the whole board, not paginated** (it opts out of D66, like cities
+  and availability): the lot reference, a generated-at timestamp, a `summary`
+  count block (`total` / `available` / `occupied` / `out_of_service`) and the
+  full `slots` array. A board must show every bay at once.
+- **Time basis — stored status AND live booking, together (§18/D33):** each row
+  carries the bay's stored physical `status` (written by 6.3 entry/exit and 6.2's
+  manual mark) **and** its `current_booking` — the live `IN_PROGRESS` booking, or
+  `null` when a bay is occupied with no booking or is free. The status is
+  authoritative; the booking is derived. They are not collapsed.
+- **Freshness:** this snapshot is the transport-neutral source that the live
+  channel (D72) seeds from, and the endpoint a client may fall back to.
 
 ---
 
-## D72 — Live occupancy-board delivery (OPEN)
+## D72 — Live occupancy-board delivery
 
-Raised 2026-10-12 while opening 6.1. Settle at **6.5** (the board read), not
-before — 6.1–6.4 do not depend on the transport.
+Raised 2026-10-12 while opening 6.1. **Decided 2026-10-14 (implemented in 6.5):
+WebSockets via Django Channels + a Redis channel layer** — an explicitly
+approved PROJECT.md §12 infrastructure exception.
 
-- **Goal:** the manager's occupancy board should update without a manual
-  refresh, so the UI does not read as static to a reviewer.
-- **Options:** (a) **polling** — a timed re-fetch, no infra; (b) **SSE** —
-  server pushes one-way over plain Django, no new infrastructure; (c)
-  **WebSockets** via Django **Channels** — two-way, but needs an ASGI server
-  (Daphne/Uvicorn) and normally **Redis** as the channel layer.
-- **Consequence to decide:** WebSockets/Channels would introduce infrastructure
-  PROJECT.md §12/§47 forbids without explicit approval (Redis in particular),
-  so it must be an approved, documented exception — as Razorpay was for the
-  payment gateway (D56). SSE adds no dependency, is one-way (enough for a
-  read-only board) and works with the existing WSGI/Django stack.
-- **Auth note:** a WebSocket/SSE stream must still be authorised server-side
-  per connection (D15/§24) — role and lot scoping cannot be assumed from the
-  client.
-- **Recommendation:** decide at 6.5; prefer **SSE** unless two-way is required,
-  and only adopt Channels + Redis if the human approves the §12 exception and
-  accepts the added infrastructure.
+- **Goal:** the Manager's occupancy board updates without a manual refresh, so it
+  never reads as static.
+- **Chosen: WebSockets (Channels + Redis).** The human approved the §12
+  exception on 2026-10-14 and chose the two-way transport over SSE and polling.
+  Recorded here as the Razorpay-style documented exception (D56).
+- **Why not SSE:** a streaming HTTP response holds its connection open for its
+  whole life, so on a synchronous WSGI worker pool each open stream pins a worker
+  for its duration (raised 2026-10-13). Channels runs the stack under ASGI, so
+  websocket connections never pin a worker — the price is a running **Redis**
+  broker.
+- **Infrastructure added:** `channels`, `channels-redis`, `daphne` (the ASGI
+  server; once `daphne` is in `INSTALLED_APPS`, `manage.py runserver` serves
+  ASGI, so websockets work in dev); a Redis server; and a `CHANNEL_LAYERS`
+  setting. `config/asgi.py` routes both `http` and `websocket`.
+- **Transport shape:** one group per lot (`occupancy.<lot_id>`). A consumer joins
+  on connect and immediately sends the **same snapshot D71 returns**; slot and
+  booking writes broadcast to the group, and each consumer re-serialises and
+  pushes. The board is read-only over the socket (the two-way capability is not
+  used, but it is why the transport was chosen).
+- **Auth (D15/§24):** the connection is authorised **server-side**. The JWT
+  access token is presented on connect, the scope is resolved to a user, and
+  role + lot scoping are enforced **before** the group is joined; an
+  unauthorised or unassigned connection is closed with a policy close code.
+  Role and lot are never trusted from the client.
+
+**Implemented in 6.5:**
+
+- **Snapshot builder:** `build_occupancy_board(lot)` lives in
+  `bookings/services.py` (it composes parking slots with live bookings) and
+  returns a **JSON-ready** dict, so the HTTP view and the socket push the same
+  shape byte-for-byte.
+- **HTTP:** `ParkingLotOccupancyView` (`parking/views.py`) serves
+  `GET /api/parking-lots/{lot}/occupancy/`; its lot lookup is stricter than the
+  public catalogue — a Manager may only address an **assigned** lot, so
+  unassigned is a `404` (never `403`, Invariant 3).
+- **Broadcast:** `parking/occupancy.py` holds `board_group_name` and
+  `notify_board_changed(lot_id)`. The occupancy **actions** (`set_occupancy` in
+  6.2, `check_in_booking`/`check_out_booking` in 6.3) call it; the message is
+  deferred with `transaction.on_commit`, so a rolled-back write never pushes a
+  phantom board. The payload is tiny (`{"type": "board.changed"}`) — the consumer
+  re-reads rather than trusting the message.
+- **Consumer:** `OccupancyConsumer` (`parking/consumers.py`) joins the lot group
+  on an authorised connect and pushes the initial snapshot; `board_changed`
+  re-reads and pushes. Close codes: `4401` unauthenticated, `4403`
+  wrong role / unassigned lot. Read-only (no client frames used).
+- **Routing:** `parking/routing.py` exposes
+  `ws/parking-lots/<lot_pk>/occupancy/`, aggregated by `config/routing.py`.
+- **Tests:** the board/consumer tests run under `TransactionTestCase` with the
+  **in-memory** channel layer (`apps/parking/test_websockets.py`), so the suite
+  never needs Redis; the WebSocket JWT resolver is covered directly.

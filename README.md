@@ -43,10 +43,10 @@ event**, automatic on cancellation — D61) and **5.6** (extension charge:
 D63) is deferred to a future addition because its prerequisite — a
 Manager-created walk-in booking — is out of the current project's scope.
 
-Phase 6 (occupancy simulation) is underway. **6.1** (operator booking reads —
+Phase 6 (occupancy simulation) is **complete**. **6.1** (operator booking reads —
 D67), **6.3** (entry/exit simulation — D69), **6.2** (Manager occupancy
-controls — D68) and **6.4** (overstay settlement — D70) are done; the live
-occupancy board follows.
+controls — D68), **6.4** (overstay settlement — D70) and **6.5** (the live
+occupancy board — D71/D72) are all done.
 The authoritative specification is [`PROJECT.md`](PROJECT.md). Documentation is
 split per phase — start at [`docs/README.md`](docs/README.md), the navigation
 entry point, phase tracker and reading protocol.
@@ -217,6 +217,7 @@ npm run build
 | GET    | `/api/business-rules/` | Public     | The max-hourly-rate singleton    |
 | PATCH  | `/api/business-rules/` | Admin      | Change the rate/duration ceilings, hold length or refund cutoff |
 | GET    | `/api/parking-lots/{lot}/availability/` | Public | Slots bookable for `?start=&end=` (4.3) |
+| GET    | `/api/parking-lots/{lot}/occupancy/` | Manager/Admin | The live per-lot occupancy board: summary + per-bay status and live booking (6.5) |
 | GET    | `/api/bookings/`       | Role-scoped | List/filter visible bookings: own / assigned lots / all (4.4/4.9/6.1) |
 | GET    | `/api/bookings/{id}/`  | Consumer   | Read one own booking: lot location + `can_cancel`/`can_extend` (4.9) |
 | POST   | `/api/bookings/`       | Consumer   | Create a booking (4.4) |
@@ -248,6 +249,10 @@ npm run build
 > lists their own bookings, a Manager those in their assigned lots, an
 > Administrator all (D67, 6.1) — a caller who owns none gets an empty list,
 > never a `403`.
+>
+> The **live occupancy board** (6.5) also has a WebSocket transport at
+> `ws://…/ws/parking-lots/{lot}/occupancy/`, authenticated with `?token=<access>`
+> — see *Live occupancy board* under the Phase 6 sections below.
 
 ### Vehicles
 
@@ -723,6 +728,57 @@ POST /api/parking-lots/1/slots/7/occupancy/
   A bay that should leave the bookable pool entirely is `OUT_OF_SERVICE`.
 - Entry/exit (6.3) writes the same field through the same helper; `OUT_OF_SERVICE`
   is never overridden, and the last write wins (D68's composition rule).
+
+### Live occupancy board (Phase 6, increment 6.5, D71/D72)
+
+The "Occupancy" page is one read plus a live channel that keeps it from reading
+as static:
+
+```text
+GET  /api/parking-lots/1/occupancy/                       # the whole board, once
+WS   ws://…/ws/parking-lots/1/occupancy/?token=<access>   # the same board, live
+```
+
+**The read (D71).** Manager (assigned lot) or Administrator (any lot); an
+unassigned lot is a `404`, never a `403`. It is the **whole board, unpaginated** —
+a board must show every bay at once:
+
+```json
+{
+  "lot": { "id": 1, "code": "BLR-001", "name": "MG Road" },
+  "generated_at": "2026-10-14T09:30:00+00:00",
+  "summary": { "total": 4, "available": 1, "occupied": 2, "out_of_service": 1 },
+  "slots": [
+    { "id": 7, "number": "A-04", "slot_type": "REGULAR", "status": "OCCUPIED",
+      "current_booking": { "reference": "SPM-…", "vehicle_plate": "KA01AB1234",
+                           "status": "IN_PROGRESS", "consumer_email": "…" } },
+    { "id": 8, "number": "A-05", "status": "OCCUPIED", "current_booking": null }
+  ]
+}
+```
+
+- Each row carries the bay's stored physical **`status`** *and* its live
+  **`current_booking`** (the single `IN_PROGRESS` booking, or `null`). The status
+  is authoritative and the booking is derived — the two are **not collapsed**
+  (§18/D33). A manually marked bay, or a free one, has `current_booking: null`.
+
+**The live channel (D72).** WebSockets via **Django Channels + a Redis channel
+layer** — an explicitly approved PROJECT.md §12 infrastructure exception, limited
+to this board. One group per lot (`occupancy.<lot_id>`):
+
+- A browser's WebSocket handshake cannot set headers, so the JWT access token is
+  passed as **`?token=<access>`**. The server resolves it to a user and enforces
+  **role + lot before the group is joined** (D15/§24); a bad token closes with
+  `4401`, a wrong role or unassigned lot with `4403`. Nothing is trusted from the
+  client.
+- On connect the consumer sends the **same snapshot** `GET …/occupancy/` returns.
+  When a bay changes (6.2's mark, 6.3's check-in/check-out) the writers broadcast
+  to the lot's group **on commit**, and each consumer re-reads and pushes. The
+  board is read-only over the socket.
+- **Running it:** the websocket transport needs a Redis server and the ASGI
+  extras (`channels`, `channels-redis`, `daphne`; `daphne` first in
+  `INSTALLED_APPS` makes `manage.py runserver` serve ASGI). The HTTP route works
+  without them, so a client can always fall back to the plain read.
 
 ### Payment (Phase 5) — complete (5.1–5.6, 5.8–5.9)
 

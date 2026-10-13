@@ -24,6 +24,7 @@ Invariant 4 holds at rest.
 from django.db import transaction
 
 from .models import BusinessRule, Tariff, ParkingSlot
+from .occupancy import notify_board_changed
 
 class MaxRateExceededError(Exception):
     """A tariff's ``hourly_rate`` is above the Administrator's maximum."""
@@ -104,7 +105,9 @@ def set_occupancy(*, slot, status):
         raise SlotNotOccupiableError(
             "A slot that is out of service cannot be marked occupied or available."
         )
-    return set_slot_occupancy(slot, status)
+    changed = set_slot_occupancy(slot, status)
+    notify_board_changed(slot.lot_id)
+    return changed
 
 @transaction.atomic
 def set_tariff(*, lot, slot_type, hourly_rate, instance=None):

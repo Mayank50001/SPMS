@@ -7,6 +7,7 @@ from .views import (
     ParkingSlotDetailView,
     ParkingSlotListCreateView,
     ParkingLotAvailabilityView,
+    ParkingLotOccupancyView,
     TariffListCreateView,
     TariffDetailView,
     SlotOccupancyView,
@@ -27,9 +28,14 @@ urlpatterns = [
     path("parking-lots/<int:lot_pk>/tariffs/", TariffListCreateView.as_view(), name="tariff-list",),
     path("parking-lots/<int:lot_pk>/tariffs/<int:pk>/", TariffDetailView.as_view(),name="tariff-detail"),
     path("business-rules/", BusinessRuleView.as_view(), name="business-rule",),
-        path(
+    path(
         "parking-lots/<int:lot_pk>/slots/<int:pk>/occupancy/",
         SlotOccupancyView.as_view(),
         name="parking-slot-occupancy",
+    ),
+    path(
+        "parking-lots/<int:lot_pk>/occupancy/",
+        ParkingLotOccupancyView.as_view(),
+        name="parking-lot-occupancy",
     ),
 ]

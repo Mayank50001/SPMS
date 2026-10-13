@@ -77,9 +77,10 @@ produce `CONSUMER`; privileged accounts are created by an Administrator.
   `/api/parking-lots/{lot}/slots/`, `/api/parking-lots/{lot}/tariffs/`,
   `/api/bookings/`, `/api/payments/`.
 - **Opted out** (bare JSON array, not an envelope):
-  `/api/cities/` and `/api/parking-lots/{lot}/availability/`.
-  For the availability grid, the whole set is returned so every slot can be
-  rendered at once.
+  `/api/cities/`, `/api/parking-lots/{lot}/availability/` and
+  `/api/parking-lots/{lot}/occupancy/`.
+  For the availability grid and the occupancy board, the whole set is returned so
+  every slot can be rendered at once.
 
 ## 5. Error shape
 
@@ -124,11 +125,16 @@ The authoritative page list is PROJECT.md §30. As of this freeze:
   `can_check_in`/`can_check_out` hints; D67. Every booking row also carries the
   `overstay_hours`/`overstay_amount` snapshot written at check-out, and
   `PATCH /api/business-rules/` now accepts `overstay_multiplier` and
-  `overstay_grace_minutes`; D70.)
+  `overstay_grace_minutes`; D70.) The Manager **Occupancy board** is live too
+  (6.5, D71/D72): `GET /api/parking-lots/{lot}/occupancy/` returns the whole-lot
+  board (summary + per-bay stored `status` and live `current_booking`), and the
+  identical snapshot streams over
+  `ws://…/ws/parking-lots/{lot}/occupancy/?token=<access>` — Channels + Redis, the
+  approved §12 exception, one group per lot.
 - **Not yet available — stub the page, do not invent the route:**
-  - Manager **Occupancy board** (the live per-lot view; 6.5) and walk-in/cash
-    flows (Phase 6; walk-in deferred D63). The occupancy **mark** action
-    (`POST /api/parking-lots/{lot}/slots/{id}/occupancy/`, 6.2) is available now.
+  - **Walk-in / cash** flows (Phase 6; the occupancy **mark** action
+    `POST /api/parking-lots/{lot}/slots/{id}/occupancy/`, 6.2, is available now;
+    walk-in deferred D63).
   - **Notifications** (Phase 7; model exists, no API surface yet).
   - **Reports / dashboards / audit logs** (Phase 8; audit deferred).
 

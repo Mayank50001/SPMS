@@ -45,6 +45,8 @@ reusable.** See Phase 2 for the custom user model.
 
 ### Known repository hygiene
 
-`requirements.txt` still pins `redis==8.1.0` and `pillow==12.3.0`, neither of
-which is imported. D6 avoids Redis and PROJECT.md §12 forbids introducing it
-without approval. See [`../deferred-features.md`](../deferred-features.md).
+`requirements.txt` still pins `pillow==12.3.0`, which is not imported. The
+`redis` pin is now real plumbing: **D72** (the approved PROJECT.md §12 exception)
+sanctions a Redis channel layer for the live occupancy board, so `channels`,
+`channels-redis` and `daphne` sit alongside it. See
+[`../deferred-features.md`](../deferred-features.md).

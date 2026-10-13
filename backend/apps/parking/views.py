@@ -17,7 +17,7 @@ from rest_framework.permissions import SAFE_METHODS, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.bookings.services import InvalidWindowError, available_slots
+from apps.bookings.services import InvalidWindowError, available_slots, build_occupancy_board
 from apps.accounts.models import User
 from apps.accounts.permissions import IsAdmin, IsAdminOrManager, IsManager
 
@@ -286,6 +286,31 @@ class ParkingSlotDetailView(LotScopedMixin, generics.RetrieveUpdateAPIView):
                 status=status.HTTP_409_CONFLICT,
             )
         return Response(ParkingSlotSerializer(slot).data)
+
+class ParkingLotOccupancyView(LotScopedMixin, generics.GenericAPIView):
+    """The Manager's live occupancy board for one lot (6.5, D71).
+
+    ``GET /api/parking-lots/{lot}/occupancy/`` -> the whole board: summary counts
+    plus every bay's stored status and its live ``IN_PROGRESS`` booking. Manager
+    (assigned lot) and Administrator (any lot); an unassigned lot is a ``404``,
+    never a ``403`` (Invariant 3). Deliberately unpaginated -- a board shows the
+    whole lot (D66 opts out).
+    """
+
+    def get_permissions(self):
+        return [IsAdminOrManager()]
+
+    def _visible_lot_queryset(self):
+        # Unlike the public catalogue, the board is operator-only: a Manager may
+        # only address a lot assigned to them.
+        queryset = ParkingLot.objects.all()
+        user = self.request.user
+        if user.role == User.Role.ADMIN:
+            return queryset
+        return queryset.filter(manager=user)
+
+    def get(self, request, *args, **kwargs):
+        return Response(build_occupancy_board(self.get_lot()))
 
 class SlotOccupancyView(LotScopedMixin, generics.GenericAPIView):
     """Mark a slot OCCUPIED, or return it to AVAILABLE (6.2, D68).

@@ -21,9 +21,9 @@ context — what each phase built (**PROGRESS**) and the decisions made or pendi
 | 3 | **Parking domain (lots, slots, pricing, assignments)** | ✅ Done (3.1–3.4; reopened once for D45 duration fields) | [`phase-3-parking/`](phase-3-parking/) |
 | 4 | Booking | ✅ Done (4.1–4.9) | [`phase-4-booking/`](phase-4-booking/) |
 | 5 | Payment | ✅ Done (5.1–5.6 + 5.8–5.9; **5.7 walk-in cash deferred** · **D63** · **D56** revised, **D57** model/states, **D58** gateway interface (revised by D60), **D59** creation surface, **D60** confirmation, **D61** refund ledger + auto-refund, **D62** extension charge, **D63** walk-in/cash deferral, **D64** per-payment receipt, **D65** transaction views) | [`phase-5-payment/`](phase-5-payment/) |
-| 6 | Occupancy simulation (**+ operator booking reads** — opens the manager/admin workflow) | 🔜 Opened 2026-10-12; not started | [`phase-6-occupancy/`](phase-6-occupancy/) |
+| 6 | Occupancy simulation (**+ operator booking reads** — opens the manager/admin workflow) | ✅ Done (6.1–6.5; **D67–D72**; live board over Channels + Redis — the approved §12 exception) | [`phase-6-occupancy/`](phase-6-occupancy/) |
 | 7 | Notifications | ⏸ Deferred until after the frontend (2026-10-12) | — |
-| 8 | Reports (manager/admin dashboards) | ⏭ Pulled forward after Phase 6 (2026-10-12) | — |
+| 8 | Reports (manager/admin dashboards) | ⏭ **Next** — pulled forward after Phase 6 (2026-10-12) | — |
 | 9 | React frontend | ⏸ Deferred until the manager/admin workflow is complete | — |
 | 10 | Testing and hardening | ⚪ Not started | — |
 
@@ -52,9 +52,9 @@ docs/
 ├── phase-5-payment/
 │   ├── PROGRESS.md                 # scope, increment plan, next-session start
 │   └── DECISIONS.md                # D56 accepted (Razorpay test-mode gateway; revised from Stripe) + D57 (payment model/states) + D58 (gateway interface/selection; revised by D60) + D59 (creation surface) + D60 (confirmation) + D61 (refund ledger + auto-refund + REFUNDED removed) + D62 (extension charge) + D63 (walk-in/cash deferral) + D64 (per-payment receipt) + D65 (transaction views) — all Phase 5 decisions settled
-└── phase-6-occupancy/              # NEXT — occupancy + operator booking reads
+└── phase-6-occupancy/              # occupancy + operator booking reads (complete, 6.1-6.5)
     ├── PROGRESS.md                 # scope, agreed ordering, increment plan
-    └── DECISIONS.md                # D67 accepted (operator booking reads); D68-D71 open
+    └── DECISIONS.md                # D67-D72 implemented (6.1-6.5)
 ```
 
 Each phase owns one `PROGRESS.md` (state) and one `DECISIONS.md` (decisions that
