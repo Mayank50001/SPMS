@@ -137,3 +137,15 @@ Full entries: [`phase-6-occupancy/DECISIONS.md`](phase-6-occupancy/DECISIONS.md)
 | D70 | Overstay settlement: snapshot `overstay_hours`/`overstay_amount` at check-out from `overstay_multiplier` and a grace window (`overstay_grace_minutes`); record the debt, defer collection | Implemented (2026-10-13; 6.4) |
 | D71 | Occupancy board read: whole-board per-lot view with summary + stored status and live booking per slot | Implemented (2026-10-14; 6.5) |
 | D72 | Live occupancy-board delivery: **WebSockets via Channels + Redis** (approved §12 infrastructure exception) with per-connection JWT/role/lot authorisation | Implemented (2026-10-14; 6.5) |
+
+## Phase 8 — Reports
+Full entries: [`phase-8-reports/DECISIONS.md`](phase-8-reports/DECISIONS.md)
+
+| ID | Title | Status |
+|----|-------|--------|
+| D73 | Reports surface: metric-family routes under `/api/reports/`, role-scoped (Manager assigned lots / Admin all), half-open `?from=&to=` + `?lot=`, unpaginated computed object | Accepted (2026-10-14; code in 8.1) |
+| D74 | Booking statistics: created-in-window cohort totals + current-status breakdown (all seven states), plus a windowed-independent `active_now` snapshot | Accepted (2026-10-14; code in 8.2) |
+| D75 | Revenue aggregation: from `Payment`/`Refund` ledgers (`SUCCEEDED` only), `gross`/`refunded`/`net`, overstay reported separately (recorded, not collected; windowed on `actual_exit_at`) | Accepted (2026-10-14; code in 8.3) |
+| D76 | Occupancy aggregation: **live** rate (reusing 6.5) plus a **windowed booked-rate proxy**, since no occupancy history is stored (D2/D33) | Accepted (2026-10-14; code in 8.4) |
+| D77 | Administrator platform report: platform-wide §29 summary composing D74–D76 figures plus user/lot/slot totals, payment failures | Accepted (2026-10-14; code in 8.5) |
+| D78 | Dashboard bundles: one role-scoped call per landing page, composing the metric families (optional) | Deferred (optional) 2026-10-14 — the frontend fans out to the metric families instead |

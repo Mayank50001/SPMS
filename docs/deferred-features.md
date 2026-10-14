@@ -51,8 +51,23 @@ not guessed.
 
 ## Frontend implementation
 
-Delegated to the agent (PROJECT.md §11), but explicitly **Phase 9**. No frontend
-work starts before its backend contract is settled (PROJECT.md §23).
+Delegated to the agent (PROJECT.md §11) and now **Phase 9, opened 2026-10-14** —
+the backend contract is settled (Phases 2–8). Read
+[`phase-9-frontend/API-MAP.md`](phase-9-frontend/API-MAP.md) (every route + field)
+and [`phase-9-frontend/FRONTEND-GUIDE.md`](phase-9-frontend/FRONTEND-GUIDE.md)
+(stack, structure, page → endpoint map, tips and tricks).
+
+---
+
+## Dashboard bundle endpoint (D78)
+
+A single role-scoped `GET /api/reports/dashboard/` returning a landing page's
+tiles in one request, so a dashboard is not several round-trips. It introduces
+**no new figure** — it only bundles the Phase 8 metric families.
+
+**Why deferred:** the frontend can call the metric families directly. The bundle
+is a pure optimisation and can be added once the dashboard's exact tile set is
+known (D78 made it optional, go/no-go after 8.5).
 
 ---
 

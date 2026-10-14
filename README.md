@@ -46,7 +46,11 @@ Manager-created walk-in booking — is out of the current project's scope.
 Phase 6 (occupancy simulation) is **complete**. **6.1** (operator booking reads —
 D67), **6.3** (entry/exit simulation — D69), **6.2** (Manager occupancy
 controls — D68), **6.4** (overstay settlement — D70) and **6.5** (the live
-occupancy board — D71/D72) are all done.
+occupancy board — D71/D72) are all done. **Phase 8 (reports)** is **complete**
+(8.1–8.5, read-only; D73–D77) — only the optional dashboard bundle (D78) is
+deferred. **Phase 9 (the React frontend)** is opened next; its build reference is
+[`docs/phase-9-frontend/API-MAP.md`](docs/phase-9-frontend/API-MAP.md) and
+[`FRONTEND-GUIDE.md`](docs/phase-9-frontend/FRONTEND-GUIDE.md).
 The authoritative specification is [`PROJECT.md`](PROJECT.md). Documentation is
 split per phase — start at [`docs/README.md`](docs/README.md), the navigation
 entry point, phase tracker and reading protocol.
@@ -177,6 +181,11 @@ cd frontend
 npm run build
 ```
 
+The Phase 9 build reference (every route **and** its fields) and the
+implementation guide live at
+[`docs/phase-9-frontend/API-MAP.md`](docs/phase-9-frontend/API-MAP.md) and
+[`docs/phase-9-frontend/FRONTEND-GUIDE.md`](docs/phase-9-frontend/FRONTEND-GUIDE.md).
+
 ---
 
 ## API
@@ -229,6 +238,12 @@ npm run build
 | POST   | `/api/payments/{id}/confirm/` | Consumer | Server-verify a Checkout return and confirm the booking (5.4) |
 | POST   | `/api/payments/webhook/` | Public   | Signature-verified Razorpay webhook (5.4) |
 | POST   | `/api/payments/{id}/refund/` | Admin/Manager | Refund / retry a refund against a captured payment (5.5) |
+| GET    | `/api/payments/`      | Role-scoped | List/filter visible payments: own / assigned lots / all (5.9) |
+| GET    | `/api/payments/{id}/receipt/` | Consumer | Read a receipt for a settled charge (5.8) |
+| GET    | `/api/reports/bookings/` | Manager/Admin | Booking statistics for a period (8.2) |
+| GET    | `/api/reports/revenue/` | Manager/Admin | Gross/refunded/net from the payment + refund ledgers (8.3) |
+| GET    | `/api/reports/occupancy/` | Manager/Admin | Live rate + windowed booked-rate proxy (8.4) |
+| GET    | `/api/reports/platform/` | Admin | Platform-wide §29 summary (8.5) |
 
 > Authorisation is enforced server-side on every request (D15, D18). `Admin`
 > above means the authenticated account's `role` must be `ADMIN`; a `403` is
@@ -838,3 +853,70 @@ ledger. Optional filters (`status`, `method`, `purpose`, `booking`, `lot`,
 **Phase 5 is complete.** The only undelivered increment is **5.7** (walk-in cash),
 deferred to a future addition (D63). See
 [`docs/phase-5-payment/`](docs/phase-5-payment/).
+
+### Reports (Phase 8) — complete (8.1–8.5)
+
+Read-only metric families under `/api/reports/`, filling PROJECT.md §29. Manager
+(assigned lots) and Administrator (all); the platform report is Administrator
+only. Every report takes a half-open `?from=&to=` period (ISO date or datetime,
+default the trailing 30 days, bucketed in `Asia/Kolkata`) and an optional `?lot=`
+to narrow *within* scope, and returns an **unpaginated computed object** (D66
+opt-out) — not the `{count, results}` envelope.
+
+```text
+GET /api/reports/bookings/?from=2026-09-01&to=2026-10-01&lot=1
+GET /api/reports/revenue/?from=2026-09-01&to=2026-10-01
+GET /api/reports/occupancy/?lot=1
+GET /api/reports/platform/?from=2026-09-01&to=2026-10-01   (Admin only)
+```
+
+**Booking statistics** (`bookings/`, D74) — `total` is the cohort **created** in
+the window; `by_status` is that cohort's current status (all seven states,
+zero-filled); `active_now` is a *now* snapshot, not windowed:
+
+```json
+{
+  "period": { "from": "…", "to": "…", "timezone": "Asia/Kolkata" },
+  "scope": { "lot": null, "lots": [1, 2] },
+  "total": 42,
+  "by_status": { "PENDING_PAYMENT": 2, "CONFIRMED": 7, "IN_PROGRESS": 3,
+                 "COMPLETED": 26, "CANCELLED": 4, "EXPIRED": 0, "TERMINATED": 0 },
+  "active_now": 3, "completed": 26, "cancelled": 4
+}
+```
+
+**Revenue** (`revenue/`, D75) reads the `Payment`/`Refund` ledgers (`SUCCEEDED`
+only) — never `Booking.base_amount`; `overstay_recorded` is **recorded, not
+collected** and is never added to revenue:
+
+```json
+{
+  "period": { "…": "…" }, "scope": { "…": "…" }, "currency": "INR",
+  "gross": "12340.00", "refunded": "340.00", "net": "12000.00",
+  "by_purpose": { "BOOKING": "11000.00", "EXTENSION": "1340.00" },
+  "payment_failures": 5, "overstay_recorded": "90.00"
+}
+```
+
+**Occupancy** (`occupancy/`, D76) reports the **live** rate and a **windowed
+booked-rate proxy** separately, because slot state has no stored history:
+
+```json
+{
+  "scope": { "…": "…" }, "period": { "…": "…" },
+  "current": { "total": 40, "available": 12, "occupied": 26,
+               "out_of_service": 2, "rate": "0.6842" },
+  "window": { "bookings": 37, "booked_hours": "312.00",
+              "bookable_hours": "586.00", "booked_rate": "0.5324" }
+}
+```
+
+The **Administrator platform report** (`platform/`, D77) composes the three above
+with the platform counts §29 names; it is Administrator-only and has no `?lot=`.
+A bad period is `400 INVALID_WINDOW`; a `?lot=` outside scope is `404
+LOT_NOT_FOUND` (never `403`). Exact field lists for every route:
+[`docs/phase-9-frontend/API-MAP.md`](docs/phase-9-frontend/API-MAP.md).
+
+**Phase 8 is complete.** Only the optional dashboard bundle (D78,
+`GET /api/reports/dashboard/`) is deferred — the frontend fans out to the metric
+families above instead. See [`docs/phase-8-reports/`](docs/phase-8-reports/).

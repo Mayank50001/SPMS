@@ -4,13 +4,15 @@ This is the **cross-cutting contract** the frontend is built against. It is the
 frontend counterpart of PROJECT.md §23 ("define the contract, then integrate").
 The **endpoint list** stays in the root [`../README.md`](../README.md#api); do
 not duplicate it here. Read this file before writing any frontend code, and read
-the root README's API section for the routes themselves.
+the root README's API section for the routes themselves. For every route **with
+its exact request/response fields**, use
+[`phase-9-frontend/API-MAP.md`](phase-9-frontend/API-MAP.md).
 
 > Rule (PROJECT.md §11/§23): the frontend talks only to the Django REST API,
 > never to PostgreSQL, and must **never invent an endpoint**. If a screen needs
 > data that has no route, emit `// TODO: Backend endpoint required` and stop.
 
-Last updated: **2026-10-13** (overstay settlement — D70).
+Last updated: **2026-10-14** (Phase 8 reports — D73–D77).
 
 ---
 
@@ -76,11 +78,11 @@ produce `CONSUMER`; privileged accounts are created by an Administrator.
 - **Paginated:** `/api/users/`, `/api/vehicles/`, `/api/parking-lots/`,
   `/api/parking-lots/{lot}/slots/`, `/api/parking-lots/{lot}/tariffs/`,
   `/api/bookings/`, `/api/payments/`.
-- **Opted out** (bare JSON array, not an envelope):
-  `/api/cities/`, `/api/parking-lots/{lot}/availability/` and
-  `/api/parking-lots/{lot}/occupancy/`.
-  For the availability grid and the occupancy board, the whole set is returned so
-  every slot can be rendered at once.
+- **Opted out** (bare JSON, not an envelope): `/api/cities/`,
+  `/api/parking-lots/{lot}/availability/`, `/api/parking-lots/{lot}/occupancy/`
+  and every `/api/reports/*` endpoint. The availability grid and the occupancy
+  board return the whole set so every slot can be rendered at once; a report is a
+  single computed object, not a browsable collection.
 
 ## 5. Error shape
 
@@ -131,12 +133,27 @@ The authoritative page list is PROJECT.md §30. As of this freeze:
   identical snapshot streams over
   `ws://…/ws/parking-lots/{lot}/occupancy/?token=<access>` — Channels + Redis, the
   approved §12 exception, one group per lot.
+- **Now available — Manager/Admin Reports (Phase 8, complete 8.1–8.5).**
+  Read-only metric-family routes under `/api/reports/`: `bookings/` (D74),
+  `revenue/` (D75) and `occupancy/` (D76) for a Manager (assigned lots) and an
+  Administrator (all), plus `platform/` (D77, **Administrator only**, no `?lot=`).
+  Each takes a half-open `?from=&to=` period (default: the trailing 30 days,
+  bucketed in `Asia/Kolkata`) and an optional `?lot=` to narrow *within* scope,
+  and returns an **unpaginated computed object** populated with **real** figures
+  (an empty scope is a real `0`, never a placeholder). Manager/Admin only; a
+  Consumer is `403`; a `?lot=` outside scope is `404 LOT_NOT_FOUND`, never `403`.
+  Exact shapes: [`phase-9-frontend/API-MAP.md`](phase-9-frontend/API-MAP.md) §10.
 - **Not yet available — stub the page, do not invent the route:**
-  - **Walk-in / cash** flows (Phase 6; the occupancy **mark** action
-    `POST /api/parking-lots/{lot}/slots/{id}/occupancy/`, 6.2, is available now;
-    walk-in deferred D63).
+  - **Walk-in / cash** flows (deferred, D63), including **manager walk-in
+    bookings** and **cash payment**. The occupancy **mark** action
+    `POST /api/parking-lots/{lot}/slots/{id}/occupancy/` (6.2) is available now.
   - **Notifications** (Phase 7; model exists, no API surface yet).
-  - **Reports / dashboards / audit logs** (Phase 8; audit deferred).
+  - **Audit logs** (deferred).
+  - **The optional dashboard bundle** `GET /api/reports/dashboard/` (D78) — not
+    built; a dashboard should fan out to the metric families above.
+  - **Public QR / gate lookup by booking `reference`** (deferred) — `reference`
+    is stored and returned on authenticated reads, but there is no public lookup
+    endpoint.
 
 ## 7. Payments (Razorpay test mode)
 

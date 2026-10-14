@@ -23,8 +23,8 @@ context — what each phase built (**PROGRESS**) and the decisions made or pendi
 | 5 | Payment | ✅ Done (5.1–5.6 + 5.8–5.9; **5.7 walk-in cash deferred** · **D63** · **D56** revised, **D57** model/states, **D58** gateway interface (revised by D60), **D59** creation surface, **D60** confirmation, **D61** refund ledger + auto-refund, **D62** extension charge, **D63** walk-in/cash deferral, **D64** per-payment receipt, **D65** transaction views) | [`phase-5-payment/`](phase-5-payment/) |
 | 6 | Occupancy simulation (**+ operator booking reads** — opens the manager/admin workflow) | ✅ Done (6.1–6.5; **D67–D72**; live board over Channels + Redis — the approved §12 exception) | [`phase-6-occupancy/`](phase-6-occupancy/) |
 | 7 | Notifications | ⏸ Deferred until after the frontend (2026-10-12) | — |
-| 8 | Reports (manager/admin dashboards) | ⏭ **Next** — pulled forward after Phase 6 (2026-10-12) | — |
-| 9 | React frontend | ⏸ Deferred until the manager/admin workflow is complete | — |
+| 8 | Reports (manager/admin dashboards) | ✅ Done (8.1–8.5; **8.6 dashboard bundle optional, deferred** · D73–D78) | [`phase-8-reports/`](phase-8-reports/) |
+| 9 | React frontend | 📋 **Opened 2026-10-14** — API map + build guide ready; implementation next | [`phase-9-frontend/`](phase-9-frontend/) |
 | 10 | Testing and hardening | ⚪ Not started | — |
 
 ---
@@ -52,9 +52,16 @@ docs/
 ├── phase-5-payment/
 │   ├── PROGRESS.md                 # scope, increment plan, next-session start
 │   └── DECISIONS.md                # D56 accepted (Razorpay test-mode gateway; revised from Stripe) + D57 (payment model/states) + D58 (gateway interface/selection; revised by D60) + D59 (creation surface) + D60 (confirmation) + D61 (refund ledger + auto-refund + REFUNDED removed) + D62 (extension charge) + D63 (walk-in/cash deferral) + D64 (per-payment receipt) + D65 (transaction views) — all Phase 5 decisions settled
-└── phase-6-occupancy/              # occupancy + operator booking reads (complete, 6.1-6.5)
-    ├── PROGRESS.md                 # scope, agreed ordering, increment plan
-    └── DECISIONS.md                # D67-D72 implemented (6.1-6.5)
+├── phase-6-occupancy/              # occupancy + operator booking reads (complete, 6.1-6.5)
+│   ├── PROGRESS.md                 # scope, agreed ordering, increment plan
+│   └── DECISIONS.md                # D67-D72 implemented (6.1-6.5)
+├── phase-8-reports/                # manager/admin reports (complete 8.1-8.5)
+│   ├── PROGRESS.md                 # scope, increment plan, close-out
+│   └── DECISIONS.md                # D73-D78 (8.6 optional, deferred)
+└── phase-9-frontend/               # NEXT — the React SPA (Phase 9)
+    ├── PROGRESS.md                 # scope, increment plan (9.1-9.5), open questions
+    ├── API-MAP.md                  # every route + field (the build reference)
+    └── FRONTEND-GUIDE.md           # stack, structure, patterns, page->endpoint map
 ```
 
 Each phase owns one `PROGRESS.md` (state) and one `DECISIONS.md` (decisions that
