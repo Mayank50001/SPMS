@@ -149,3 +149,15 @@ Full entries: [`phase-8-reports/DECISIONS.md`](phase-8-reports/DECISIONS.md)
 | D76 | Occupancy aggregation: **live** rate (reusing 6.5) plus a **windowed booked-rate proxy**, since no occupancy history is stored (D2/D33) | Accepted (2026-10-14; code in 8.4) |
 | D77 | Administrator platform report: platform-wide §29 summary composing D74–D76 figures plus user/lot/slot totals, payment failures | Accepted (2026-10-14; code in 8.5) |
 | D78 | Dashboard bundles: one role-scoped call per landing page, composing the metric families (optional) | Deferred (optional) 2026-10-14 — the frontend fans out to the metric families instead |
+
+## Phase 9 — Frontend
+Full entries: [`phase-9-frontend/DECISIONS.md`](phase-9-frontend/DECISIONS.md)
+
+| ID | Title | Status |
+|----|-------|--------|
+| D79 | Frontend architecture: React 19, react-router-dom v7, typed fetch client, zero-dependency practical CSS | Accepted |
+| D80 | Token storage: localStorage, single-flight refresh with rotation persistence | Accepted |
+| D81 | Reports and dashboard composition: client fan-out to metric families | Accepted |
+| D82 | Stubs for unavailable backend features (walk-in/cash D63, notifications, audit logs, public QR lookup) | Accepted |
+| D83 | Payment integration: Razorpay test mode + mock fallback, server-only verification | Accepted |
+
