@@ -5,6 +5,7 @@ import { apiFetch } from '../../api/client'
 import { ApiError, getFriendlyErrorMessage } from '../../api/errors'
 import type { RegisterResponse } from '../../api/types'
 import { Button } from '../../components/common/Button'
+import { Icon } from '../../components/common/Icon'
 
 export const RegisterPage: React.FC = () => {
   const [email, setEmail] = useState('')
@@ -65,21 +66,30 @@ export const RegisterPage: React.FC = () => {
   return (
     <div className="auth-wrapper">
       <div className="auth-header">
-        <h1 className="auth-title">Create Account</h1>
+        <span className="auth-logo">🅿️</span>
+        <h1 className="auth-title">Create your account</h1>
         <p className="auth-subtitle">Register as an SPMS Consumer</p>
       </div>
 
       {success && (
-        <div className="mb-4 p-3 bg-success text-center" style={{ background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0', borderRadius: '4px' }}>
-          ✓ Registration successful! Redirecting to login...
+        <div className="alert alert-success" role="status">
+          <span className="alert-icon">
+            <Icon name="check" size={18} />
+          </span>
+          <div className="alert-body">
+            <p>Registration successful — redirecting to sign in…</p>
+          </div>
         </div>
       )}
 
       {error && (
-        <div className="error-state mb-4" role="alert">
-          <div className="error-icon">⚠️</div>
-          <div className="error-content">
-            <p className="error-message">{error}</p>
+        <div className="alert alert-danger" role="alert">
+          <span className="alert-icon text-danger">
+            <Icon name="alert" size={18} />
+          </span>
+          <div className="alert-body">
+            <p className="alert-title">Registration failed</p>
+            <p>{error}</p>
           </div>
         </div>
       )}
@@ -99,9 +109,7 @@ export const RegisterPage: React.FC = () => {
             onChange={(e) => setFullName(e.target.value)}
             disabled={loading}
           />
-          {fieldErrors.full_name && (
-            <p className="form-error">{fieldErrors.full_name[0]}</p>
-          )}
+          {fieldErrors.full_name && <p className="form-error">{fieldErrors.full_name[0]}</p>}
         </div>
 
         <div className="form-group">
@@ -119,9 +127,7 @@ export const RegisterPage: React.FC = () => {
             onChange={(e) => setEmail(e.target.value)}
             disabled={loading}
           />
-          {fieldErrors.email && (
-            <p className="form-error">{fieldErrors.email[0]}</p>
-          )}
+          {fieldErrors.email && <p className="form-error">{fieldErrors.email[0]}</p>}
         </div>
 
         <div className="form-group">
@@ -137,9 +143,7 @@ export const RegisterPage: React.FC = () => {
             onChange={(e) => setPhone(e.target.value)}
             disabled={loading}
           />
-          {fieldErrors.phone && (
-            <p className="form-error">{fieldErrors.phone[0]}</p>
-          )}
+          {fieldErrors.phone && <p className="form-error">{fieldErrors.phone[0]}</p>}
         </div>
 
         <div className="form-group">
@@ -157,9 +161,7 @@ export const RegisterPage: React.FC = () => {
             onChange={(e) => setPassword(e.target.value)}
             disabled={loading}
           />
-          {fieldErrors.password && (
-            <p className="form-error">{fieldErrors.password[0]}</p>
-          )}
+          {fieldErrors.password && <p className="form-error">{fieldErrors.password[0]}</p>}
         </div>
 
         <div className="form-group">
@@ -185,10 +187,9 @@ export const RegisterPage: React.FC = () => {
         <Button
           type="submit"
           variant="primary"
-          size="md"
+          size="lg"
           loading={loading}
           className="w-100 mt-2"
-          style={{ width: '100%' }}
         >
           Create Account
         </Button>
@@ -197,10 +198,9 @@ export const RegisterPage: React.FC = () => {
       <div className="auth-footer">
         Already have an account?{' '}
         <Link to="/login" className="font-semibold text-primary">
-          Sign In
+          Sign in
         </Link>
       </div>
     </div>
   )
 }
-

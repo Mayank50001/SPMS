@@ -7,6 +7,9 @@ import { useApi } from '../../hooks/useApi'
 import type { ConsumerBooking, Vehicle } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { BookingStatusBadge } from '../../components/common/Badge'
+import { PageHeader } from '../../components/common/PageHeader'
+import { StatTile } from '../../components/common/StatTile'
+import { Icon } from '../../components/common/Icon'
 import { formatDateTime, formatMoney } from '../../lib/format'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { EmptyState } from '../../components/common/EmptyState'
@@ -42,86 +45,77 @@ export const ConsumerDashboardPage: React.FC = () => {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Welcome, {user?.full_name || 'Driver'}</h1>
-          <p className="page-subtitle">Manage your parking reservations and vehicle profiles</p>
-        </div>
-        <div className="page-actions">
-          <Link to="/consumer/search" className="btn btn-primary">
-            Find Parking
-          </Link>
-          <Link to="/consumer/vehicles" className="btn btn-secondary">
-            My Vehicles
-          </Link>
-        </div>
+      <PageHeader
+        eyebrow="Driver Dashboard"
+        title={`Welcome, ${user?.full_name || 'Driver'}`}
+        subtitle="Manage your parking reservations and vehicle profiles"
+        actions={
+          <>
+            <Link to="/consumer/search" className="btn btn-primary btn-md">
+              <Icon name="search" size={16} /> Find Parking
+            </Link>
+            <Link to="/consumer/vehicles" className="btn btn-outline btn-md">
+              <Icon name="car" size={16} /> My Vehicles
+            </Link>
+          </>
+        }
+      />
+
+      {/* KPI row */}
+      <div className="grid grid-cols-3 mb-4">
+        <StatTile
+          label="Upcoming Bookings"
+          value={upcomingBookings.length}
+          icon="calendar"
+          tone="primary"
+          meta="Active reservations"
+        />
+        <StatTile
+          label="Registered Vehicles"
+          value={vehicleData?.count ?? '—'}
+          icon="car"
+          tone="info"
+          meta="Linked license plates"
+        />
+        <StatTile
+          label="Active Session"
+          value={loadingOngoing ? '…' : activeBooking ? 'In progress' : 'None'}
+          icon="clock"
+          tone={activeBooking ? 'success' : 'default'}
+          meta={activeBooking ? `Slot ${activeBooking.slot_number}` : 'No vehicle parked right now'}
+        />
       </div>
 
-      {/* Active ongoing booking banner */}
-      {loadingOngoing ? (
-        <LoadingSpinner size="sm" />
-      ) : activeBooking ? (
-        <div
-          className="mb-4 p-4"
-          style={{
-            background: '#eff6ff',
-            border: '2px solid #3b82f6',
-            borderRadius: '8px',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            flexWrap: 'wrap',
-            gap: '1rem',
-          }}
-        >
+      {/* Active ongoing session */}
+      {activeBooking && (
+        <Card className="session-card">
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
-              <span className="badge badge-info">Active Parking Session</span>
-              <span className="font-mono" style={{ fontWeight: 600 }}>{activeBooking.reference}</span>
+            <div className="badge-row mb-1">
+              <span className="badge badge-info">Active parking session</span>
+              <span className="font-mono font-semibold">{activeBooking.reference}</span>
             </div>
-            <h3 style={{ fontSize: '1.25rem', fontWeight: 700 }}>
+            <h3 className="card-title">
               {activeBooking.lot_name} — Slot {activeBooking.slot_number}
             </h3>
-            <p className="text-muted" style={{ fontSize: '0.875rem' }}>
-              Vehicle: <strong>{activeBooking.vehicle_plate}</strong> · Entered at: {formatDateTime(activeBooking.actual_entry_at || activeBooking.start_time)} · Valid until: {formatDateTime(activeBooking.end_time)}
+            <p className="muted-sm mb-0">
+              Vehicle <strong>{activeBooking.vehicle_plate}</strong> · Entered{' '}
+              {formatDateTime(activeBooking.actual_entry_at || activeBooking.start_time)} · Valid
+              until {formatDateTime(activeBooking.end_time)}
             </p>
           </div>
-          <Link to={`/consumer/bookings/${activeBooking.id}`} className="btn btn-primary">
-            View Session Details
+          <Link to={`/consumer/bookings/${activeBooking.id}`} className="btn btn-primary btn-md">
+            View Session Details <Icon name="arrowRight" size={15} />
           </Link>
-        </div>
-      ) : null}
+        </Card>
+      )}
 
-      {/* Quick Stats Grid */}
-      <div className="grid grid-cols-3 mb-4">
-        <div className="stat-card">
-          <div className="stat-label">Upcoming Bookings</div>
-          <div className="stat-value">{upcomingBookings.length}</div>
-          <div className="stat-meta">Active reservations</div>
-        </div>
-
-        <div className="stat-card">
-          <div className="stat-label">Registered Vehicles</div>
-          <div className="stat-value">{vehicleData?.count ?? '—'}</div>
-          <div className="stat-meta">Linked license plates</div>
-        </div>
-
-        <div className="stat-card">
-          <div className="stat-label">Current Time (IST)</div>
-          <div className="stat-value" style={{ fontSize: '1.25rem', marginTop: '0.65rem' }}>
-            {new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}
-          </div>
-          <div className="stat-meta">Asia/Kolkata business zone</div>
-        </div>
-      </div>
-
-      {/* Upcoming Bookings Section */}
+      {/* Upcoming Bookings */}
       <Card
         title="Upcoming Reservations"
         subtitle="Bookings starting soon"
         action={
           <Link to="/consumer/bookings" className="btn btn-outline btn-sm">
-            View All Bookings
+            View all
           </Link>
         }
       >
@@ -135,7 +129,7 @@ export const ConsumerDashboardPage: React.FC = () => {
             message="You don't have any parking slots reserved for future dates."
             action={
               <Link to="/consumer/search" className="btn btn-primary btn-sm">
-                Reserve a Slot Now
+                Reserve a slot
               </Link>
             }
           />
@@ -148,8 +142,8 @@ export const ConsumerDashboardPage: React.FC = () => {
                   <th>Parking Lot</th>
                   <th>Slot</th>
                   <th>Vehicle</th>
-                  <th>Start Time</th>
-                  <th>End Time</th>
+                  <th>Start</th>
+                  <th>End</th>
                   <th>Amount</th>
                   <th>Status</th>
                   <th>Action</th>

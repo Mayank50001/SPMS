@@ -6,6 +6,9 @@ import { usePaginated } from '../../hooks/usePaginated'
 import type { City, ParkingLot } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
+import { Badge } from '../../components/common/Badge'
+import { PageHeader } from '../../components/common/PageHeader'
+import { Icon } from '../../components/common/Icon'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { EmptyState } from '../../components/common/EmptyState'
 import { ErrorState } from '../../components/common/ErrorState'
@@ -57,16 +60,15 @@ export const ParkingSearchPage: React.FC = () => {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Find Parking</h1>
-          <p className="page-subtitle">Search available parking facilities by city or location</p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Find Parking"
+        title="Parking facilities"
+        subtitle="Search available parking facilities by city or location"
+      />
 
       {/* Filter / Search Bar */}
       <form onSubmit={handleFilterSubmit} className="filter-bar">
-        <div style={{ flex: '1', minWidth: '180px' }}>
+        <div className="form-col">
           <select
             className="form-control"
             value={selectedCity}
@@ -82,7 +84,7 @@ export const ParkingSearchPage: React.FC = () => {
           </select>
         </div>
 
-        <div style={{ flex: '2', minWidth: '220px' }}>
+        <div className="form-col-wide">
           <input
             type="text"
             className="form-control"
@@ -93,16 +95,16 @@ export const ParkingSearchPage: React.FC = () => {
         </div>
 
         <Button type="submit" variant="primary">
-          Search
+          <Icon name="search" size={16} /> Search
         </Button>
         {(cityParam || searchParam) && (
           <Button type="button" variant="outline" onClick={handleClear}>
-            Clear Filters
+            <Icon name="close" size={16} /> Clear Filters
           </Button>
         )}
       </form>
 
-      {/* Results List */}
+      {/* Results */}
       {errorLots ? (
         <ErrorState error={errorLots} title="Failed to load parking lots" onRetry={refetchLots} />
       ) : loadingLots ? (
@@ -116,7 +118,7 @@ export const ParkingSearchPage: React.FC = () => {
               : 'There are currently no active parking lots available.'
           }
           action={
-            (cityParam || searchParam) ? (
+            cityParam || searchParam ? (
               <Button variant="secondary" onClick={handleClear}>
                 Reset Search
               </Button>
@@ -125,30 +127,38 @@ export const ParkingSearchPage: React.FC = () => {
         />
       ) : (
         <>
+          <p className="muted-sm mb-3">
+            {count} {count === 1 ? 'facility' : 'facilities'} found
+          </p>
+
           <div className="grid grid-cols-2 mb-4">
             {lots.map((lot) => (
               <Card key={lot.id} className="lot-card">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
-                  <div>
-                    <span className="badge badge-info" style={{ marginBottom: '0.25rem' }}>
-                      {lot.city.name} · {lot.code}
-                    </span>
-                    <h3 style={{ fontSize: '1.25rem', fontWeight: 600 }}>{lot.name}</h3>
-                  </div>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <h3 className="card-title">{lot.name}</h3>
+                  <Icon name="building" size={20} className="text-subtle" />
                 </div>
 
-                <p className="text-muted" style={{ fontSize: '0.875rem', marginBottom: '1rem' }}>
-                  📍 {lot.address_line}
-                  {lot.postal_code && `, ${lot.postal_code}`}
-                  {lot.state && `, ${lot.state}`}
+                <div className="badge-row mb-2">
+                  <Badge variant="info">
+                    {lot.city.name} · {lot.code}
+                  </Badge>
+                  {lot.is_active && <Badge variant="success">Active</Badge>}
+                </div>
+
+                <p className="muted-sm flex items-center gap-2 mb-0">
+                  <Icon name="mapPin" size={15} className="text-subtle" />
+                  <span>
+                    {lot.address_line}
+                    {lot.postal_code && `, ${lot.postal_code}`}
+                    {lot.state && `, ${lot.state}`}
+                  </span>
                 </p>
 
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
-                  <span className="text-muted" style={{ fontSize: '0.8125rem' }}>
-                    Active Facility
-                  </span>
+                <div className="divider-top row-between">
+                  <span className="muted-sm">Parking facility</span>
                   <Link to={`/consumer/lots/${lot.id}`} className="btn btn-primary btn-sm">
-                    Select & Book Slot →
+                    Select &amp; Book Slot <Icon name="arrowRight" size={15} />
                   </Link>
                 </div>
               </Card>
@@ -168,4 +178,3 @@ export const ParkingSearchPage: React.FC = () => {
     </div>
   )
 }
-

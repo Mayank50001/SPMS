@@ -31,6 +31,7 @@ export type IconName =
   | 'fileText'
   | 'ticket'
   | 'grid'
+  | 'arrowRight'
 
 const PATHS: Record<IconName, React.ReactNode> = {
   dashboard: (
@@ -188,6 +189,7 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <rect x="14" y="14" width="7" height="7" rx="1.5" />
     </>
   ),
+  arrowRight: <path d="M5 12h14M13 6l6 6-6 6" />,
 }
 
 export interface IconProps extends React.SVGProps<SVGSVGElement> {

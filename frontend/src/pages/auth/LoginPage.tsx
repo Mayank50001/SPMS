@@ -6,6 +6,7 @@ import { apiFetch } from '../../api/client'
 import { ApiError, getFriendlyErrorMessage } from '../../api/errors'
 import type { AuthTokens } from '../../api/types'
 import { Button } from '../../components/common/Button'
+import { Icon } from '../../components/common/Icon'
 
 export const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('')
@@ -60,15 +61,19 @@ export const LoginPage: React.FC = () => {
   return (
     <div className="auth-wrapper">
       <div className="auth-header">
-        <h1 className="auth-title">Welcome Back</h1>
-        <p className="auth-subtitle">Sign in to your SPMS account</p>
+        <span className="auth-logo">🅿️</span>
+        <h1 className="auth-title">Welcome back</h1>
+        <p className="auth-subtitle">Sign in to the Smart Parking Management System</p>
       </div>
 
       {error && (
-        <div className="error-state mb-4" role="alert">
-          <div className="error-icon">⚠️</div>
-          <div className="error-content">
-            <p className="error-message">{error}</p>
+        <div className="alert alert-danger" role="alert">
+          <span className="alert-icon text-danger">
+            <Icon name="alert" size={18} />
+          </span>
+          <div className="alert-body">
+            <p className="alert-title">Sign-in failed</p>
+            <p>{error}</p>
           </div>
         </div>
       )}
@@ -89,9 +94,7 @@ export const LoginPage: React.FC = () => {
             onChange={(e) => setEmail(e.target.value)}
             disabled={loading}
           />
-          {fieldErrors.email && (
-            <p className="form-error">{fieldErrors.email[0]}</p>
-          )}
+          {fieldErrors.email && <p className="form-error">{fieldErrors.email[0]}</p>}
         </div>
 
         <div className="form-group">
@@ -109,18 +112,15 @@ export const LoginPage: React.FC = () => {
             onChange={(e) => setPassword(e.target.value)}
             disabled={loading}
           />
-          {fieldErrors.password && (
-            <p className="form-error">{fieldErrors.password[0]}</p>
-          )}
+          {fieldErrors.password && <p className="form-error">{fieldErrors.password[0]}</p>}
         </div>
 
         <Button
           type="submit"
           variant="primary"
-          size="md"
+          size="lg"
           loading={loading}
           className="w-100 mt-2"
-          style={{ width: '100%' }}
         >
           Sign In
         </Button>
@@ -129,10 +129,9 @@ export const LoginPage: React.FC = () => {
       <div className="auth-footer">
         Don&apos;t have an account?{' '}
         <Link to="/register" className="font-semibold text-primary">
-          Register here
+          Create one
         </Link>
       </div>
     </div>
   )
 }
-

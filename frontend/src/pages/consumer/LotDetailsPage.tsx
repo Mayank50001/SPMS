@@ -6,6 +6,9 @@ import { usePaginated } from '../../hooks/usePaginated'
 import type { ParkingLot, Tariff } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
+import { Badge } from '../../components/common/Badge'
+import { PageHeader } from '../../components/common/PageHeader'
+import { Icon } from '../../components/common/Icon'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { ErrorState } from '../../components/common/ErrorState'
 import { formatMoney, toDatetimeLocalValue } from '../../lib/format'
@@ -72,7 +75,9 @@ export const LotDetailsPage: React.FC = () => {
     const startIso = start.toISOString()
     const endIso = end.toISOString()
 
-    navigate(`/consumer/lots/${id}/slots?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`)
+    navigate(
+      `/consumer/lots/${id}/slots?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`
+    )
   }
 
   if (loadingLot) return <LoadingSpinner message="Loading parking lot details..." />
@@ -82,30 +87,34 @@ export const LotDetailsPage: React.FC = () => {
 
   return (
     <div>
-      <div className="mb-2">
-        <Link to="/consumer/search" className="text-muted" style={{ fontSize: '0.875rem' }}>
-          ← Back to Search
-        </Link>
-      </div>
+      <Link to="/consumer/search" className="link-back mb-3">
+        <span aria-hidden="true">←</span> Back to search
+      </Link>
 
-      <div className="page-header">
-        <div>
-          <span className="badge badge-info mb-1">{lot.code}</span>
-          <h1 className="page-title">{lot.name}</h1>
-          <p className="page-subtitle">
-            📍 {lot.address_line}, {lot.city.name} ({lot.city.code}) {lot.postal_code}
-          </p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow={<Badge variant="info">{lot.code}</Badge>}
+        title={lot.name}
+        subtitle={
+          <span className="flex items-center gap-2">
+            <Icon name="mapPin" size={15} className="text-subtle" />
+            <span>
+              {lot.address_line}, {lot.city.name} ({lot.city.code})
+              {lot.postal_code ? ` ${lot.postal_code}` : ''}
+            </span>
+          </span>
+        }
+      />
 
       <div className="grid grid-cols-2">
         {/* Reservation Window Selection */}
-        <Card title="Select Booking Window" subtitle="Specify when you will park">
+        <Card title="Select booking window" subtitle="Choose when you will park">
           {windowError && (
-            <div className="error-state mb-4" role="alert">
-              <div className="error-icon">⚠️</div>
-              <div className="error-content">
-                <p className="error-message">{windowError}</p>
+            <div className="alert alert-danger" role="alert">
+              <span className="alert-icon text-danger">
+                <Icon name="alert" size={18} />
+              </span>
+              <div className="alert-body">
+                <p>{windowError}</p>
               </div>
             </div>
           )}
@@ -113,7 +122,7 @@ export const LotDetailsPage: React.FC = () => {
           <form onSubmit={handleProceedToSlots}>
             <div className="form-group">
               <label className="form-label" htmlFor="startTime">
-                Arrival Time (Start) <span className="required">*</span>
+                Arrival time (start) <span className="required">*</span>
               </label>
               <input
                 id="startTime"
@@ -123,12 +132,12 @@ export const LotDetailsPage: React.FC = () => {
                 value={startTime}
                 onChange={(e) => setStartTime(e.target.value)}
               />
-              <p className="form-hint">Displayed in your local browser time (saved in UTC).</p>
+              <p className="form-hint">Shown in your local browser time (stored in UTC).</p>
             </div>
 
             <div className="form-group">
               <label className="form-label" htmlFor="endTime">
-                Departure Time (End) <span className="required">*</span>
+                Departure time (end) <span className="required">*</span>
               </label>
               <input
                 id="endTime"
@@ -140,14 +149,14 @@ export const LotDetailsPage: React.FC = () => {
               />
             </div>
 
-            <Button type="submit" variant="primary" size="lg" className="w-100 mt-2" style={{ width: '100%' }}>
-              Check Available Slots →
+            <Button type="submit" variant="primary" size="lg" className="w-100 mt-2">
+              Check available slots <Icon name="arrowRight" size={16} />
             </Button>
           </form>
         </Card>
 
         {/* Pricing / Tariff Table */}
-        <Card title="Standard Tariffs" subtitle="Hourly parking rates by vehicle type">
+        <Card title="Standard tariffs" subtitle="Hourly rates by vehicle type">
           {loadingTariffs ? (
             <LoadingSpinner size="sm" message="Loading tariff rates..." />
           ) : tariffs.length === 0 ? (
@@ -165,10 +174,8 @@ export const LotDetailsPage: React.FC = () => {
                   {tariffs.map((t) => (
                     <tr key={t.id}>
                       <td>
-                        <strong>{t.slot_type_label || t.slot_type}</strong>
-                        <span className="badge badge-neutral ml-2" style={{ fontSize: '0.6875rem' }}>
-                          {t.slot_type}
-                        </span>
+                        <strong>{t.slot_type_label || t.slot_type}</strong>{' '}
+                        <Badge variant="neutral">{t.slot_type}</Badge>
                       </td>
                       <td className="font-semibold">{formatMoney(t.hourly_rate)} / hr</td>
                     </tr>
@@ -182,4 +189,3 @@ export const LotDetailsPage: React.FC = () => {
     </div>
   )
 }
-
