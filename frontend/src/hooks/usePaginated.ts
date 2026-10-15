@@ -29,8 +29,9 @@ export function usePaginated<T>(
   const { pageSize = 20, params = {}, skip = false } = options
   const [page, setPage] = useState<number>(1)
 
-  // Reset to page 1 whenever filter params change (Bug 3 fix). Done during
-  // render rather than in an effect so the stale page is never fetched first.
+  // Reset to page 1 whenever filter params change (Bug 3 fix). React's
+  // documented "adjust state during render" pattern: the stale page is never
+  // rendered/fetched, unlike an effect-based reset which fires a wasted request.
   const paramsKey = JSON.stringify(params)
   const [lastParamsKey, setLastParamsKey] = useState(paramsKey)
   if (paramsKey !== lastParamsKey) {
@@ -80,6 +81,7 @@ export function usePaginated<T>(
   }, [basePath, queryString, skip])
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- standard fetch-on-mount loader
     fetchData()
   }, [fetchData])
 
