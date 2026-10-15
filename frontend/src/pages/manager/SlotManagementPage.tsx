@@ -8,7 +8,9 @@ import { ApiError, getFriendlyErrorMessage } from '../../api/errors'
 import type { ParkingSlot, SlotType, PhysicalSlotStatus, Tariff, ParkingLot } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
-import { SlotStatusBadge } from '../../components/common/Badge'
+import { Badge, SlotStatusBadge } from '../../components/common/Badge'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { Modal } from '../../components/common/Modal'
 import { Pagination } from '../../components/common/Pagination'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
@@ -56,6 +58,7 @@ export const SlotManagementPage: React.FC = () => {
 
   // Status toggle state
   const [actionSlotId, setActionSlotId] = useState<number | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const handleOpenAdd = () => {
     setNumber('')
@@ -106,6 +109,7 @@ export const SlotManagementPage: React.FC = () => {
   const handleToggleStatus = async (slot: ParkingSlot) => {
     if (!lotId) return
     setActionSlotId(slot.id)
+    setActionError(null)
     const newStatus: PhysicalSlotStatus =
       slot.status === 'OUT_OF_SERVICE' ? 'AVAILABLE' : 'OUT_OF_SERVICE'
 
@@ -116,7 +120,11 @@ export const SlotManagementPage: React.FC = () => {
       })
       refetch()
     } catch (err) {
-      alert(getFriendlyErrorMessage(err))
+      if (err instanceof ApiError) {
+        setActionError(getFriendlyErrorMessage(err))
+      } else {
+        setActionError('Failed to update slot status.')
+      }
     } finally {
       setActionSlotId(null)
     }
@@ -124,25 +132,36 @@ export const SlotManagementPage: React.FC = () => {
 
   return (
     <div>
-      <div className="mb-2">
-        <Link to={`/manager/lots/${lotId}`} className="text-muted" style={{ fontSize: '0.875rem' }}>
-          ← Back to Facility Overview
-        </Link>
-      </div>
+      <Link to={`/manager/lots/${lotId}`} className="link-back mb-3">
+        <span aria-hidden="true">←</span> Back to facility overview
+      </Link>
 
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Slot Inventory</h1>
-          <p className="page-subtitle">
-            {lot?.name} ({lot?.code}) · Manage parking bays and operational availability
-          </p>
-        </div>
-        <div className="page-actions">
+      <PageHeader
+        eyebrow="Inventory"
+        title="Slot inventory"
+        subtitle={
+          <>
+            {lot?.name} ({lot?.code}) · {count} {count === 1 ? 'bay' : 'bays'} configured
+          </>
+        }
+        actions={
           <Button variant="primary" onClick={handleOpenAdd}>
-            + Add New Slot
+            <Icon name="plus" size={16} /> Add slot
           </Button>
+        }
+      />
+
+      {actionError && (
+        <div className="alert alert-danger" role="alert">
+          <span className="alert-icon text-danger">
+            <Icon name="alert" size={18} />
+          </span>
+          <div className="alert-body">
+            <p className="alert-title">Status update refused</p>
+            <p>{actionError}</p>
+          </div>
         </div>
-      </div>
+      )}
 
       <Card>
         {loading ? (
@@ -153,7 +172,7 @@ export const SlotManagementPage: React.FC = () => {
             message="Configure parking slots and bays to enable bookings for this facility."
             action={
               <Button variant="primary" size="sm" onClick={handleOpenAdd}>
-                Add First Slot
+                Add first slot
               </Button>
             }
           />
@@ -163,29 +182,29 @@ export const SlotManagementPage: React.FC = () => {
               <table className="table">
                 <thead>
                   <tr>
-                    <th>Slot Number</th>
+                    <th>Slot</th>
                     <th>Floor</th>
                     <th>Type</th>
-                    <th>Physical Status</th>
-                    <th>Min / Max Hours</th>
-                    <th>Status Action</th>
+                    <th>Physical status</th>
+                    <th>Duration limits</th>
+                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {slots.map((s) => (
                     <tr key={s.id}>
-                      <td className="font-mono font-semibold" style={{ fontSize: '1rem' }}>
-                        Slot {s.number}
+                      <td>
+                        <span className="font-mono font-semibold">{s.number}</span>
                       </td>
                       <td>Floor {s.floor}</td>
                       <td>
-                        <span className="badge badge-info">{s.slot_type}</span>
+                        <Badge variant="info">{s.slot_type}</Badge>
                       </td>
                       <td>
                         <SlotStatusBadge status={s.status} />
                       </td>
-                      <td>
-                        {s.min_booking_hours}h min / {s.max_booking_hours}h max
+                      <td className="text-muted" style={{ fontSize: '0.8125rem' }}>
+                        {s.min_booking_hours}h min · {s.max_booking_hours}h max
                       </td>
                       <td>
                         <Button
@@ -195,7 +214,7 @@ export const SlotManagementPage: React.FC = () => {
                           disabled={s.status === 'OCCUPIED'}
                           onClick={() => handleToggleStatus(s)}
                         >
-                          {s.status === 'OUT_OF_SERVICE' ? 'Put In Service' : 'Take Out of Service'}
+                          {s.status === 'OUT_OF_SERVICE' ? 'Put in service' : 'Take out of service'}
                         </Button>
                       </td>
                     </tr>
@@ -219,7 +238,7 @@ export const SlotManagementPage: React.FC = () => {
       {/* Add Slot Modal */}
       <Modal
         isOpen={showAddModal}
-        title="Add Parking Slot"
+        title="Add parking slot"
         onClose={() => setShowAddModal(false)}
         footer={
           <>
@@ -227,16 +246,18 @@ export const SlotManagementPage: React.FC = () => {
               Cancel
             </Button>
             <Button variant="primary" loading={saving} onClick={handleCreateSlot}>
-              Create Slot
+              Create slot
             </Button>
           </>
         }
       >
         {error && (
-          <div className="error-state mb-4" role="alert">
-            <div className="error-icon">⚠️</div>
-            <div className="error-content">
-              <p className="error-message">{error}</p>
+          <div className="alert alert-danger" role="alert">
+            <span className="alert-icon text-danger">
+              <Icon name="alert" size={18} />
+            </span>
+            <div className="alert-body">
+              <p>{error}</p>
             </div>
           </div>
         )}
@@ -245,7 +266,7 @@ export const SlotManagementPage: React.FC = () => {
           <div className="form-row">
             <div className="form-col">
               <label className="form-label">
-                Slot Identifier/Number <span className="required">*</span>
+                Slot identifier <span className="required">*</span>
               </label>
               <input
                 type="text"
@@ -260,7 +281,7 @@ export const SlotManagementPage: React.FC = () => {
 
             <div className="form-col">
               <label className="form-label">
-                Floor Level <span className="required">*</span>
+                Floor level <span className="required">*</span>
               </label>
               <input
                 type="number"
@@ -269,13 +290,14 @@ export const SlotManagementPage: React.FC = () => {
                 value={floor}
                 onChange={(e) => setFloor(e.target.value)}
               />
+              {fieldErrors.floor && <p className="form-error">{fieldErrors.floor[0]}</p>}
             </div>
           </div>
 
-          <div className="form-row mt-2">
+          <div className="form-row mt-3">
             <div className="form-col">
               <label className="form-label">
-                Slot Type <span className="required">*</span>
+                Slot type <span className="required">*</span>
               </label>
               <select
                 className="form-control"
@@ -288,25 +310,25 @@ export const SlotManagementPage: React.FC = () => {
                 <option value="TWO_WHEELER">Two-Wheeler</option>
                 <option value="EV">Electric Vehicle (EV)</option>
               </select>
-              <p className="form-hint">Must match an existing tariff configured for this facility.</p>
+              <p className="form-hint">Must match an existing tariff for this facility.</p>
             </div>
 
             <div className="form-col">
-              <label className="form-label">Initial Status</label>
+              <label className="form-label">Initial status</label>
               <select
                 className="form-control"
                 value={status}
                 onChange={(e) => setStatus(e.target.value as PhysicalSlotStatus)}
               >
                 <option value="AVAILABLE">Available</option>
-                <option value="OUT_OF_SERVICE">Out of Service</option>
+                <option value="OUT_OF_SERVICE">Out of service</option>
               </select>
             </div>
           </div>
 
-          <div className="form-row mt-2">
+          <div className="form-row mt-3">
             <div className="form-col">
-              <label className="form-label">Min Booking Hours</label>
+              <label className="form-label">Min booking hours</label>
               <input
                 type="number"
                 min={1}
@@ -317,7 +339,7 @@ export const SlotManagementPage: React.FC = () => {
             </div>
 
             <div className="form-col">
-              <label className="form-label">Max Booking Hours</label>
+              <label className="form-label">Max booking hours</label>
               <input
                 type="number"
                 min={1}
@@ -335,4 +357,3 @@ export const SlotManagementPage: React.FC = () => {
     </div>
   )
 }
-

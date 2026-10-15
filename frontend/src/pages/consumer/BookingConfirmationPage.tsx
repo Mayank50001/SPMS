@@ -7,6 +7,7 @@ import type { ConsumerBookingDetail, PaymentReceipt } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
 import { BookingStatusBadge } from '../../components/common/Badge'
+import { Icon } from '../../components/common/Icon'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { ErrorState } from '../../components/common/ErrorState'
 import { Modal } from '../../components/common/Modal'
@@ -58,96 +59,84 @@ export const BookingConfirmationPage: React.FC = () => {
   }
 
   return (
-    <div style={{ maxWidth: '680px', margin: '0 auto' }}>
-      <div className="text-center mb-4">
-        <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>🎉</div>
-        <h1 className="page-title">Booking Confirmed!</h1>
-        <p className="page-subtitle">Your parking slot is reserved and ready for your arrival</p>
+    <div className="checkout-panel">
+      <div className="success-hero">
+        <div className="success-mark">
+          <Icon name="check" size={30} />
+        </div>
+        <h1 className="page-title">Booking confirmed</h1>
+        <p className="page-subtitle">Your slot is reserved and ready for your arrival</p>
       </div>
 
       <Card>
-        {/* Pass / Reference Header */}
-        <div
-          style={{
-            background: '#f8fafc',
-            border: '2px dashed #cbd5e1',
-            borderRadius: '8px',
-            padding: '1.5rem',
-            textAlign: 'center',
-            marginBottom: '1.5rem',
-          }}
-        >
-          <span className="text-muted" style={{ fontSize: '0.8125rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Gate Pass Booking Reference
-          </span>
-          <div className="font-mono" style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--text-main)', margin: '0.35rem 0' }}>
-            {booking.reference}
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', alignItems: 'center' }}>
+        {/* Gate Pass / Reference */}
+        <div className="gate-pass">
+          <span className="gate-pass-label">Gate pass · booking reference</span>
+          <div className="gate-pass-ref">{booking.reference}</div>
+          <div className="badge-row" style={{ justifyContent: 'center' }}>
             <BookingStatusBadge status={booking.effective_status} />
-            <span className="text-muted" style={{ fontSize: '0.8125rem' }}>· Show this code at lot gate</span>
+            <span className="muted-sm">Show this code at the lot gate</span>
           </div>
         </div>
 
-        {/* Booking Details Grid */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', marginBottom: '1.5rem' }}>
-          <div className="flex justify-between">
-            <span className="text-muted">Parking Facility</span>
-            <span className="font-semibold">{booking.lot_name}</span>
+        {/* Booking details */}
+        <div className="info-list">
+          <div className="info-row">
+            <span className="info-label">Parking facility</span>
+            <span className="info-value">{booking.lot_name}</span>
           </div>
-
-          <div className="flex justify-between">
-            <span className="text-muted">Facility Address</span>
-            <span>{booking.lot_address_line}, {booking.lot_city}</span>
-          </div>
-
-          <div className="flex justify-between">
-            <span className="text-muted">Assigned Slot</span>
-            <span className="font-semibold">Slot {booking.slot_number} (Floor {booking.slot_floor})</span>
-          </div>
-
-          <div className="flex justify-between">
-            <span className="text-muted">Vehicle License Plate</span>
-            <span className="font-mono font-semibold">{booking.vehicle_plate}</span>
-          </div>
-
-          <div className="flex justify-between">
-            <span className="text-muted">Start Time</span>
-            <span>{formatDateTime(booking.start_time)}</span>
-          </div>
-
-          <div className="flex justify-between">
-            <span className="text-muted">End Time</span>
-            <span>{formatDateTime(booking.end_time)}</span>
-          </div>
-
-          <div className="flex justify-between" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
-            <span style={{ fontSize: '1.125rem', fontWeight: 600 }}>Total Paid</span>
-            <span style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--success)' }}>
-              {formatMoney(autoReceipt?.amount ?? booking.base_amount)}
+          <div className="info-row">
+            <span className="info-label">Facility address</span>
+            <span className="info-value">
+              {booking.lot_address_line}, {booking.lot_city}
             </span>
           </div>
+          <div className="info-row">
+            <span className="info-label">Assigned slot</span>
+            <span className="info-value">
+              Slot {booking.slot_number} (Floor {booking.slot_floor})
+            </span>
+          </div>
+          <div className="info-row">
+            <span className="info-label">Vehicle plate</span>
+            <span className="info-value font-mono">{booking.vehicle_plate}</span>
+          </div>
+          <div className="info-row">
+            <span className="info-label">Start time</span>
+            <span className="info-value">{formatDateTime(booking.start_time)}</span>
+          </div>
+          <div className="info-row">
+            <span className="info-label">End time</span>
+            <span className="info-value">{formatDateTime(booking.end_time)}</span>
+          </div>
         </div>
 
-        {receiptError && <p className="text-danger mb-2" style={{ fontSize: '0.875rem' }}>{receiptError}</p>}
+        <div className="amount-line">
+          <span className="amount-label">Total paid</span>
+          <span className="amount-value text-success">
+            {formatMoney(autoReceipt?.amount ?? booking.base_amount)}
+          </span>
+        </div>
 
-        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+        {receiptError && (
+          <p className="text-danger mt-2" style={{ fontSize: '0.875rem' }}>
+            {receiptError}
+          </p>
+        )}
+
+        <div className="toolbar mt-4">
           {paymentId && (
-            <Button
-              variant="outline"
-              loading={loadingReceipt}
-              onClick={handleDownloadReceipt}
-            >
-              📄 View Tax Receipt
+            <Button variant="outline" loading={loadingReceipt} onClick={handleDownloadReceipt}>
+              <Icon name="receipt" size={16} /> View tax receipt
             </Button>
           )}
 
-          <Link to={`/consumer/bookings/${booking.id}`} className="btn btn-secondary">
-            Manage Booking
+          <Link to={`/consumer/bookings/${booking.id}`} className="btn btn-secondary btn-md">
+            Manage booking
           </Link>
 
-          <Link to="/consumer" className="btn btn-primary" style={{ marginLeft: 'auto' }}>
-            Go to Dashboard →
+          <Link to="/consumer" className="btn btn-primary btn-md" style={{ marginLeft: 'auto' }}>
+            Go to dashboard <Icon name="arrowRight" size={15} />
           </Link>
         </div>
       </Card>
@@ -155,7 +144,7 @@ export const BookingConfirmationPage: React.FC = () => {
       {/* Printable Receipt Modal */}
       <Modal
         isOpen={showReceiptModal}
-        title="Payment Tax Receipt"
+        title="Payment tax receipt"
         onClose={() => setShowReceiptModal(false)}
         footer={
           <Button variant="secondary" onClick={() => setShowReceiptModal(false)}>
@@ -165,40 +154,41 @@ export const BookingConfirmationPage: React.FC = () => {
       >
         {receipt && (
           <div style={{ fontSize: '0.875rem' }}>
-            <div style={{ textAlign: 'center', marginBottom: '1.25rem', borderBottom: '1px solid #e2e8f0', paddingBottom: '0.75rem' }}>
+            <div className="receipt-head">
               <h4 style={{ fontSize: '1.125rem', fontWeight: 700 }}>SPMS Parking Receipt</h4>
               <p className="text-muted font-mono">{receipt.receipt_number}</p>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              <div className="flex justify-between">
-                <span className="text-muted">Booking Reference:</span>
-                <span className="font-mono font-semibold">{receipt.booking_reference}</span>
+            <div className="info-list">
+              <div className="info-row">
+                <span className="info-label">Booking reference</span>
+                <span className="info-value font-mono">{receipt.booking_reference}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-muted">Facility:</span>
-                <span>{receipt.lot_name}</span>
+              <div className="info-row">
+                <span className="info-label">Facility</span>
+                <span className="info-value">{receipt.lot_name}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-muted">Slot:</span>
-                <span>{receipt.slot_number}</span>
+              <div className="info-row">
+                <span className="info-label">Slot</span>
+                <span className="info-value">{receipt.slot_number}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-muted">Duration:</span>
-                <span>{receipt.billed_hours} hrs</span>
+              <div className="info-row">
+                <span className="info-label">Duration</span>
+                <span className="info-value">{receipt.billed_hours} hrs</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-muted">Payment Date:</span>
-                <span>{formatDateTime(receipt.paid_at)}</span>
+              <div className="info-row">
+                <span className="info-label">Payment date</span>
+                <span className="info-value">{formatDateTime(receipt.paid_at)}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-muted">Payment Method:</span>
-                <span>{receipt.method}</span>
+              <div className="info-row">
+                <span className="info-label">Payment method</span>
+                <span className="info-value">{receipt.method}</span>
               </div>
-              <div className="flex justify-between" style={{ borderTop: '1px solid #e2e8f0', paddingTop: '0.5rem', fontWeight: 700 }}>
-                <span>Amount Paid:</span>
-                <span>{formatMoney(receipt.amount)}</span>
-              </div>
+            </div>
+
+            <div className="amount-line">
+              <span className="amount-label">Amount paid</span>
+              <span className="amount-value text-success">{formatMoney(receipt.amount)}</span>
             </div>
           </div>
         )}
@@ -206,4 +196,3 @@ export const BookingConfirmationPage: React.FC = () => {
     </div>
   )
 }
-

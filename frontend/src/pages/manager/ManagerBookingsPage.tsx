@@ -8,6 +8,8 @@ import type { OperatorBookingRow, ParkingLot, BookingStatus } from '../../api/ty
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
 import { BookingStatusBadge } from '../../components/common/Badge'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { Pagination } from '../../components/common/Pagination'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { EmptyState } from '../../components/common/EmptyState'
@@ -98,26 +100,32 @@ export const ManagerBookingsPage: React.FC = () => {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Operations Bookings & Gate Control</h1>
-          <p className="page-subtitle">Process vehicle check-ins, departures, and monitor overstays</p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Gate operations"
+        title="Bookings & gate control"
+        subtitle="Process vehicle check-ins, departures, and monitor overstays"
+        actions={
+          <Button variant="outline" size="sm" onClick={() => refetch()}>
+            <Icon name="refresh" size={15} /> Refresh
+          </Button>
+        }
+      />
 
       {actionError && (
-        <div className="error-state mb-4" role="alert">
-          <div className="error-icon">⚠️</div>
-          <div className="error-content">
-            <h4 className="error-title">Action Refused</h4>
-            <p className="error-message">{actionError}</p>
+        <div className="alert alert-danger" role="alert">
+          <span className="alert-icon text-danger">
+            <Icon name="alert" size={18} />
+          </span>
+          <div className="alert-body">
+            <p className="alert-title">Action refused</p>
+            <p>{actionError}</p>
           </div>
         </div>
       )}
 
       {/* Filter Bar */}
       <div className="filter-bar">
-        <div style={{ minWidth: '180px' }}>
+        <div style={{ minWidth: '200px' }}>
           <select
             className="form-control"
             value={lotFilter}
@@ -126,7 +134,7 @@ export const ManagerBookingsPage: React.FC = () => {
               handleFilterChange(e.target.value, scopeFilter, statusFilter)
             }}
           >
-            <option value="">All Assigned Facilities</option>
+            <option value="">All assigned facilities</option>
             {lots.map((l) => (
               <option key={l.id} value={l.id}>
                 {l.name} ({l.code})
@@ -135,7 +143,7 @@ export const ManagerBookingsPage: React.FC = () => {
           </select>
         </div>
 
-        <div style={{ minWidth: '140px' }}>
+        <div style={{ minWidth: '160px' }}>
           <select
             className="form-control"
             value={scopeFilter}
@@ -144,14 +152,14 @@ export const ManagerBookingsPage: React.FC = () => {
               handleFilterChange(lotFilter, e.target.value, statusFilter)
             }}
           >
-            <option value="">All Time Scopes</option>
+            <option value="">All time scopes</option>
             <option value="upcoming">Upcoming</option>
-            <option value="ongoing">Ongoing (Active in Lot)</option>
+            <option value="ongoing">Ongoing (active in lot)</option>
             <option value="past">Past</option>
           </select>
         </div>
 
-        <div style={{ minWidth: '140px' }}>
+        <div style={{ minWidth: '160px' }}>
           <select
             className="form-control"
             value={statusFilter}
@@ -160,11 +168,11 @@ export const ManagerBookingsPage: React.FC = () => {
               handleFilterChange(lotFilter, scopeFilter, e.target.value)
             }}
           >
-            <option value="">All Statuses</option>
+            <option value="">All statuses</option>
             <option value="CONFIRMED">Confirmed</option>
-            <option value="IN_PROGRESS">In Progress</option>
+            <option value="IN_PROGRESS">In progress</option>
             <option value="COMPLETED">Completed</option>
-            <option value="PENDING_PAYMENT">Pending Payment</option>
+            <option value="PENDING_PAYMENT">Pending payment</option>
             <option value="CANCELLED">Cancelled</option>
             <option value="EXPIRED">Expired</option>
           </select>
@@ -181,7 +189,7 @@ export const ManagerBookingsPage: React.FC = () => {
               setSearchParams({})
             }}
           >
-            Reset Filters
+            <Icon name="close" size={15} /> Reset filters
           </Button>
         )}
       </div>
@@ -203,11 +211,11 @@ export const ManagerBookingsPage: React.FC = () => {
                     <th>Reference</th>
                     <th>Customer</th>
                     <th>Vehicle</th>
-                    <th>Facility & Slot</th>
+                    <th>Facility &amp; slot</th>
                     <th>Window</th>
                     <th>Status</th>
                     <th>Financials</th>
-                    <th>Gate Actions</th>
+                    <th>Gate actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -219,18 +227,22 @@ export const ManagerBookingsPage: React.FC = () => {
                       </td>
                       <td>
                         <div>{b.consumer_name || 'Driver'}</div>
-                        <div className="text-muted" style={{ fontSize: '0.75rem' }}>{b.consumer_email}</div>
+                        <div className="text-muted" style={{ fontSize: '0.75rem' }}>
+                          {b.consumer_email}
+                        </div>
                       </td>
                       <td>
-                        <span className="font-mono font-semibold">{b.vehicle_plate}</span>
+                        <span className="plate">{b.vehicle_plate}</span>
                       </td>
                       <td>
-                        <div><strong>Slot {b.slot_number}</strong></div>
+                        <div>
+                          <strong>Slot {b.slot_number}</strong>
+                        </div>
                         <div className="text-muted" style={{ fontSize: '0.75rem' }}>{b.lot_name}</div>
                       </td>
-                      <td>
-                        <div style={{ fontSize: '0.8125rem' }}>In: {formatDateTime(b.start_time)}</div>
-                        <div style={{ fontSize: '0.8125rem' }}>Out: {formatDateTime(b.end_time)}</div>
+                      <td style={{ fontSize: '0.8125rem' }}>
+                        <div>In: {formatDateTime(b.start_time)}</div>
+                        <div>Out: {formatDateTime(b.end_time)}</div>
                       </td>
                       <td>
                         <BookingStatusBadge status={b.effective_status as BookingStatus} />
@@ -238,13 +250,15 @@ export const ManagerBookingsPage: React.FC = () => {
                       <td>
                         <div>{formatMoney(b.base_amount)}</div>
                         {b.overstay_hours > 0 && (
-                          <div style={{ fontSize: '0.75rem', color: 'var(--danger)', fontWeight: 600 }}>
-                            Overstay: {formatMoney(b.overstay_amount)} ({b.overstay_hours}h)
+                          <div
+                            style={{ fontSize: '0.75rem', color: 'var(--danger)', fontWeight: 600 }}
+                          >
+                            Overstay {formatMoney(b.overstay_amount)} ({b.overstay_hours}h)
                           </div>
                         )}
                       </td>
                       <td>
-                        <div style={{ display: 'flex', gap: '0.35rem' }}>
+                        <div className="toolbar" style={{ gap: '0.35rem' }}>
                           {b.can_check_in && (
                             <Button
                               variant="primary"
@@ -252,7 +266,7 @@ export const ManagerBookingsPage: React.FC = () => {
                               loading={actionLoadingId === b.id}
                               onClick={() => handleCheckIn(b)}
                             >
-                              Check-In
+                              <Icon name="check" size={14} /> Check-in
                             </Button>
                           )}
                           {b.can_check_out && (
@@ -262,7 +276,7 @@ export const ManagerBookingsPage: React.FC = () => {
                               loading={actionLoadingId === b.id}
                               onClick={() => handleCheckOut(b)}
                             >
-                              Check-Out
+                              <Icon name="logout" size={14} /> Check-out
                             </Button>
                           )}
                           {!b.can_check_in && !b.can_check_out && (
@@ -292,4 +306,3 @@ export const ManagerBookingsPage: React.FC = () => {
     </div>
   )
 }
-

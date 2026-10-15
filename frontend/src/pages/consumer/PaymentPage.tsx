@@ -7,6 +7,8 @@ import { ApiError, getFriendlyErrorMessage } from '../../api/errors'
 import type { ConsumerBookingDetail, PaymentInitiationResponse, ExtensionQuote } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { ErrorState } from '../../components/common/ErrorState'
 import { formatMoney, formatDateTime } from '../../lib/format'
@@ -157,76 +159,88 @@ export const PaymentPage: React.FC = () => {
   }
 
   return (
-    <div style={{ maxWidth: '640px', margin: '0 auto' }}>
-      <div className="mb-2">
-        <Link to={`/consumer/bookings/${booking.id}`} className="text-muted" style={{ fontSize: '0.875rem' }}>
-          ← View Booking
-        </Link>
-      </div>
+    <div className="checkout-panel">
+      <Link to={`/consumer/bookings/${booking.id}`} className="link-back mb-3">
+        <span aria-hidden="true">←</span> View booking
+      </Link>
 
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">
-            {purpose === 'EXTENSION' ? 'Pay for Extension' : 'Complete Payment'}
-          </h1>
-          <p className="page-subtitle">
-            Reference: <span className="font-mono font-semibold">{booking.reference}</span>
-          </p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow={purpose === 'EXTENSION' ? 'Step 2 of 2 · Extension' : 'Step 2 of 2 · Payment'}
+        title={purpose === 'EXTENSION' ? 'Pay for your extension' : 'Complete your payment'}
+        subtitle={
+          <>
+            Booking reference{' '}
+            <span className="font-mono font-semibold">{booking.reference}</span>
+          </>
+        }
+      />
 
       {error && (
-        <div className="error-state mb-4" role="alert">
-          <div className="error-icon">⚠️</div>
-          <div className="error-content">
-            <h4 className="error-title">Payment Issue</h4>
-            <p className="error-message">{error}</p>
+        <div className="alert alert-danger" role="alert">
+          <span className="alert-icon text-danger">
+            <Icon name="alert" size={18} />
+          </span>
+          <div className="alert-body">
+            <p className="alert-title">Payment issue</p>
+            <p>{error}</p>
           </div>
         </div>
       )}
 
-      <Card title="Order Summary">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.25rem' }}>
-          <div className="flex justify-between">
-            <span className="text-muted">Parking Lot</span>
-            <span className="font-semibold">{booking.lot_name}</span>
+      <Card title="Order summary" subtitle="Confirm the details before you pay">
+        <div className="info-list">
+          <div className="info-row">
+            <span className="info-label">Parking facility</span>
+            <span className="info-value">{booking.lot_name}</span>
           </div>
-          <div className="flex justify-between">
-            <span className="text-muted">Reserved Slot</span>
-            <span className="font-semibold">Slot {booking.slot_number}</span>
+          <div className="info-row">
+            <span className="info-label">Reserved slot</span>
+            <span className="info-value">Slot {booking.slot_number}</span>
           </div>
-          <div className="flex justify-between">
-            <span className="text-muted">Vehicle</span>
-            <span>{booking.vehicle_plate}</span>
+          <div className="info-row">
+            <span className="info-label">Vehicle</span>
+            <span className="info-value font-mono">{booking.vehicle_plate}</span>
           </div>
-          <div className="flex justify-between">
-            <span className="text-muted">Window Start</span>
-            <span>{formatDateTime(booking.start_time)}</span>
+          <div className="info-row">
+            <span className="info-label">Window start</span>
+            <span className="info-value">{formatDateTime(booking.start_time)}</span>
           </div>
-          <div className="flex justify-between">
-            <span className="text-muted">Window End</span>
-            <span>{formatDateTime(purpose === 'EXTENSION' && extensionEndTime ? extensionEndTime : booking.end_time)}</span>
-          </div>
-          <div className="flex justify-between" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
-            <span style={{ fontSize: '1.125rem', fontWeight: 600 }}>Amount Due</span>
-            <span style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--primary)' }}>
-              {paymentInitiation
-                ? formatMoney(paymentInitiation.amount)
-                : purpose === 'EXTENSION'
-                ? (extensionAmountParam || extensionQuote?.extension_amount
-                    ? formatMoney(extensionAmountParam || extensionQuote!.extension_amount)
-                    : 'Calculating...')
-                : formatMoney(booking.base_amount)}
+          <div className="info-row">
+            <span className="info-label">Window end</span>
+            <span className="info-value">
+              {formatDateTime(
+                purpose === 'EXTENSION' && extensionEndTime ? extensionEndTime : booking.end_time
+              )}
             </span>
           </div>
         </div>
 
+        <div className="amount-line">
+          <span className="amount-label">Amount due</span>
+          <span className="amount-value text-primary">
+            {paymentInitiation
+              ? formatMoney(paymentInitiation.amount)
+              : purpose === 'EXTENSION'
+              ? (extensionAmountParam || extensionQuote?.extension_amount
+                  ? formatMoney(extensionAmountParam || extensionQuote!.extension_amount)
+                  : 'Calculating...')
+              : formatMoney(booking.base_amount)}
+          </span>
+        </div>
+
         {booking.hold_expires_at && (
-          <div className="mb-4 p-3" style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '4px' }}>
-            <span className="badge badge-warning" style={{ marginBottom: '0.25rem' }}>Temporary Hold</span>
-            <p style={{ fontSize: '0.8125rem', color: '#92400e' }}>
-              Your slot is reserved until <strong>{formatDateTime(booking.hold_expires_at)}</strong>. Please complete payment before this time.
-            </p>
+          <div className="alert alert-warning mt-3" role="status">
+            <span className="alert-icon">
+              <Icon name="clock" size={18} />
+            </span>
+            <div className="alert-body">
+              <p className="alert-title">Temporary hold</p>
+              <p>
+                Your slot is reserved until{' '}
+                <strong>{formatDateTime(booking.hold_expires_at)}</strong>. Complete payment before
+                this time or the slot is released.
+              </p>
+            </div>
           </div>
         )}
 
@@ -234,34 +248,33 @@ export const PaymentPage: React.FC = () => {
           <Button
             variant="primary"
             size="lg"
-            className="w-100"
-            style={{ width: '100%' }}
+            className="w-100 mt-2"
             loading={initiating}
             onClick={handleInitiatePayment}
           >
-            Initiate Secure Checkout →
+            <Icon name="shield" size={16} /> Initiate secure checkout
           </Button>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          <div className="stack-sm mt-2">
             {isMockGateway ? (
               /* Test Mode / Mock Gateway Confirmation Helper (D83: only for PAYMENT_GATEWAY=mock) */
-              <div style={{ border: '1px dashed #cbd5e1', borderRadius: '6px', padding: '1rem' }}>
-                <div style={{ fontSize: '0.8125rem', color: '#64748b', marginBottom: '0.5rem', textAlign: 'center' }}>
-                  Test Mode / Gateway Mock Simulation
-                </div>
+              <div className="mock-gateway">
+                <p className="mock-gateway-label">Test mode · gateway simulation</p>
                 <Button
                   variant="secondary"
                   size="md"
                   className="w-100"
-                  style={{ width: '100%' }}
                   loading={confirming}
                   onClick={() =>
                     handleConfirmPayment(
-                      paymentInitiation.client_payload || { mock: true, order_id: paymentInitiation.provider_order_id }
+                      paymentInitiation.client_payload || {
+                        mock: true,
+                        order_id: paymentInitiation.provider_order_id,
+                      }
                     )
                   }
                 >
-                  Complete Test Payment (Simulate Gateway Confirmation)
+                  Complete test payment
                 </Button>
               </div>
             ) : scriptLoaded && window.Razorpay ? (
@@ -269,19 +282,22 @@ export const PaymentPage: React.FC = () => {
                 variant="primary"
                 size="lg"
                 className="w-100"
-                style={{ width: '100%' }}
                 loading={confirming}
                 onClick={openRazorpayCheckout}
               >
-                Pay with Razorpay ({formatMoney(paymentInitiation.amount)})
+                <Icon name="shield" size={16} /> Pay with Razorpay (
+                {formatMoney(paymentInitiation.amount)})
               </Button>
             ) : (
-              <div className="error-state" role="alert">
-                <div className="error-icon">⚠️</div>
-                <div className="error-content">
-                  <h4 className="error-title">Payment gateway unavailable</h4>
-                  <p className="error-message">
-                    We couldn't load the secure checkout. Check your connection and refresh to try again.
+              <div className="alert alert-danger mb-0" role="alert">
+                <span className="alert-icon text-danger">
+                  <Icon name="alert" size={18} />
+                </span>
+                <div className="alert-body">
+                  <p className="alert-title">Payment gateway unavailable</p>
+                  <p>
+                    We couldn't load the secure checkout. Check your connection and refresh to try
+                    again.
                   </p>
                 </div>
               </div>
@@ -292,4 +308,3 @@ export const PaymentPage: React.FC = () => {
     </div>
   )
 }
-

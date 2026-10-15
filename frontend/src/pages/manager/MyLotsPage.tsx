@@ -4,6 +4,9 @@ import { Link } from 'react-router-dom'
 import { usePaginated } from '../../hooks/usePaginated'
 import type { ParkingLot } from '../../api/types'
 import { Card } from '../../components/common/Card'
+import { Badge } from '../../components/common/Badge'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { Pagination } from '../../components/common/Pagination'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { EmptyState } from '../../components/common/EmptyState'
@@ -21,12 +24,11 @@ export const MyLotsPage: React.FC = () => {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">My Parking Facilities</h1>
-          <p className="page-subtitle">Facilities assigned to your manager profile for operational oversight</p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Operations"
+        title="My parking facilities"
+        subtitle="Facilities assigned to your manager profile for operational oversight"
+      />
 
       <Card>
         {loading ? (
@@ -42,18 +44,18 @@ export const MyLotsPage: React.FC = () => {
               <table className="table">
                 <thead>
                   <tr>
-                    <th>Facility Code</th>
+                    <th>Facility code</th>
                     <th>Name</th>
-                    <th>Location / City</th>
+                    <th>Location</th>
                     <th>Status</th>
-                    <th>Management Actions</th>
+                    <th>Management actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {lots.map((lot) => (
                     <tr key={lot.id}>
-                      <td className="font-mono font-semibold" style={{ fontSize: '1rem' }}>
-                        {lot.code}
+                      <td>
+                        <span className="plate">{lot.code}</span>
                       </td>
                       <td>
                         <strong>{lot.name}</strong>
@@ -61,16 +63,18 @@ export const MyLotsPage: React.FC = () => {
                           {lot.address_line}
                         </div>
                       </td>
-                      <td>{lot.city.name} ({lot.city.code})</td>
                       <td>
-                        <span className={`badge ${lot.is_active ? 'badge-success' : 'badge-danger'}`}>
-                          {lot.is_active ? 'Active' : 'Inactive'}
-                        </span>
+                        {lot.city.name} ({lot.city.code})
                       </td>
                       <td>
-                        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                        <Badge variant={lot.is_active ? 'success' : 'danger'}>
+                          {lot.is_active ? 'Active' : 'Inactive'}
+                        </Badge>
+                      </td>
+                      <td>
+                        <div className="toolbar">
                           <Link to={`/manager/lots/${lot.id}/occupancy`} className="btn btn-primary btn-sm">
-                            Live Occupancy
+                            <Icon name="layers" size={14} /> Occupancy
                           </Link>
                           <Link to={`/manager/lots/${lot.id}/slots`} className="btn btn-outline btn-sm">
                             Slots
@@ -79,7 +83,7 @@ export const MyLotsPage: React.FC = () => {
                             Tariffs
                           </Link>
                           <Link to={`/manager/lots/${lot.id}`} className="btn btn-secondary btn-sm">
-                            Facility Info
+                            Facility info
                           </Link>
                         </div>
                       </td>
@@ -103,4 +107,3 @@ export const MyLotsPage: React.FC = () => {
     </div>
   )
 }
-

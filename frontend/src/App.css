@@ -1257,3 +1257,309 @@ a { color: var(--primary); }
   text-decoration: none;
 }
 .link-back:hover { color: var(--primary); }
+
+/* ============================================================================
+   Batch 2 addendum
+   ========================================================================== */
+
+/* Column span for split grids (slot picker) */
+.grid-span-2 { grid-column: span 2; }
+@media (max-width: 600px) {
+  .grid-span-2 { grid-column: auto; }
+}
+
+/* Slot picker — selected marker */
+.slot-tile { position: relative; }
+
+.slot-check {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  display: grid;
+  place-items: center;
+}
+
+/* Small highlighted box (selected slot preview) */
+.summary-box {
+  padding: 0.8rem 0.9rem;
+  background: var(--primary-light);
+  border: 1px solid var(--primary-soft);
+  border-radius: var(--radius-md);
+}
+
+.summary-box-label {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.summary-box-value {
+  font-size: 1.25rem;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  color: var(--text-main);
+  margin: 0.1rem 0;
+}
+
+/* Centered checkout column */
+.checkout-panel {
+  max-width: 680px;
+  margin: 0 auto;
+}
+
+/* Totals row */
+.amount-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-top: 1px solid var(--border-color);
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+}
+
+.amount-label {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.amount-value {
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/* Test-mode gateway panel */
+.mock-gateway {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  background: var(--bg-subtle);
+}
+
+.mock-gateway-label {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  text-align: center;
+  margin-bottom: 0.5rem;
+}
+
+/* Gate pass / ticket reference */
+.gate-pass {
+  text-align: center;
+  background: var(--bg-subtle);
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.gate-pass-label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.gate-pass-ref {
+  font-family: var(--font-mono);
+  font-size: 1.9rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--text-main);
+  margin: 0.35rem 0;
+  word-break: break-all;
+}
+
+/* Success hero (booking confirmed) */
+.success-hero {
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+.success-mark {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--success-bg);
+  border: 1px solid var(--success-border);
+  color: var(--success);
+  display: grid;
+  place-items: center;
+  margin: 0 auto 0.85rem;
+}
+
+/* Receipt modal header */
+.receipt-head {
+  text-align: center;
+  margin-bottom: 1.25rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+/* Extension quote box */
+.quote-box {
+  background: var(--info-bg);
+  border: 1px solid var(--info-border);
+  border-radius: var(--radius-md);
+  padding: 0.85rem;
+  margin-top: 1rem;
+}
+
+.quote-title {
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: #0369a1;
+  margin-bottom: 0.5rem;
+}
+
+/* ============================================================================
+   Batch 3 addendum
+   ========================================================================== */
+
+/* License-plate / facility-code chip */
+.plate {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.9375rem;
+  letter-spacing: 0.08em;
+  padding: 0.2rem 0.55rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-strong);
+  color: var(--text-main);
+}
+
+/* Profile avatar (initials) */
+.profile-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 1.2rem;
+  box-shadow: 0 8px 18px -8px rgba(37, 99, 235, 0.75);
+}
+
+/* Dashboard feature cards (icon header) */
+.feature-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 0.8rem;
+  background: var(--primary-light);
+  color: var(--primary);
+}
+
+.feature-icon.success { background: var(--success-bg); color: var(--success); }
+.feature-icon.info    { background: var(--info-bg);    color: var(--info); }
+
+/* Stacked occupancy bar */
+.occ-bar {
+  display: flex;
+  height: 10px;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-color);
+}
+
+.occ-seg { height: 100%; }
+.occ-seg-available { background: var(--success); }
+.occ-seg-occupied  { background: var(--warning); }
+.occ-seg-oos       { background: var(--danger); }
+
+.legend {
+  display: flex;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  margin-top: 0.85rem;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.legend-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  flex: 0 0 auto;
+}
+
+/* ============================================================================
+   Batch 4 addendum
+   ========================================================================== */
+
+/* Section heading between report blocks */
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin: 0 0 1rem;
+}
+
+/* Compact metric box (reports) */
+.mini-stat {
+  padding: 0.9rem 1rem;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.mini-stat-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.mini-stat-value {
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0.2rem 0 0.35rem;
+}
+
+/* Check-mark list (stub pages) */
+.check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.check-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.check-list-item .icon {
+  color: var(--success);
+  margin-top: 2px;
+}

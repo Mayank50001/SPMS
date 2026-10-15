@@ -7,6 +7,8 @@ import type { Vehicle, VehicleCreatePayload } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
 import { Modal } from '../../components/common/Modal'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { Pagination } from '../../components/common/Pagination'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { EmptyState } from '../../components/common/EmptyState'
@@ -41,6 +43,7 @@ export const VehiclesPage: React.FC = () => {
   // Delete state
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const handleOpenAdd = () => {
     setStateCode('KA')
@@ -92,12 +95,13 @@ export const VehiclesPage: React.FC = () => {
 
   const handleDeleteVehicle = async (id: number) => {
     setDeleting(true)
+    setDeleteError(null)
     try {
       await apiFetch(`/vehicles/${id}/`, { method: 'DELETE' })
       setDeletingId(null)
       refetch()
     } catch (err) {
-      alert(getFriendlyErrorMessage(err))
+      setDeleteError(getFriendlyErrorMessage(err))
     } finally {
       setDeleting(false)
     }
@@ -105,17 +109,16 @@ export const VehiclesPage: React.FC = () => {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Registered Vehicles</h1>
-          <p className="page-subtitle">Manage license plates associated with your account</p>
-        </div>
-        <div className="page-actions">
+      <PageHeader
+        eyebrow="My garage"
+        title="Registered vehicles"
+        subtitle="Manage the license plates linked to your account"
+        actions={
           <Button variant="primary" onClick={handleOpenAdd}>
-            + Register New Vehicle
+            <Icon name="plus" size={16} /> Register vehicle
           </Button>
-        </div>
-      </div>
+        }
+      />
 
       <Card>
         {loading ? (
@@ -123,10 +126,10 @@ export const VehiclesPage: React.FC = () => {
         ) : vehicles.length === 0 ? (
           <EmptyState
             title="No vehicles registered"
-            message="You must add at least one vehicle to make parking reservations."
+            message="You need at least one vehicle before you can make a parking reservation."
             action={
               <Button variant="primary" size="sm" onClick={handleOpenAdd}>
-                Register Your Vehicle
+                Register your vehicle
               </Button>
             }
           />
@@ -136,22 +139,22 @@ export const VehiclesPage: React.FC = () => {
               <table className="table">
                 <thead>
                   <tr>
-                    <th>License Plate</th>
-                    <th>Make & Model</th>
+                    <th>License plate</th>
+                    <th>Make &amp; model</th>
                     <th>Color</th>
-                    <th>Added On</th>
+                    <th>Added on</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {vehicles.map((v) => (
                     <tr key={v.id}>
-                      <td className="font-mono font-semibold" style={{ fontSize: '1rem' }}>
-                        {v.registration_number}
+                      <td>
+                        <span className="plate">{v.registration_number}</span>
                       </td>
                       <td>
                         {v.make || v.model ? (
-                          <span>{v.make} {v.model}</span>
+                          <span>{[v.make, v.model].filter(Boolean).join(' ')}</span>
                         ) : (
                           <span className="text-muted">—</span>
                         )}
@@ -162,7 +165,10 @@ export const VehiclesPage: React.FC = () => {
                         <Button
                           variant="danger"
                           size="sm"
-                          onClick={() => setDeletingId(v.id)}
+                          onClick={() => {
+                            setDeleteError(null)
+                            setDeletingId(v.id)
+                          }}
                         >
                           Delete
                         </Button>
@@ -188,7 +194,7 @@ export const VehiclesPage: React.FC = () => {
       {/* Add Vehicle Modal */}
       <Modal
         isOpen={showAddModal}
-        title="Register Vehicle"
+        title="Register vehicle"
         onClose={() => setShowAddModal(false)}
         footer={
           <>
@@ -196,23 +202,25 @@ export const VehiclesPage: React.FC = () => {
               Cancel
             </Button>
             <Button variant="primary" loading={saving} onClick={handleCreateVehicle}>
-              Save Vehicle
+              Save vehicle
             </Button>
           </>
         }
       >
         {error && (
-          <div className="error-state mb-4" role="alert">
-            <div className="error-icon">⚠️</div>
-            <div className="error-content">
-              <p className="error-message">{error}</p>
+          <div className="alert alert-danger" role="alert">
+            <span className="alert-icon text-danger">
+              <Icon name="alert" size={18} />
+            </span>
+            <div className="alert-body">
+              <p>{error}</p>
             </div>
           </div>
         )}
 
         <form onSubmit={handleCreateVehicle}>
-          <p className="text-muted" style={{ fontSize: '0.8125rem', marginBottom: '0.75rem' }}>
-            Provide India registration segments (e.g. KA-01-AB-1234)
+          <p className="form-hint mb-3">
+            Enter the India registration segments (example: KA-01-AB-1234).
           </p>
 
           <div className="form-row">
@@ -227,6 +235,7 @@ export const VehiclesPage: React.FC = () => {
                 value={stateCode}
                 onChange={(e) => setStateCode(e.target.value.toUpperCase())}
               />
+              {fieldErrors.state_code && <p className="form-error">{fieldErrors.state_code[0]}</p>}
             </div>
 
             <div className="form-col" style={{ maxWidth: '90px' }}>
@@ -240,6 +249,7 @@ export const VehiclesPage: React.FC = () => {
                 value={rtoCode}
                 onChange={(e) => setRtoCode(e.target.value)}
               />
+              {fieldErrors.rto_code && <p className="form-error">{fieldErrors.rto_code[0]}</p>}
             </div>
 
             <div className="form-col" style={{ maxWidth: '110px' }}>
@@ -253,6 +263,7 @@ export const VehiclesPage: React.FC = () => {
                 value={series}
                 onChange={(e) => setSeries(e.target.value.toUpperCase())}
               />
+              {fieldErrors.series && <p className="form-error">{fieldErrors.series[0]}</p>}
             </div>
 
             <div className="form-col">
@@ -266,10 +277,13 @@ export const VehiclesPage: React.FC = () => {
                 value={uniqueNumber}
                 onChange={(e) => setUniqueNumber(e.target.value)}
               />
+              {fieldErrors.unique_number && (
+                <p className="form-error">{fieldErrors.unique_number[0]}</p>
+              )}
             </div>
           </div>
 
-          <div className="form-row mt-2">
+          <div className="form-row mt-3">
             <div className="form-col">
               <label className="form-label">Make (optional)</label>
               <input
@@ -309,7 +323,7 @@ export const VehiclesPage: React.FC = () => {
       {/* Delete Confirmation Modal */}
       <Modal
         isOpen={deletingId !== null}
-        title="Remove Vehicle"
+        title="Remove vehicle"
         onClose={() => setDeletingId(null)}
         footer={
           <>
@@ -321,14 +335,14 @@ export const VehiclesPage: React.FC = () => {
               loading={deleting}
               onClick={() => deletingId && handleDeleteVehicle(deletingId)}
             >
-              Confirm Removal
+              Confirm removal
             </Button>
           </>
         }
       >
         <p>Are you sure you want to remove this vehicle from your account?</p>
+        {deleteError && <p className="text-danger mt-2">{deleteError}</p>}
       </Modal>
     </div>
   )
 }
-

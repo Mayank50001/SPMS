@@ -7,7 +7,9 @@ import { ApiError, getFriendlyErrorMessage } from '../../api/errors'
 import type { OperatorPaymentRow, ParkingLot, RefundRow, PaymentStatus } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
-import { PaymentStatusBadge } from '../../components/common/Badge'
+import { Badge, PaymentStatusBadge } from '../../components/common/Badge'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { Modal } from '../../components/common/Modal'
 import { Pagination } from '../../components/common/Pagination'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
@@ -25,7 +27,7 @@ export const TransactionsPage: React.FC = () => {
   const [purposeFilter, setPurposeFilter] = useState(purposeParam)
   const [lotFilter, setLotFilter] = useState(lotParam)
 
-  // Assigned / all facilities for filter
+  // Facilities for filter
   const { results: lots } = usePaginated<ParkingLot>('/parking-lots/', { pageSize: 100 })
 
   // Payments transactions list
@@ -92,47 +94,46 @@ export const TransactionsPage: React.FC = () => {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Financial Transactions & Ledger</h1>
-          <p className="page-subtitle">Platform-wide payment logs, methods, and refund processing</p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Finance"
+        title="Transactions &amp; ledger"
+        subtitle="Platform-wide payment logs, methods and refund processing"
+      />
 
       {/* Filter Bar */}
       <form onSubmit={handleFilterSubmit} className="filter-bar">
-        <div style={{ minWidth: '150px' }}>
+        <div style={{ minWidth: '160px' }}>
           <select
             className="form-control"
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
           >
-            <option value="">All Payment Statuses</option>
+            <option value="">All payment statuses</option>
             <option value="SUCCEEDED">Succeeded</option>
             <option value="PENDING">Pending</option>
             <option value="FAILED">Failed</option>
           </select>
         </div>
 
-        <div style={{ minWidth: '150px' }}>
+        <div style={{ minWidth: '160px' }}>
           <select
             className="form-control"
             value={purposeFilter}
             onChange={(e) => setPurposeFilter(e.target.value)}
           >
-            <option value="">All Purposes</option>
-            <option value="BOOKING">Booking Charge</option>
-            <option value="EXTENSION">Window Extension</option>
+            <option value="">All purposes</option>
+            <option value="BOOKING">Booking charge</option>
+            <option value="EXTENSION">Window extension</option>
           </select>
         </div>
 
-        <div style={{ minWidth: '180px' }}>
+        <div style={{ minWidth: '200px' }}>
           <select
             className="form-control"
             value={lotFilter}
             onChange={(e) => setLotFilter(e.target.value)}
           >
-            <option value="">All Facilities</option>
+            <option value="">All facilities</option>
             {lots.map((l) => (
               <option key={l.id} value={l.id}>
                 {l.name} ({l.code})
@@ -142,7 +143,7 @@ export const TransactionsPage: React.FC = () => {
         </div>
 
         <Button type="submit" variant="primary">
-          Filter Ledger
+          <Icon name="search" size={16} /> Filter ledger
         </Button>
 
         {(statusParam || purposeParam || lotParam) && (
@@ -156,7 +157,7 @@ export const TransactionsPage: React.FC = () => {
               setSearchParams({})
             }}
           >
-            Clear
+            <Icon name="close" size={16} /> Clear
           </Button>
         )}
       </form>
@@ -176,10 +177,10 @@ export const TransactionsPage: React.FC = () => {
                 <thead>
                   <tr>
                     <th>Tx ID</th>
-                    <th>Booking Pass</th>
+                    <th>Booking pass</th>
                     <th>Customer</th>
-                    <th>Facility & Slot</th>
-                    <th>Purpose / Method</th>
+                    <th>Facility &amp; slot</th>
+                    <th>Purpose / method</th>
                     <th>Amount</th>
                     <th>Refunded</th>
                     <th>Status</th>
@@ -194,15 +195,21 @@ export const TransactionsPage: React.FC = () => {
                       <td className="font-mono font-semibold">{tx.booking_reference}</td>
                       <td>
                         <div style={{ fontSize: '0.8125rem' }}>{tx.consumer_email}</div>
-                        <div className="font-mono text-muted" style={{ fontSize: '0.75rem' }}>{tx.vehicle_plate}</div>
+                        <div className="font-mono text-muted" style={{ fontSize: '0.75rem' }}>
+                          {tx.vehicle_plate}
+                        </div>
                       </td>
                       <td>
                         <div>{tx.lot_name}</div>
-                        <div className="text-muted" style={{ fontSize: '0.75rem' }}>Slot {tx.slot_number}</div>
+                        <div className="text-muted" style={{ fontSize: '0.75rem' }}>
+                          Slot {tx.slot_number}
+                        </div>
                       </td>
                       <td>
-                        <span className="badge badge-info">{tx.purpose}</span>
-                        <div className="text-muted" style={{ fontSize: '0.75rem', marginTop: '0.2rem' }}>{tx.method}</div>
+                        <Badge variant="info">{tx.purpose}</Badge>
+                        <div className="text-muted" style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
+                          {tx.method}
+                        </div>
                       </td>
                       <td className="font-semibold" style={{ fontSize: '1rem' }}>
                         {formatMoney(tx.amount)}
@@ -224,11 +231,7 @@ export const TransactionsPage: React.FC = () => {
                       </td>
                       <td>
                         {tx.status === 'SUCCEEDED' && Number(tx.refunded_amount) < Number(tx.amount) ? (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleOpenRefund(tx)}
-                          >
+                          <Button variant="outline" size="sm" onClick={() => handleOpenRefund(tx)}>
                             Refund
                           </Button>
                         ) : (
@@ -258,16 +261,16 @@ export const TransactionsPage: React.FC = () => {
       {/* Process Refund Modal */}
       <Modal
         isOpen={refundingPayment !== null}
-        title={`Process Ledger Refund: Tx #${refundingPayment?.id}`}
+        title={`Process ledger refund: Tx #${refundingPayment?.id}`}
         onClose={() => setRefundingPayment(null)}
         footer={
           <>
             <Button variant="secondary" onClick={() => setRefundingPayment(null)}>
-              Cancel
+              {refundSuccess ? 'Close' : 'Cancel'}
             </Button>
             {!refundSuccess && (
               <Button variant="danger" loading={refunding} onClick={handleExecuteRefund}>
-                Confirm Full Refund
+                Confirm full refund
               </Button>
             )}
           </>
@@ -276,11 +279,17 @@ export const TransactionsPage: React.FC = () => {
         {refundingPayment && (
           <div>
             {refundSuccess ? (
-              <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', padding: '1rem', borderRadius: '6px', color: '#16a34a' }}>
-                <h4 style={{ fontWeight: 600, marginBottom: '0.25rem' }}>✓ Refund Issued Successfully</h4>
-                <p style={{ fontSize: '0.8125rem' }}>
-                  Refund ledger event #{refundSuccess.id} created for amount {formatMoney(refundSuccess.amount)}. Status: {refundSuccess.status}.
-                </p>
+              <div className="alert alert-success mb-0" role="status">
+                <span className="alert-icon text-success">
+                  <Icon name="check" size={18} />
+                </span>
+                <div className="alert-body">
+                  <p className="alert-title">Refund issued successfully</p>
+                  <p>
+                    Refund ledger event #{refundSuccess.id} created for amount{' '}
+                    {formatMoney(refundSuccess.amount)}. Status: {refundSuccess.status}.
+                  </p>
+                </div>
               </div>
             ) : (
               <div>
@@ -288,30 +297,35 @@ export const TransactionsPage: React.FC = () => {
                   Are you sure you want to issue a refund for this captured transaction?
                 </p>
 
-                <div style={{ background: '#f8fafc', padding: '0.75rem', borderRadius: '4px', border: '1px solid #e2e8f0', marginBottom: '1rem' }}>
-                  <div className="flex justify-between" style={{ fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
-                    <span>Customer:</span>
-                    <span>{refundingPayment.consumer_email}</span>
+                <div className="info-list">
+                  <div className="info-row">
+                    <span className="info-label">Customer</span>
+                    <span className="info-value">{refundingPayment.consumer_email}</span>
                   </div>
-                  <div className="flex justify-between" style={{ fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
-                    <span>Booking Reference:</span>
-                    <span className="font-mono">{refundingPayment.booking_reference}</span>
+                  <div className="info-row">
+                    <span className="info-label">Booking reference</span>
+                    <span className="info-value font-mono">{refundingPayment.booking_reference}</span>
                   </div>
-                  <div className="flex justify-between" style={{ fontSize: '0.8125rem', fontWeight: 600 }}>
-                    <span>Refund Amount:</span>
-                    <span style={{ color: 'var(--danger)' }}>{formatMoney(refundingPayment.amount)}</span>
+                  <div className="info-row">
+                    <span className="info-label">Refund amount</span>
+                    <span className="info-value text-danger">
+                      {formatMoney(refundingPayment.amount)}
+                    </span>
                   </div>
                 </div>
 
-                <p className="text-muted" style={{ fontSize: '0.8125rem' }}>
-                  Per Decision D61: Refunds are executed as ledger event rows (`Refund`), never mutating the original captured Payment entry.
+                <p className="muted-sm mt-3 mb-0">
+                  Per Decision D61: refunds are executed as ledger event rows (Refund), never
+                  mutating the original captured Payment entry.
                 </p>
 
                 {refundError && (
-                  <div className="error-state mt-3" role="alert">
-                    <div className="error-icon">⚠️</div>
-                    <div className="error-content">
-                      <p className="error-message">{refundError}</p>
+                  <div className="alert alert-danger mt-3 mb-0" role="alert">
+                    <span className="alert-icon text-danger">
+                      <Icon name="alert" size={18} />
+                    </span>
+                    <div className="alert-body">
+                      <p>{refundError}</p>
                     </div>
                   </div>
                 )}
@@ -323,4 +337,3 @@ export const TransactionsPage: React.FC = () => {
     </div>
   )
 }
-

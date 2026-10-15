@@ -5,6 +5,10 @@ import { useApi } from '../../hooks/useApi'
 import type { PlatformReport } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
+import { Badge } from '../../components/common/Badge'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
+import { StatTile } from '../../components/common/StatTile'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { ErrorState } from '../../components/common/ErrorState'
 import { formatMoney } from '../../lib/format'
@@ -49,12 +53,11 @@ export const AdminReportsPage: React.FC = () => {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Platform Intelligence & Reports</h1>
-          <p className="page-subtitle">Platform-wide aggregation covering user cohorts, slot statuses, and revenue</p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Analytics"
+        title="Platform intelligence"
+        subtitle="Platform-wide aggregation covering user cohorts, slot statuses and revenue"
+      />
 
       <form onSubmit={handleApplyFilter} className="filter-bar">
         <div>
@@ -76,12 +79,12 @@ export const AdminReportsPage: React.FC = () => {
         </div>
 
         <Button type="submit" variant="primary">
-          Filter Platform Window
+          <Icon name="chart" size={16} /> Filter platform window
         </Button>
 
         {(fromParam || toParam) && (
           <Button type="button" variant="outline" onClick={handleReset}>
-            Reset (Trailing 30d)
+            <Icon name="close" size={16} /> Reset (trailing 30d)
           </Button>
         )}
       </form>
@@ -93,37 +96,38 @@ export const AdminReportsPage: React.FC = () => {
       ) : report ? (
         <>
           <div className="grid grid-cols-4 mb-4">
-            <div className="stat-card">
-              <div className="stat-label">Active Users</div>
-              <div className="stat-value">{report.users.active}</div>
-              <div className="stat-meta">{report.users.total} registered accounts</div>
-            </div>
-
-            <div className="stat-card">
-              <div className="stat-label">Operational Facilities</div>
-              <div className="stat-value">{report.lots.active}</div>
-              <div className="stat-meta">{report.lots.total} registered facilities</div>
-            </div>
-
-            <div className="stat-card" style={{ borderColor: 'var(--success-border)' }}>
-              <div className="stat-label" style={{ color: 'var(--success)' }}>Net Revenue</div>
-              <div className="stat-value" style={{ color: 'var(--success)' }}>
-                {formatMoney(report.revenue.net)}
-              </div>
-              <div className="stat-meta">Refunded: {formatMoney(report.revenue.refunded)}</div>
-            </div>
-
-            <div className="stat-card">
-              <div className="stat-label">Platform Occupancy</div>
-              <div className="stat-value" style={{ color: 'var(--primary)' }}>
-                {((report.occupancy_rate || 0) * 100).toFixed(1)}%
-              </div>
-              <div className="stat-meta">Aggregate live bay utilization</div>
-            </div>
+            <StatTile
+              label="Active users"
+              value={report.users.active}
+              icon="users"
+              tone="primary"
+              meta={`${report.users.total} registered accounts`}
+            />
+            <StatTile
+              label="Operational facilities"
+              value={report.lots.active}
+              icon="building"
+              tone="info"
+              meta={`${report.lots.total} registered facilities`}
+            />
+            <StatTile
+              label="Net revenue"
+              value={formatMoney(report.revenue.net)}
+              icon="wallet"
+              tone="success"
+              meta={`Refunded: ${formatMoney(report.revenue.refunded)}`}
+            />
+            <StatTile
+              label="Platform occupancy"
+              value={`${((report.occupancy_rate || 0) * 100).toFixed(1)}%`}
+              icon="grid"
+              tone="warning"
+              meta="Aggregate live bay utilization"
+            />
           </div>
 
           <div className="grid grid-cols-2 mb-4">
-            <Card title="User Cohort Composition">
+            <Card title="User cohort composition" subtitle="Accounts by role">
               <div className="table-wrapper">
                 <table className="table">
                   <thead>
@@ -134,15 +138,15 @@ export const AdminReportsPage: React.FC = () => {
                   </thead>
                   <tbody>
                     <tr>
-                      <td>Consumer Drivers</td>
+                      <td>Consumer drivers</td>
                       <td className="text-right font-semibold">{report.users.by_role.CONSUMER}</td>
                     </tr>
                     <tr>
-                      <td>Facility Managers</td>
+                      <td>Facility managers</td>
                       <td className="text-right font-semibold">{report.users.by_role.MANAGER}</td>
                     </tr>
                     <tr>
-                      <td>System Administrators</td>
+                      <td>System administrators</td>
                       <td className="text-right font-semibold">{report.users.by_role.ADMIN}</td>
                     </tr>
                   </tbody>
@@ -150,27 +154,35 @@ export const AdminReportsPage: React.FC = () => {
               </div>
             </Card>
 
-            <Card title="Parking Bays Inventory Status">
+            <Card title="Parking bays inventory" subtitle="Bays by physical status">
               <div className="table-wrapper">
                 <table className="table">
                   <thead>
                     <tr>
-                      <th>Status Category</th>
+                      <th>Status category</th>
                       <th className="text-right">Bays</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr>
-                      <td><span className="badge badge-success">Available</span></td>
+                      <td>
+                        <Badge variant="success">Available</Badge>
+                      </td>
                       <td className="text-right font-semibold">{report.slots.by_status.AVAILABLE}</td>
                     </tr>
                     <tr>
-                      <td><span className="badge badge-warning">Physically Occupied</span></td>
+                      <td>
+                        <Badge variant="warning">Physically occupied</Badge>
+                      </td>
                       <td className="text-right font-semibold">{report.slots.by_status.OCCUPIED}</td>
                     </tr>
                     <tr>
-                      <td><span className="badge badge-danger">Out of Service</span></td>
-                      <td className="text-right font-semibold">{report.slots.by_status.OUT_OF_SERVICE}</td>
+                      <td>
+                        <Badge variant="danger">Out of service</Badge>
+                      </td>
+                      <td className="text-right font-semibold">
+                        {report.slots.by_status.OUT_OF_SERVICE}
+                      </td>
                     </tr>
                   </tbody>
                 </table>
@@ -182,4 +194,3 @@ export const AdminReportsPage: React.FC = () => {
     </div>
   )
 }
-

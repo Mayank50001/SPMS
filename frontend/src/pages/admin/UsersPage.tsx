@@ -7,7 +7,9 @@ import { ApiError, getFriendlyErrorMessage } from '../../api/errors'
 import type { User, UserRole } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
-import { RoleBadge } from '../../components/common/Badge'
+import { Badge, RoleBadge } from '../../components/common/Badge'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { Modal } from '../../components/common/Modal'
 import { Pagination } from '../../components/common/Pagination'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
@@ -148,17 +150,16 @@ export const UsersPage: React.FC = () => {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">User Accounts</h1>
-          <p className="page-subtitle">Manage consumer, manager, and administrator identities</p>
-        </div>
-        <div className="page-actions">
+      <PageHeader
+        eyebrow="Governance"
+        title="User accounts"
+        subtitle="Manage consumer, manager and administrator identities"
+        actions={
           <Button variant="primary" onClick={handleOpenAdd}>
-            + Provision Privileged User
+            <Icon name="plus" size={16} /> Provision privileged user
           </Button>
-        </div>
-      </div>
+        }
+      />
 
       {/* Filter Bar */}
       <form onSubmit={handleFilterSubmit} className="filter-bar">
@@ -168,22 +169,22 @@ export const UsersPage: React.FC = () => {
             value={roleFilter}
             onChange={(e) => setRoleFilter(e.target.value)}
           >
-            <option value="">All Roles</option>
+            <option value="">All roles</option>
             <option value="CONSUMER">Consumer</option>
             <option value="MANAGER">Manager</option>
             <option value="ADMIN">Administrator</option>
           </select>
         </div>
 
-        <div style={{ minWidth: '140px' }}>
+        <div style={{ minWidth: '150px' }}>
           <select
             className="form-control"
             value={activeFilter}
             onChange={(e) => setActiveFilter(e.target.value)}
           >
-            <option value="">All Statuses</option>
-            <option value="true">Active Only</option>
-            <option value="false">Suspended Only</option>
+            <option value="">All statuses</option>
+            <option value="true">Active only</option>
+            <option value="false">Suspended only</option>
           </select>
         </div>
 
@@ -198,7 +199,7 @@ export const UsersPage: React.FC = () => {
         </div>
 
         <Button type="submit" variant="primary">
-          Filter
+          <Icon name="search" size={16} /> Filter
         </Button>
 
         {(roleParam || activeParam || searchParam) && (
@@ -212,7 +213,7 @@ export const UsersPage: React.FC = () => {
               setSearchParams({})
             }}
           >
-            Clear
+            <Icon name="close" size={16} /> Clear
           </Button>
         )}
       </form>
@@ -248,14 +249,14 @@ export const UsersPage: React.FC = () => {
                       </td>
                       <td>{u.phone || <span className="text-muted">—</span>}</td>
                       <td>
-                        <span className={`badge ${u.is_active ? 'badge-success' : 'badge-danger'}`}>
+                        <Badge variant={u.is_active ? 'success' : 'danger'}>
                           {u.is_active ? 'Active' : 'Suspended'}
-                        </span>
+                        </Badge>
                       </td>
                       <td>{formatDate(u.created_at)}</td>
                       <td>
                         <Button variant="outline" size="sm" onClick={() => handleOpenEdit(u)}>
-                          Edit / Role
+                          Edit / role
                         </Button>
                       </td>
                     </tr>
@@ -279,7 +280,7 @@ export const UsersPage: React.FC = () => {
       {/* Provision Privileged User Modal */}
       <Modal
         isOpen={showAddModal}
-        title="Provision Manager or Administrator"
+        title="Provision manager or administrator"
         onClose={() => setShowAddModal(false)}
         footer={
           <>
@@ -287,16 +288,18 @@ export const UsersPage: React.FC = () => {
               Cancel
             </Button>
             <Button variant="primary" loading={saving} onClick={handleCreateUser}>
-              Create Account
+              Create account
             </Button>
           </>
         }
       >
         {error && (
-          <div className="error-state mb-4" role="alert">
-            <div className="error-icon">⚠️</div>
-            <div className="error-content">
-              <p className="error-message">{error}</p>
+          <div className="alert alert-danger" role="alert">
+            <span className="alert-icon text-danger">
+              <Icon name="alert" size={18} />
+            </span>
+            <div className="alert-body">
+              <p>{error}</p>
             </div>
           </div>
         )}
@@ -304,7 +307,7 @@ export const UsersPage: React.FC = () => {
         <form onSubmit={handleCreateUser}>
           <div className="form-group">
             <label className="form-label">
-              Full Name <span className="required">*</span>
+              Full name <span className="required">*</span>
             </label>
             <input
               type="text"
@@ -319,7 +322,7 @@ export const UsersPage: React.FC = () => {
 
           <div className="form-group">
             <label className="form-label">
-              Email Address <span className="required">*</span>
+              Email address <span className="required">*</span>
             </label>
             <input
               type="email"
@@ -335,7 +338,7 @@ export const UsersPage: React.FC = () => {
           <div className="form-row">
             <div className="form-col">
               <label className="form-label">
-                Role Authority <span className="required">*</span>
+                Role authority <span className="required">*</span>
               </label>
               <select
                 className="form-control"
@@ -348,7 +351,7 @@ export const UsersPage: React.FC = () => {
             </div>
 
             <div className="form-col">
-              <label className="form-label">Phone Number</label>
+              <label className="form-label">Phone number</label>
               <input
                 type="tel"
                 className="form-control"
@@ -359,9 +362,9 @@ export const UsersPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="form-group mt-2">
+          <div className="form-group mt-3 mb-0">
             <label className="form-label">
-              Temporary Password <span className="required">*</span>
+              Temporary password <span className="required">*</span>
             </label>
             <input
               type="password"
@@ -379,7 +382,7 @@ export const UsersPage: React.FC = () => {
       {/* Edit Role / Suspension Modal */}
       <Modal
         isOpen={editingUser !== null}
-        title={`Edit User: ${editingUser?.full_name}`}
+        title={`Edit user: ${editingUser?.full_name}`}
         onClose={() => setEditingUser(null)}
         footer={
           <>
@@ -387,17 +390,19 @@ export const UsersPage: React.FC = () => {
               Cancel
             </Button>
             <Button variant="primary" loading={saving} onClick={handleUpdateUser}>
-              Save Changes
+              Save changes
             </Button>
           </>
         }
       >
         {error && (
-          <div className="error-state mb-4" role="alert">
-            <div className="error-icon">⚠️</div>
-            <div className="error-content">
-              <h4 className="error-title">Update Refused</h4>
-              <p className="error-message">{error}</p>
+          <div className="alert alert-danger" role="alert">
+            <span className="alert-icon text-danger">
+              <Icon name="alert" size={18} />
+            </span>
+            <div className="alert-body">
+              <p className="alert-title">Update refused</p>
+              <p>{error}</p>
             </div>
           </div>
         )}
@@ -416,18 +421,19 @@ export const UsersPage: React.FC = () => {
             </select>
           </div>
 
-          <div className="form-group">
-            <label className="form-label">Account Active Status</label>
+          <div className="form-group mb-0">
+            <label className="form-label">Account active status</label>
             <select
               className="form-control"
               value={String(newActive)}
               onChange={(e) => setNewActive(e.target.value === 'true')}
             >
-              <option value="true">Active (Permitted to sign in)</option>
-              <option value="false">Suspended (Login blocked)</option>
+              <option value="true">Active (permitted to sign in)</option>
+              <option value="false">Suspended (login blocked)</option>
             </select>
             <p className="form-hint">
-              Per Invariant 4/D24: The system will refuse to demote or suspend the last remaining Administrator.
+              Per Invariant 4/D24: the system refuses to demote or suspend the last remaining
+              Administrator.
             </p>
           </div>
         </form>
@@ -435,4 +441,3 @@ export const UsersPage: React.FC = () => {
     </div>
   )
 }
-

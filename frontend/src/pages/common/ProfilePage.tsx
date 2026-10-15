@@ -7,6 +7,8 @@ import type { User } from '../../api/types'
 import { Button } from '../../components/common/Button'
 import { Card } from '../../components/common/Card'
 import { RoleBadge } from '../../components/common/Badge'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { formatDate } from '../../lib/format'
 
 export const ProfilePage: React.FC = () => {
@@ -52,28 +54,43 @@ export const ProfilePage: React.FC = () => {
 
   if (!user) return null
 
+  const initials = (user.full_name || user.email || '?')
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase()
+
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Account Profile</h1>
-          <p className="page-subtitle">Manage your personal information and view role permissions</p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Account"
+        title="Your profile"
+        subtitle="Manage your personal information and review your account role"
+        actions={<div className="profile-avatar">{initials}</div>}
+      />
 
       <div className="grid grid-cols-2">
-        <Card title="Personal Information" subtitle="Update your contact details">
+        <Card title="Personal information" subtitle="Update your contact details">
           {success && (
-            <div className="mb-4 p-3" style={{ background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0', borderRadius: '4px' }}>
-              ✓ Profile updated successfully.
+            <div className="alert alert-success" role="status">
+              <span className="alert-icon text-success">
+                <Icon name="check" size={18} />
+              </span>
+              <div className="alert-body">
+                <p>Profile updated successfully.</p>
+              </div>
             </div>
           )}
 
           {error && (
-            <div className="error-state mb-4" role="alert">
-              <div className="error-icon">⚠️</div>
-              <div className="error-content">
-                <p className="error-message">{error}</p>
+            <div className="alert alert-danger" role="alert">
+              <span className="alert-icon text-danger">
+                <Icon name="alert" size={18} />
+              </span>
+              <div className="alert-body">
+                <p>{error}</p>
               </div>
             </div>
           )}
@@ -81,21 +98,15 @@ export const ProfilePage: React.FC = () => {
           <form onSubmit={handleSubmit}>
             <div className="form-group">
               <label className="form-label" htmlFor="email">
-                Email Address
+                Email address
               </label>
-              <input
-                id="email"
-                type="text"
-                className="form-control"
-                disabled
-                value={user.email}
-              />
-              <p className="form-hint">Email address cannot be changed.</p>
+              <input id="email" type="text" className="form-control" disabled value={user.email} />
+              <p className="form-hint">Your email address cannot be changed.</p>
             </div>
 
             <div className="form-group">
               <label className="form-label" htmlFor="fullName">
-                Full Name <span className="required">*</span>
+                Full name <span className="required">*</span>
               </label>
               <input
                 id="fullName"
@@ -106,14 +117,12 @@ export const ProfilePage: React.FC = () => {
                 onChange={(e) => setFullName(e.target.value)}
                 disabled={saving}
               />
-              {fieldErrors.full_name && (
-                <p className="form-error">{fieldErrors.full_name[0]}</p>
-              )}
+              {fieldErrors.full_name && <p className="form-error">{fieldErrors.full_name[0]}</p>}
             </div>
 
             <div className="form-group">
               <label className="form-label" htmlFor="phone">
-                Phone Number
+                Phone number
               </label>
               <input
                 id="phone"
@@ -124,40 +133,42 @@ export const ProfilePage: React.FC = () => {
                 onChange={(e) => setPhone(e.target.value)}
                 disabled={saving}
               />
-              {fieldErrors.phone && (
-                <p className="form-error">{fieldErrors.phone[0]}</p>
-              )}
+              {fieldErrors.phone && <p className="form-error">{fieldErrors.phone[0]}</p>}
             </div>
 
             <Button type="submit" variant="primary" loading={saving}>
-              Save Changes
+              <Icon name="check" size={16} /> Save changes
             </Button>
           </form>
         </Card>
 
-        <Card title="Account Overview" subtitle="System role and metadata">
-          <div className="info-list" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div>
-              <span className="text-muted" style={{ fontSize: '0.8125rem', display: 'block' }}>Account Role</span>
-              <div style={{ marginTop: '0.25rem' }}>
+        <Card title="Account overview" subtitle="Your system role and metadata">
+          <div className="info-list">
+            <div className="info-row">
+              <span className="info-label">Account role</span>
+              <span className="info-value">
                 <RoleBadge role={user.role} />
-              </div>
+              </span>
             </div>
-
-            <div>
-              <span className="text-muted" style={{ fontSize: '0.8125rem', display: 'block' }}>Account ID</span>
-              <span className="font-mono" style={{ fontSize: '0.9375rem' }}>#{user.id}</span>
+            <div className="info-row">
+              <span className="info-label">Account ID</span>
+              <span className="info-value font-mono">#{user.id}</span>
             </div>
-
-            <div>
-              <span className="text-muted" style={{ fontSize: '0.8125rem', display: 'block' }}>Member Since</span>
-              <span>{formatDate(user.created_at)}</span>
+            <div className="info-row">
+              <span className="info-label">Member since</span>
+              <span className="info-value">{formatDate(user.created_at)}</span>
             </div>
+          </div>
 
-            <div style={{ padding: '0.75rem', background: '#f8fafc', borderRadius: '4px', border: '1px solid #e2e8f0' }}>
-              <strong style={{ fontSize: '0.8125rem', display: 'block', marginBottom: '0.25rem' }}>Security Note</strong>
-              <p style={{ fontSize: '0.8125rem', color: '#64748b' }}>
-                Session tokens rotate securely with each refresh. Permissions are enforced by server-side authorization.
+          <div className="alert alert-info mt-3 mb-0">
+            <span className="alert-icon text-primary">
+              <Icon name="shield" size={18} />
+            </span>
+            <div className="alert-body">
+              <p className="alert-title">Security note</p>
+              <p>
+                Session tokens rotate securely on each refresh. Permissions are enforced by
+                server-side authorization.
               </p>
             </div>
           </div>
@@ -166,4 +177,3 @@ export const ProfilePage: React.FC = () => {
     </div>
   )
 }
-

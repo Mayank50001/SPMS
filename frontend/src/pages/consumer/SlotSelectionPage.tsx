@@ -7,6 +7,8 @@ import { ApiError, getFriendlyErrorMessage } from '../../api/errors'
 import type { ParkingLot, ParkingSlot, Vehicle, ConsumerBooking } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { ErrorState } from '../../components/common/ErrorState'
 import { EmptyState } from '../../components/common/EmptyState'
@@ -94,110 +96,150 @@ export const SlotSelectionPage: React.FC = () => {
 
   if (!startIso || !endIso) {
     return (
-      <div className="empty-state">
-        <h3 className="empty-state-title">No booking window selected</h3>
-        <p className="empty-state-message">Please specify your arrival and departure times first.</p>
-        <Link to={`/consumer/lots/${id}`} className="btn btn-primary mt-4">
-          Select Window
-        </Link>
+      <div>
+        <PageHeader
+          eyebrow="Step 1 of 2"
+          title="Choose a parking slot"
+          subtitle="Pick your arrival and departure times to see live availability."
+        />
+        <EmptyState
+          title="No booking window selected"
+          message="Please specify your arrival and departure times before choosing a slot."
+          action={
+            <Link
+              to={id ? `/consumer/lots/${id}` : '/consumer/search'}
+              className="btn btn-primary btn-md"
+            >
+              Select a time window
+            </Link>
+          }
+        />
       </div>
     )
   }
 
   return (
     <div>
-      <div className="mb-2">
-        <Link to={`/consumer/lots/${id}`} className="text-muted" style={{ fontSize: '0.875rem' }}>
-          ← Back to Lot Details & Times
-        </Link>
-      </div>
+      <Link to={`/consumer/lots/${id}`} className="link-back mb-3">
+        <span aria-hidden="true">←</span> Back to lot &amp; times
+      </Link>
 
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Select Parking Slot</h1>
-          <p className="page-subtitle">
-            {lot ? `${lot.name} (${lot.code})` : 'Parking Facility'} · Window: {formatDateTime(startIso)} → {formatDateTime(endIso)}
-          </p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Step 1 of 2 · Slot selection"
+        title="Choose a parking slot"
+        subtitle={
+          <>
+            {lot ? `${lot.name} (${lot.code})` : 'Parking facility'}
+            <span className="text-subtle">
+              {' '}· {formatDateTime(startIso)} → {formatDateTime(endIso)}
+            </span>
+          </>
+        }
+      />
 
       {bookingError && (
-        <div className="error-state mb-4" role="alert">
-          <div className="error-icon">⚠️</div>
-          <div className="error-content">
-            <h4 className="error-title">Reservation Refused</h4>
-            <p className="error-message">{bookingError}</p>
+        <div className="alert alert-danger" role="alert">
+          <span className="alert-icon text-danger">
+            <Icon name="alert" size={18} />
+          </span>
+          <div className="alert-body">
+            <p className="alert-title">Reservation refused</p>
+            <p>{bookingError}</p>
           </div>
         </div>
       )}
 
       <div className="grid grid-cols-3">
         {/* Slot Grid (takes 2 cols) */}
-        <div style={{ gridColumn: 'span 2' }}>
+        <div className="grid-span-2">
           <Card
-            title="Available Slots"
-            subtitle="Click on a slot to select it for your vehicle"
+            title="Available slots"
+            subtitle="Tap a slot to reserve it for your vehicle"
             action={
               <Button variant="outline" size="sm" onClick={() => refetchSlots()} disabled={loadingSlots}>
-                ↻ Refresh Availability
+                <Icon name="search" size={15} /> Refresh
               </Button>
             }
           >
             {loadingSlots ? (
               <LoadingSpinner message="Checking real-time slot availability..." />
             ) : errorSlots ? (
-              <ErrorState error={errorSlots} title="Could not retrieve available slots" onRetry={refetchSlots} />
+              <ErrorState
+                error={errorSlots}
+                title="Could not retrieve available slots"
+                onRetry={refetchSlots}
+              />
             ) : availableSlots?.length === 0 ? (
               <EmptyState
                 title="No slots available"
-                message="All slots for this facility are currently booked or out of service during your requested window."
+                message="Every slot at this facility is booked or out of service during your requested window."
                 action={
-                  <Link to={`/consumer/lots/${id}`} className="btn btn-secondary btn-sm">
-                    Change Time Window
+                  <Link to={`/consumer/lots/${id}`} className="btn btn-secondary btn-md">
+                    Change time window
                   </Link>
                 }
               />
             ) : (
-              <div className="slots-grid">
-                {availableSlots?.map((slot) => {
-                  const isSelected = selectedSlot?.id === slot.id
-                  return (
-                    <div
-                      key={slot.id}
-                      className={`slot-tile ${isSelected ? 'slot-selected' : ''}`}
-                      onClick={() => setSelectedSlot(slot)}
-                      role="button"
-                      tabIndex={0}
-                    >
-                      <span className="slot-type-badge">{slot.slot_type}</span>
-                      <span className="slot-number">{slot.number}</span>
-                      <span className="text-muted" style={{ fontSize: '0.75rem' }}>
-                        Floor {slot.floor}
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
+              <>
+                <p className="muted-sm mb-0">
+                  {availableSlots?.length}{' '}
+                  {availableSlots?.length === 1 ? 'slot' : 'slots'} open for your window
+                </p>
+
+                <div className="slots-grid">
+                  {availableSlots?.map((slot) => {
+                    const isSelected = selectedSlot?.id === slot.id
+                    return (
+                      <div
+                        key={slot.id}
+                        className={`slot-tile ${isSelected ? 'slot-selected' : ''}`}
+                        onClick={() => setSelectedSlot(slot)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            setSelectedSlot(slot)
+                          }
+                        }}
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={isSelected}
+                      >
+                        {isSelected && (
+                          <span className="slot-check">
+                            <Icon name="check" size={12} />
+                          </span>
+                        )}
+                        <span className="slot-type-badge">{slot.slot_type}</span>
+                        <span className="slot-number">{slot.number}</span>
+                        <span className="text-muted" style={{ fontSize: '0.75rem' }}>
+                          Floor {slot.floor}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </>
             )}
           </Card>
         </div>
 
-        {/* Booking Confirmation Sidebar (1 col) */}
+        {/* Booking Summary (1 col) */}
         <div>
-          <Card title="Booking Summary" subtitle="Review and confirm hold">
+          <Card title="Booking summary" subtitle="Review and hold your slot">
             <form onSubmit={handleBookingSubmit}>
               <div className="form-group">
-                <label className="form-label">Selected Slot</label>
+                <label className="form-label">Selected slot</label>
                 {selectedSlot ? (
-                  <div style={{ padding: '0.75rem', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '4px' }}>
-                    <div style={{ fontWeight: 700, fontSize: '1.125rem' }}>Slot {selectedSlot.number}</div>
-                    <div style={{ fontSize: '0.8125rem', color: '#1e40af' }}>
-                      Floor {selectedSlot.floor} · Type: {selectedSlot.slot_type}
+                  <div className="summary-box">
+                    <span className="summary-box-label">Slot</span>
+                    <div className="summary-box-value">{selectedSlot.number}</div>
+                    <div className="muted-sm">
+                      Floor {selectedSlot.floor} · {selectedSlot.slot_type}
                     </div>
                   </div>
                 ) : (
                   <p className="text-muted" style={{ fontSize: '0.875rem' }}>
-                    Click a slot in the grid to select.
+                    No slot selected yet — pick one from the grid.
                   </p>
                 )}
               </div>
@@ -209,13 +251,17 @@ export const SlotSelectionPage: React.FC = () => {
                 {loadingVehicles ? (
                   <LoadingSpinner size="sm" />
                 ) : vehicles.length === 0 ? (
-                  <div style={{ padding: '0.75rem', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '4px' }}>
-                    <p style={{ fontSize: '0.8125rem', color: '#92400e', marginBottom: '0.5rem' }}>
-                      You have no registered vehicles.
-                    </p>
-                    <Link to="/consumer/vehicles" className="btn btn-outline btn-sm">
-                      + Add Vehicle
-                    </Link>
+                  <div className="alert alert-warning">
+                    <span className="alert-icon">
+                      <Icon name="alert" size={18} />
+                    </span>
+                    <div className="alert-body">
+                      <p className="alert-title">No registered vehicles</p>
+                      <p className="mb-2">Add a vehicle to complete your reservation.</p>
+                      <Link to="/consumer/vehicles" className="btn btn-outline btn-sm">
+                        <Icon name="plus" size={15} /> Add vehicle
+                      </Link>
+                    </div>
                   </div>
                 ) : (
                   <select
@@ -235,30 +281,41 @@ export const SlotSelectionPage: React.FC = () => {
               </div>
 
               <div className="form-group">
-                <label className="form-label">Duration Window</label>
-                <div style={{ fontSize: '0.8125rem', color: '#475569' }}>
-                  <div><strong>From:</strong> {formatDateTime(startIso)}</div>
-                  <div><strong>To:</strong> {formatDateTime(endIso)}</div>
+                <label className="form-label">Duration window</label>
+                <div className="info-list">
+                  <div className="info-row">
+                    <span className="info-label">From</span>
+                    <span className="info-value">{formatDateTime(startIso)}</span>
+                  </div>
+                  <div className="info-row">
+                    <span className="info-label">To</span>
+                    <span className="info-value">{formatDateTime(endIso)}</span>
+                  </div>
                 </div>
               </div>
 
-              <div style={{ padding: '0.75rem', background: '#f8fafc', borderRadius: '4px', border: '1px solid #e2e8f0', marginBottom: '1rem' }}>
-                <strong style={{ fontSize: '0.8125rem', display: 'block', marginBottom: '0.25rem' }}>Hold Policy (D50)</strong>
-                <p style={{ fontSize: '0.75rem', color: '#64748b' }}>
-                  Creating a reservation holds the slot temporarily for payment. If payment is not completed before the hold window expires, the slot is automatically released.
-                </p>
+              <div className="alert alert-info">
+                <span className="alert-icon text-primary">
+                  <Icon name="info" size={18} />
+                </span>
+                <div className="alert-body">
+                  <p className="alert-title">Slot hold policy</p>
+                  <p>
+                    Creating a reservation holds the slot temporarily. Complete payment before the
+                    hold expires or the slot is released automatically.
+                  </p>
+                </div>
               </div>
 
               <Button
                 type="submit"
                 variant="primary"
                 size="lg"
-                disabled={!selectedSlot || !selectedVehicleId || submitting}
+                disabled={!selectedSlot || !effectiveVehicleId || submitting}
                 loading={submitting}
                 className="w-100"
-                style={{ width: '100%' }}
               >
-                Proceed to Payment →
+                Proceed to payment <Icon name="arrowRight" size={16} />
               </Button>
             </form>
           </Card>
@@ -267,4 +324,3 @@ export const SlotSelectionPage: React.FC = () => {
     </div>
   )
 }
-

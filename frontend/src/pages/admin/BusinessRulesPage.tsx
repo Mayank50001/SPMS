@@ -6,6 +6,8 @@ import { ApiError, getFriendlyErrorMessage } from '../../api/errors'
 import type { BusinessRules } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { ErrorState } from '../../components/common/ErrorState'
 import { formatDateTime } from '../../lib/format'
@@ -62,28 +64,36 @@ const BusinessRulesForm: React.FC<{ rules: BusinessRules; onSaved: () => Promise
   }
 
   return (
-    <Card title="Global Platform Parameters" subtitle={`Last updated: ${formatDateTime(rules.updated_at)}`}>
+    <Card title="Global platform parameters" subtitle={`Last updated: ${formatDateTime(rules.updated_at)}`}>
       {success && (
-        <div className="mb-4 p-3" style={{ background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0', borderRadius: '4px' }}>
-          ✓ Business policies updated successfully and enforced across all facilities.
+        <div className="alert alert-success" role="status">
+          <span className="alert-icon text-success">
+            <Icon name="check" size={18} />
+          </span>
+          <div className="alert-body">
+            <p>Business policies updated successfully and enforced across all facilities.</p>
+          </div>
         </div>
       )}
 
       {saveError && (
-        <div className="error-state mb-4" role="alert">
-          <div className="error-icon">⚠️</div>
-          <div className="error-content">
-            <h4 className="error-title">Policy Update Refused</h4>
-            <p className="error-message">{saveError}</p>
+        <div className="alert alert-danger" role="alert">
+          <span className="alert-icon text-danger">
+            <Icon name="alert" size={18} />
+          </span>
+          <div className="alert-body">
+            <p className="alert-title">Policy update refused</p>
+            <p>{saveError}</p>
           </div>
         </div>
       )}
 
       <form onSubmit={handleSubmit}>
+        <h4 className="form-section-title form-section-title-first">Rate &amp; duration caps</h4>
         <div className="form-row">
           <div className="form-col">
             <label className="form-label">
-              Maximum Hourly Rate Cap (INR) <span className="required">*</span>
+              Maximum hourly rate cap (INR) <span className="required">*</span>
             </label>
             <input
               type="text"
@@ -101,7 +111,7 @@ const BusinessRulesForm: React.FC<{ rules: BusinessRules; onSaved: () => Promise
 
           <div className="form-col">
             <label className="form-label">
-              Maximum Reservation Hours Cap <span className="required">*</span>
+              Maximum reservation hours cap <span className="required">*</span>
             </label>
             <input
               type="number"
@@ -119,10 +129,11 @@ const BusinessRulesForm: React.FC<{ rules: BusinessRules; onSaved: () => Promise
           </div>
         </div>
 
-        <div className="form-row mt-3">
+        <h4 className="form-section-title">Timing policies</h4>
+        <div className="form-row">
           <div className="form-col">
             <label className="form-label">
-              Hold Duration Window (Minutes) <span className="required">*</span>
+              Hold duration window (minutes) <span className="required">*</span>
             </label>
             <input
               type="number"
@@ -133,15 +144,13 @@ const BusinessRulesForm: React.FC<{ rules: BusinessRules; onSaved: () => Promise
               onChange={(e) => setHoldMinutes(e.target.value)}
               disabled={saving}
             />
-            {fieldErrors.hold_minutes && (
-              <p className="form-error">{fieldErrors.hold_minutes[0]}</p>
-            )}
+            {fieldErrors.hold_minutes && <p className="form-error">{fieldErrors.hold_minutes[0]}</p>}
             <p className="form-hint">Temporary hold lifetime for payment completion (D50).</p>
           </div>
 
           <div className="form-col">
             <label className="form-label">
-              Cancellation Refund Cutoff (Minutes) <span className="required">*</span>
+              Cancellation refund cutoff (minutes) <span className="required">*</span>
             </label>
             <input
               type="number"
@@ -159,10 +168,11 @@ const BusinessRulesForm: React.FC<{ rules: BusinessRules; onSaved: () => Promise
           </div>
         </div>
 
-        <div className="form-row mt-3">
+        <h4 className="form-section-title">Overstay policy</h4>
+        <div className="form-row">
           <div className="form-col">
             <label className="form-label">
-              Overstay Multiplier (e.g. 1.50) <span className="required">*</span>
+              Overstay multiplier (e.g. 1.50) <span className="required">*</span>
             </label>
             <input
               type="text"
@@ -175,12 +185,12 @@ const BusinessRulesForm: React.FC<{ rules: BusinessRules; onSaved: () => Promise
             {fieldErrors.overstay_multiplier && (
               <p className="form-error">{fieldErrors.overstay_multiplier[0]}</p>
             )}
-            <p className="form-hint">Penalty multiplier applied to slot tariff rate on overstay.</p>
+            <p className="form-hint">Penalty multiplier applied to the slot tariff rate on overstay.</p>
           </div>
 
           <div className="form-col">
             <label className="form-label">
-              Overstay Grace Window (Minutes) <span className="required">*</span>
+              Overstay grace window (minutes) <span className="required">*</span>
             </label>
             <input
               type="number"
@@ -198,9 +208,9 @@ const BusinessRulesForm: React.FC<{ rules: BusinessRules; onSaved: () => Promise
           </div>
         </div>
 
-        <div className="mt-4 pt-3" style={{ borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'flex-end' }}>
+        <div className="divider-top mt-4" style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <Button type="submit" variant="primary" size="lg" loading={saving}>
-            Apply Business Policies
+            <Icon name="check" size={16} /> Apply business policies
           </Button>
         </div>
       </form>
@@ -223,14 +233,13 @@ export const BusinessRulesPage: React.FC = () => {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Platform Business Rules</h1>
-          <p className="page-subtitle">Configure system caps, cancellation cutoffs, and overstay multipliers</p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Governance"
+        title="Platform business rules"
+        subtitle="Configure system caps, cancellation cutoffs and overstay multipliers"
+      />
 
-      <div style={{ maxWidth: '800px' }}>
+      <div style={{ maxWidth: '820px' }}>
         <BusinessRulesForm key={rules.id} rules={rules} onSaved={refetch} />
       </div>
     </div>

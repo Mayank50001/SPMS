@@ -9,6 +9,8 @@ import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
 import { BookingStatusBadge } from '../../components/common/Badge'
 import { Modal } from '../../components/common/Modal'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { ErrorState } from '../../components/common/ErrorState'
 import { formatMoney, formatDateTime, toDatetimeLocalValue } from '../../lib/format'
@@ -81,7 +83,9 @@ export const BookingDetailsPage: React.FC = () => {
 
   const handleProceedToExtensionPayment = () => {
     if (!id || !quote) return
-    navigate(`/consumer/payment/${id}?purpose=EXTENSION&end_time=${encodeURIComponent(quote.new_end_time)}&amount=${encodeURIComponent(quote.extension_amount)}`)
+    navigate(
+      `/consumer/payment/${id}?purpose=EXTENSION&end_time=${encodeURIComponent(quote.new_end_time)}&amount=${encodeURIComponent(quote.extension_amount)}`
+    )
   }
 
   const openExtendDialog = () => {
@@ -102,131 +106,143 @@ export const BookingDetailsPage: React.FC = () => {
 
   return (
     <div>
-      <div className="mb-2">
-        <Link to="/consumer/bookings" className="text-muted" style={{ fontSize: '0.875rem' }}>
-          ← Back to My Bookings
-        </Link>
-      </div>
+      <Link to="/consumer/bookings" className="link-back mb-3">
+        <span aria-hidden="true">←</span> Back to my bookings
+      </Link>
 
-      <div className="page-header">
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.25rem' }}>
-            <h1 className="page-title font-mono">{booking.reference}</h1>
+      <PageHeader
+        eyebrow="Booking details"
+        title={<span className="font-mono">{booking.reference}</span>}
+        subtitle={
+          <span className="badge-row">
             <BookingStatusBadge status={booking.effective_status} />
-          </div>
-          <p className="page-subtitle">
-            {booking.lot_name} · Slot {booking.slot_number} (Floor {booking.slot_floor})
-          </p>
-        </div>
+            <span>
+              {booking.lot_name} · Slot {booking.slot_number} (Floor {booking.slot_floor})
+            </span>
+          </span>
+        }
+        actions={
+          <>
+            {booking.effective_status === 'PENDING_PAYMENT' && (
+              <Link to={`/consumer/payment/${booking.id}`} className="btn btn-primary btn-md">
+                <Icon name="wallet" size={16} /> Pay now
+              </Link>
+            )}
 
-        <div className="page-actions">
-          {booking.effective_status === 'PENDING_PAYMENT' && (
-            <Link to={`/consumer/payment/${booking.id}`} className="btn btn-primary">
-              Pay Now →
-            </Link>
-          )}
+            {booking.can_extend && (
+              <Button variant="secondary" onClick={openExtendDialog}>
+                <Icon name="clock" size={16} /> Extend window
+              </Button>
+            )}
 
-          {booking.can_extend && (
-            <Button variant="secondary" onClick={openExtendDialog}>
-              Extend Parking Window
-            </Button>
-          )}
-
-          {booking.can_cancel && (
-            <Button variant="danger" onClick={() => setShowCancelModal(true)}>
-              Cancel Reservation
-            </Button>
-          )}
-        </div>
-      </div>
+            {booking.can_cancel && (
+              <Button variant="danger" onClick={() => setShowCancelModal(true)}>
+                <Icon name="close" size={16} /> Cancel reservation
+              </Button>
+            )}
+          </>
+        }
+      />
 
       <div className="grid grid-cols-2">
         {/* Main Details */}
-        <Card title="Reservation Info">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            <div className="flex justify-between">
-              <span className="text-muted">Facility</span>
-              <span className="font-semibold">{booking.lot_name} ({booking.lot_code})</span>
+        <Card title="Reservation info" subtitle="What you booked">
+          <div className="info-list">
+            <div className="info-row">
+              <span className="info-label">Facility</span>
+              <span className="info-value">
+                {booking.lot_name} ({booking.lot_code})
+              </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-muted">Address</span>
-              <span>{booking.lot_address_line}, {booking.lot_city}</span>
+            <div className="info-row">
+              <span className="info-label">Address</span>
+              <span className="info-value">
+                {booking.lot_address_line}, {booking.lot_city}
+              </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-muted">Vehicle License Plate</span>
-              <span className="font-mono font-semibold">{booking.vehicle_plate}</span>
+            <div className="info-row">
+              <span className="info-label">Vehicle plate</span>
+              <span className="info-value font-mono">{booking.vehicle_plate}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-muted">Scheduled Arrival</span>
-              <span>{formatDateTime(booking.start_time)}</span>
+            <div className="info-row">
+              <span className="info-label">Scheduled arrival</span>
+              <span className="info-value">{formatDateTime(booking.start_time)}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-muted">Scheduled Departure</span>
-              <span>{formatDateTime(booking.end_time)}</span>
+            <div className="info-row">
+              <span className="info-label">Scheduled departure</span>
+              <span className="info-value">{formatDateTime(booking.end_time)}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-muted">Total Billed Duration</span>
-              <span>{booking.billed_hours} hours</span>
+            <div className="info-row">
+              <span className="info-label">Billed duration</span>
+              <span className="info-value">{booking.billed_hours} hours</span>
             </div>
-            <div className="flex justify-between" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.5rem' }}>
-              <span className="font-semibold">Base Price</span>
-              <span className="font-semibold">{formatMoney(booking.base_amount)}</span>
+            <div className="info-row">
+              <span className="info-label font-semibold">Base price</span>
+              <span className="info-value">{formatMoney(booking.base_amount)}</span>
             </div>
           </div>
         </Card>
 
         {/* Live Session & Financials */}
-        <Card title="Session Activity & Financials">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            <div className="flex justify-between">
-              <span className="text-muted">Actual Check-in</span>
-              <span>{booking.actual_entry_at ? formatDateTime(booking.actual_entry_at) : 'Not checked in yet'}</span>
+        <Card title="Session & financials" subtitle="Check-in, check-out and charges">
+          <div className="info-list">
+            <div className="info-row">
+              <span className="info-label">Actual check-in</span>
+              <span className="info-value">
+                {booking.actual_entry_at ? formatDateTime(booking.actual_entry_at) : 'Not checked in yet'}
+              </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-muted">Actual Check-out</span>
-              <span>{booking.actual_exit_at ? formatDateTime(booking.actual_exit_at) : 'Not checked out'}</span>
+            <div className="info-row">
+              <span className="info-label">Actual check-out</span>
+              <span className="info-value">
+                {booking.actual_exit_at ? formatDateTime(booking.actual_exit_at) : 'Not checked out'}
+              </span>
             </div>
 
             {booking.cancelled_at && (
-              <div className="flex justify-between" style={{ color: 'var(--danger)' }}>
-                <span>Cancelled At</span>
-                <span>{formatDateTime(booking.cancelled_at)}</span>
+              <div className="info-row">
+                <span className="info-label text-danger">Cancelled at</span>
+                <span className="info-value text-danger">{formatDateTime(booking.cancelled_at)}</span>
               </div>
             )}
 
             {booking.refund_due_amount && Number(booking.refund_due_amount) > 0 && (
-              <div className="flex justify-between" style={{ color: 'var(--success)', fontWeight: 600 }}>
-                <span>Refund Due / Processed</span>
-                <span>{formatMoney(booking.refund_due_amount)}</span>
+              <div className="info-row">
+                <span className="info-label text-success">Refund due / processed</span>
+                <span className="info-value text-success">
+                  {formatMoney(booking.refund_due_amount)}
+                </span>
               </div>
             )}
+          </div>
 
-            {booking.overstay_hours > 0 && (
-              <div
-                style={{
-                  background: '#fef2f2',
-                  border: '1px solid #fecaca',
-                  borderRadius: '4px',
-                  padding: '0.75rem',
-                  marginTop: '0.5rem',
-                }}
-              >
-                <div style={{ fontWeight: 600, color: '#991b1b', marginBottom: '0.25rem' }}>Overstay Recorded</div>
-                <div className="flex justify-between" style={{ fontSize: '0.8125rem' }}>
-                  <span>Overstay Duration:</span>
-                  <span>{booking.overstay_hours} hours</span>
-                </div>
-                <div className="flex justify-between" style={{ fontSize: '0.8125rem', fontWeight: 600, marginTop: '0.25rem' }}>
-                  <span>Recorded Fee:</span>
-                  <span>{formatMoney(booking.overstay_amount)}</span>
-                </div>
-              </div>
-            )}
-
-            <div style={{ padding: '0.75rem', background: '#f8fafc', borderRadius: '4px', border: '1px solid #e2e8f0', marginTop: '0.5rem' }}>
-              <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
-                Rates are charged per tariff schedule ({formatMoney(booking.hourly_rate)}/hr).
+          {booking.overstay_hours > 0 && (
+            <div className="alert alert-danger mt-3">
+              <span className="alert-icon text-danger">
+                <Icon name="alert" size={18} />
               </span>
+              <div className="alert-body">
+                <p className="alert-title">Overstay recorded</p>
+                <div className="row-between">
+                  <span>Overstay duration</span>
+                  <span className="font-semibold">{booking.overstay_hours} hours</span>
+                </div>
+                <div className="row-between">
+                  <span>Recorded fee</span>
+                  <span className="font-semibold">{formatMoney(booking.overstay_amount)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="alert alert-info mb-0">
+            <span className="alert-icon text-primary">
+              <Icon name="info" size={18} />
+            </span>
+            <div className="alert-body">
+              <p>
+                Rates are charged per tariff schedule ({formatMoney(booking.hourly_rate)}/hr).
+              </p>
             </div>
           </div>
         </Card>
@@ -235,15 +251,15 @@ export const BookingDetailsPage: React.FC = () => {
       {/* Cancel Modal */}
       <Modal
         isOpen={showCancelModal}
-        title="Cancel Parking Reservation"
+        title="Cancel parking reservation"
         onClose={() => setShowCancelModal(false)}
         footer={
           <>
             <Button variant="secondary" onClick={() => setShowCancelModal(false)}>
-              Keep Reservation
+              Keep reservation
             </Button>
             <Button variant="danger" loading={cancelling} onClick={handleCancel}>
-              Confirm Cancellation
+              Confirm cancellation
             </Button>
           </>
         }
@@ -252,7 +268,8 @@ export const BookingDetailsPage: React.FC = () => {
           Are you sure you want to cancel booking <strong>{booking.reference}</strong>?
         </p>
         <p className="text-muted" style={{ fontSize: '0.875rem' }}>
-          If cancelled before the system cutoff window, any eligible refund will be queued automatically.
+          If cancelled before the system cutoff window, any eligible refund will be queued
+          automatically.
         </p>
         {cancelError && <p className="text-danger mt-2">{cancelError}</p>}
       </Modal>
@@ -260,7 +277,7 @@ export const BookingDetailsPage: React.FC = () => {
       {/* Extend Modal */}
       <Modal
         isOpen={showExtendModal}
-        title="Extend Parking Window"
+        title="Extend parking window"
         onClose={() => setShowExtendModal(false)}
         footer={
           <>
@@ -272,14 +289,14 @@ export const BookingDetailsPage: React.FC = () => {
               disabled={!quote || loadingQuote}
               onClick={handleProceedToExtensionPayment}
             >
-              Pay & Confirm Extension
+              Pay &amp; confirm extension
             </Button>
           </>
         }
       >
         <div className="form-group">
           <label className="form-label" htmlFor="newEnd">
-            Select New End Time
+            Select new end time
           </label>
           <input
             id="newEnd"
@@ -294,22 +311,26 @@ export const BookingDetailsPage: React.FC = () => {
         </div>
 
         {loadingQuote && <LoadingSpinner size="sm" message="Calculating quote..." />}
-        {quoteError && <p className="text-danger mt-2" style={{ fontSize: '0.875rem' }}>{quoteError}</p>}
+        {quoteError && (
+          <p className="text-danger mt-2" style={{ fontSize: '0.875rem' }}>
+            {quoteError}
+          </p>
+        )}
 
         {quote && (
-          <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', padding: '0.85rem', borderRadius: '4px', marginTop: '1rem' }}>
-            <h4 style={{ fontSize: '0.9375rem', fontWeight: 600, color: '#0369a1', marginBottom: '0.5rem' }}>Extension Quote</h4>
-            <div className="flex justify-between" style={{ fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
-              <span>Additional Time:</span>
+          <div className="quote-box">
+            <h4 className="quote-title">Extension quote</h4>
+            <div className="row-between" style={{ fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
+              <span>Additional time</span>
               <span>{quote.added_hours} hrs</span>
             </div>
-            <div className="flex justify-between" style={{ fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
-              <span>Extension Fee:</span>
+            <div className="row-between" style={{ fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
+              <span>Extension fee</span>
               <span className="font-semibold">{formatMoney(quote.extension_amount)}</span>
             </div>
-            <div className="flex justify-between" style={{ fontSize: '0.8125rem', borderTop: '1px solid #bae6fd', paddingTop: '0.35rem', fontWeight: 700 }}>
-              <span>New Total Amount:</span>
-              <span>{formatMoney(quote.new_base_amount)}</span>
+            <div className="amount-line" style={{ marginTop: '0.5rem', paddingTop: '0.5rem' }}>
+              <span className="amount-label">New total</span>
+              <span className="amount-value text-primary">{formatMoney(quote.new_base_amount)}</span>
             </div>
           </div>
         )}
@@ -317,4 +338,3 @@ export const BookingDetailsPage: React.FC = () => {
     </div>
   )
 }
-

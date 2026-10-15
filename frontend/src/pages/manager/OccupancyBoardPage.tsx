@@ -6,7 +6,11 @@ import { ApiError, getFriendlyErrorMessage } from '../../api/errors'
 import type { OccupancyBoard, OccupancyBoardSlot, PhysicalSlotStatus } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
+import { Badge } from '../../components/common/Badge'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { Modal } from '../../components/common/Modal'
+import { StatTile } from '../../components/common/StatTile'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { ErrorState } from '../../components/common/ErrorState'
 import { formatDateTime } from '../../lib/format'
@@ -164,70 +168,79 @@ export const OccupancyBoardPage: React.FC = () => {
 
   return (
     <div>
-      <div className="mb-2">
-        <Link to={`/manager/lots/${lotId}`} className="text-muted" style={{ fontSize: '0.875rem' }}>
-          ← Back to Facility
-        </Link>
-      </div>
+      <Link to={`/manager/lots/${lotId}`} className="link-back mb-3">
+        <span aria-hidden="true">←</span> Back to facility
+      </Link>
 
-      <div className="page-header">
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.25rem' }}>
-            <h1 className="page-title">{board?.lot.name || 'Parking Facility'}</h1>
-            <span className={`badge ${wsConnected ? 'badge-success' : 'badge-warning'}`}>
-              {wsConnected ? '🟢 Live WebSocket' : '🟡 Polling (HTTP)'}
-            </span>
-          </div>
-          <p className="page-subtitle">
-            Facility: {board?.lot.code} · Live Bay Status & In-Progress Sessions
-          </p>
-        </div>
-
-        <div className="page-actions">
+      <PageHeader
+        eyebrow={
+          <span className="badge-row">
+            <Badge variant={wsConnected ? 'success' : 'warning'}>
+              {wsConnected ? 'Live' : 'Polling'}
+            </Badge>
+            <span>Facility {board?.lot.code}</span>
+          </span>
+        }
+        title={board?.lot.name || 'Parking facility'}
+        subtitle="Live bay status and in-progress sessions"
+        actions={
           <Button variant="outline" size="sm" onClick={fetchBoardHttp}>
-            ↻ Sync Board
+            <Icon name="refresh" size={15} /> Sync board
           </Button>
-        </div>
-      </div>
+        }
+      />
 
       {/* Summary KPI Cards */}
       <div className="grid grid-cols-4 mb-4">
-        <div className="stat-card">
-          <div className="stat-label">Total Bays</div>
-          <div className="stat-value">{board?.summary.total ?? 0}</div>
-          <div className="stat-meta">Configured slot capacity</div>
-        </div>
-
-        <div className="stat-card" style={{ borderColor: 'var(--success-border)' }}>
-          <div className="stat-label" style={{ color: 'var(--success)' }}>Available Bays</div>
-          <div className="stat-value" style={{ color: 'var(--success)' }}>
-            {board?.summary.available ?? 0}
-          </div>
-          <div className="stat-meta">Free for parking</div>
-        </div>
-
-        <div className="stat-card" style={{ borderColor: 'var(--warning-border)' }}>
-          <div className="stat-label" style={{ color: 'var(--warning)' }}>Occupied Bays</div>
-          <div className="stat-value" style={{ color: 'var(--warning)' }}>
-            {board?.summary.occupied ?? 0}
-          </div>
-          <div className="stat-meta">Physically in-use</div>
-        </div>
-
-        <div className="stat-card" style={{ borderColor: 'var(--danger-border)' }}>
-          <div className="stat-label" style={{ color: 'var(--danger)' }}>Out of Service</div>
-          <div className="stat-value" style={{ color: 'var(--danger)' }}>
-            {board?.summary.out_of_service ?? 0}
-          </div>
-          <div className="stat-meta">Maintenance / closed</div>
-        </div>
+        <StatTile
+          label="Total bays"
+          value={board?.summary.total ?? 0}
+          icon="grid"
+          tone="default"
+          meta="Configured capacity"
+        />
+        <StatTile
+          label="Available bays"
+          value={board?.summary.available ?? 0}
+          icon="check"
+          tone="success"
+          meta="Free for parking"
+        />
+        <StatTile
+          label="Occupied bays"
+          value={board?.summary.occupied ?? 0}
+          icon="car"
+          tone="warning"
+          meta="Physically in use"
+        />
+        <StatTile
+          label="Out of service"
+          value={board?.summary.out_of_service ?? 0}
+          icon="alert"
+          tone="danger"
+          meta="Maintenance / closed"
+        />
       </div>
 
       {/* Bay Visual Grid */}
       <Card
-        title="Parking Bay Layout"
-        subtitle="Click any bay to view in-progress reservation or override physical occupancy"
+        title="Parking bay layout"
+        subtitle="Click any bay to view its in-progress reservation or override physical occupancy"
       >
+        {board && board.slots.length > 0 && (
+          <div className="legend mb-3">
+            <span className="legend-item">
+              <span className="legend-dot bay-available" /> Available
+            </span>
+            <span className="legend-item">
+              <span className="legend-dot bay-occupied" /> Occupied
+            </span>
+            <span className="legend-item">
+              <span className="legend-dot bay-out-of-service" /> Out of service
+            </span>
+          </div>
+        )}
+
         <div className="slots-grid">
           {board?.slots.map((slot) => {
             const isOccupied = slot.status === 'OCCUPIED'
@@ -242,13 +255,25 @@ export const OccupancyBoardPage: React.FC = () => {
               <div
                 key={slot.id}
                 className={`slot-tile ${bayClass}`}
-                onClick={() => setSelectedSlot(slot)}
+                onClick={() => {
+                  setMarkError(null)
+                  setSelectedSlot(slot)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    setMarkError(null)
+                    setSelectedSlot(slot)
+                  }
+                }}
                 role="button"
                 tabIndex={0}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                <div className="row-between" style={{ width: '100%' }}>
                   <span className="slot-type-badge">{slot.slot_type}</span>
-                  <span className="text-muted" style={{ fontSize: '0.6875rem' }}>F{slot.floor}</span>
+                  <span className="text-subtle" style={{ fontSize: '0.6875rem' }}>
+                    F{slot.floor}
+                  </span>
                 </div>
 
                 <div className="slot-number" style={{ margin: '0.35rem 0' }}>
@@ -256,13 +281,16 @@ export const OccupancyBoardPage: React.FC = () => {
                 </div>
 
                 {slot.current_booking ? (
-                  <div style={{ fontSize: '0.6875rem', fontWeight: 600, color: '#92400e' }}>
-                    🚘 {slot.current_booking.vehicle_plate}
-                  </div>
+                  <span className="plate" style={{ fontSize: '0.75rem' }}>
+                    {slot.current_booking.vehicle_plate}
+                  </span>
                 ) : (
-                  <div style={{ fontSize: '0.6875rem', color: isOccupied ? '#92400e' : isOutOfService ? '#991b1b' : '#166534', fontWeight: 500 }}>
-                    {slot.status}
-                  </div>
+                  <span
+                    className="text-muted"
+                    style={{ fontSize: '0.6875rem', fontWeight: 600, textTransform: 'uppercase' }}
+                  >
+                    {slot.status.replace(/_/g, ' ')}
+                  </span>
                 )}
               </div>
             )
@@ -273,7 +301,7 @@ export const OccupancyBoardPage: React.FC = () => {
       {/* Slot Details & Manual Physical Override Modal */}
       <Modal
         isOpen={selectedSlot !== null}
-        title={`Slot Details: ${selectedSlot?.number}`}
+        title={`Slot details: ${selectedSlot?.number}`}
         onClose={() => setSelectedSlot(null)}
         footer={
           <>
@@ -286,7 +314,7 @@ export const OccupancyBoardPage: React.FC = () => {
                 loading={marking}
                 onClick={() => handleMarkOccupancy('OCCUPIED')}
               >
-                Mark Physically Occupied
+                Mark physically occupied
               </Button>
             )}
             {selectedSlot?.status === 'OCCUPIED' && (
@@ -295,7 +323,7 @@ export const OccupancyBoardPage: React.FC = () => {
                 loading={marking}
                 onClick={() => handleMarkOccupancy('AVAILABLE')}
               >
-                Mark Physically Free
+                Mark physically free
               </Button>
             )}
           </>
@@ -304,65 +332,74 @@ export const OccupancyBoardPage: React.FC = () => {
         {selectedSlot && (
           <div>
             {markError && (
-              <div className="error-state mb-4" role="alert">
-                <div className="error-icon">⚠️</div>
-                <div className="error-content">
-                  <p className="error-message">{markError}</p>
+              <div className="alert alert-danger" role="alert">
+                <span className="alert-icon text-danger">
+                  <Icon name="alert" size={18} />
+                </span>
+                <div className="alert-body">
+                  <p>{markError}</p>
                 </div>
               </div>
             )}
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.25rem' }}>
-              <div className="flex justify-between">
-                <span className="text-muted">Bay Identifier</span>
-                <span className="font-semibold">{selectedSlot.number}</span>
+            <div className="info-list">
+              <div className="info-row">
+                <span className="info-label">Bay identifier</span>
+                <span className="info-value font-mono">{selectedSlot.number}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-muted">Floor</span>
-                <span>Floor {selectedSlot.floor}</span>
+              <div className="info-row">
+                <span className="info-label">Floor</span>
+                <span className="info-value">Floor {selectedSlot.floor}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-muted">Category</span>
-                <span className="badge badge-info">{selectedSlot.slot_type}</span>
+              <div className="info-row">
+                <span className="info-label">Category</span>
+                <span className="info-value">
+                  <Badge variant="info">{selectedSlot.slot_type}</Badge>
+                </span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-muted">Physical Flag</span>
-                <span className="font-semibold">{selectedSlot.status}</span>
+              <div className="info-row">
+                <span className="info-label">Physical flag</span>
+                <span className="info-value">{selectedSlot.status.replace(/_/g, ' ')}</span>
               </div>
             </div>
 
             {selectedSlot.current_booking ? (
-              <div style={{ background: '#fef3c7', border: '1px solid #fde68a', padding: '0.85rem', borderRadius: '6px' }}>
-                <h4 style={{ fontSize: '0.9375rem', fontWeight: 600, color: '#92400e', marginBottom: '0.5rem' }}>
-                  Current In-Progress Booking
-                </h4>
-                <div className="flex justify-between" style={{ fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
-                  <span>Pass Reference:</span>
-                  <span className="font-mono font-semibold">{selectedSlot.current_booking.reference}</span>
-                </div>
-                <div className="flex justify-between" style={{ fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
-                  <span>Vehicle:</span>
-                  <span className="font-mono font-semibold">{selectedSlot.current_booking.vehicle_plate}</span>
-                </div>
-                <div className="flex justify-between" style={{ fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
-                  <span>Customer:</span>
-                  <span>{selectedSlot.current_booking.consumer_email}</span>
-                </div>
-                <div className="flex justify-between" style={{ fontSize: '0.8125rem', marginBottom: '0.25rem' }}>
-                  <span>Check-in Entry:</span>
-                  <span>{formatDateTime(selectedSlot.current_booking.actual_entry_at)}</span>
-                </div>
-                <div className="flex justify-between" style={{ fontSize: '0.8125rem' }}>
-                  <span>Reserved Until:</span>
-                  <span>{formatDateTime(selectedSlot.current_booking.end_time)}</span>
+              <div className="alert alert-warning mt-3 mb-0">
+                <span className="alert-icon">
+                  <Icon name="car" size={18} />
+                </span>
+                <div className="alert-body">
+                  <p className="alert-title">Current in-progress booking</p>
+                  <div className="row-between">
+                    <span>Pass reference</span>
+                    <span className="font-mono font-semibold">
+                      {selectedSlot.current_booking.reference}
+                    </span>
+                  </div>
+                  <div className="row-between">
+                    <span>Vehicle</span>
+                    <span className="font-mono font-semibold">
+                      {selectedSlot.current_booking.vehicle_plate}
+                    </span>
+                  </div>
+                  <div className="row-between">
+                    <span>Customer</span>
+                    <span>{selectedSlot.current_booking.consumer_email}</span>
+                  </div>
+                  <div className="row-between">
+                    <span>Check-in entry</span>
+                    <span>{formatDateTime(selectedSlot.current_booking.actual_entry_at)}</span>
+                  </div>
+                  <div className="row-between">
+                    <span>Reserved until</span>
+                    <span>{formatDateTime(selectedSlot.current_booking.end_time)}</span>
+                  </div>
                 </div>
               </div>
             ) : (
-              <div style={{ background: '#f8fafc', padding: '0.75rem', borderRadius: '4px', border: '1px solid #e2e8f0' }}>
-                <span className="text-muted" style={{ fontSize: '0.8125rem' }}>
-                  No active in-progress booking session associated with this bay right now.
-                </span>
-              </div>
+              <p className="text-muted mt-3 mb-0" style={{ fontSize: '0.875rem' }}>
+                No active in-progress booking session is associated with this bay right now.
+              </p>
             )}
           </div>
         )}
@@ -370,4 +407,3 @@ export const OccupancyBoardPage: React.FC = () => {
     </div>
   )
 }
-

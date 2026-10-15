@@ -5,6 +5,8 @@ import { usePaginated } from '../../hooks/usePaginated'
 import type { ConsumerBooking, BookingStatus } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { BookingStatusBadge } from '../../components/common/Badge'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { Pagination } from '../../components/common/Pagination'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { EmptyState } from '../../components/common/EmptyState'
@@ -47,23 +49,22 @@ export const MyBookingsPage: React.FC = () => {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">My Bookings</h1>
-          <p className="page-subtitle">View and manage your parking reservations</p>
-        </div>
-        <div className="page-actions">
-          <Link to="/consumer/search" className="btn btn-primary">
-            + Book New Slot
+      <PageHeader
+        eyebrow="Reservations"
+        title="My bookings"
+        subtitle="View and manage your parking reservations"
+        actions={
+          <Link to="/consumer/search" className="btn btn-primary btn-md">
+            <Icon name="plus" size={16} /> Book new slot
           </Link>
-        </div>
-      </div>
+        }
+      />
 
       {/* Filter Tabs & Selectors */}
       <div className="filter-bar">
-        <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
+        <div className="badge-row" style={{ gap: '0.25rem' }}>
           {[
-            { label: 'All Bookings', value: '' },
+            { label: 'All bookings', value: '' },
             { label: 'Upcoming', value: 'upcoming' },
             { label: 'Ongoing', value: 'ongoing' },
             { label: 'Past', value: 'past' },
@@ -92,10 +93,10 @@ export const MyBookingsPage: React.FC = () => {
               handleFilterChange(scope, e.target.value, ordering)
             }}
           >
-            <option value="">All Statuses</option>
-            <option value="PENDING_PAYMENT">Pending Payment</option>
+            <option value="">All statuses</option>
+            <option value="PENDING_PAYMENT">Pending payment</option>
             <option value="CONFIRMED">Confirmed</option>
-            <option value="IN_PROGRESS">In Progress</option>
+            <option value="IN_PROGRESS">In progress</option>
             <option value="COMPLETED">Completed</option>
             <option value="CANCELLED">Cancelled</option>
             <option value="EXPIRED">Expired</option>
@@ -110,14 +111,13 @@ export const MyBookingsPage: React.FC = () => {
               handleFilterChange(scope, status, e.target.value)
             }}
           >
-            <option value="-start_time">Start Time (Newest First)</option>
-            <option value="start_time">Start Time (Earliest First)</option>
-            <option value="-created_at">Booked Date (Newest First)</option>
+            <option value="-start_time">Start time (newest first)</option>
+            <option value="start_time">Start time (earliest first)</option>
+            <option value="-created_at">Booked date (newest first)</option>
           </select>
         </div>
       </div>
 
-      {/* Bookings Table */}
       <Card>
         {loading ? (
           <LoadingSpinner message="Loading your bookings..." />
@@ -131,7 +131,7 @@ export const MyBookingsPage: React.FC = () => {
             }
             action={
               <Link to="/consumer/search" className="btn btn-primary btn-sm">
-                Search Parking Lots
+                Search parking lots
               </Link>
             }
           />
@@ -142,12 +142,12 @@ export const MyBookingsPage: React.FC = () => {
                 <thead>
                   <tr>
                     <th>Reference</th>
-                    <th>Parking Facility</th>
+                    <th>Parking facility</th>
                     <th>Slot</th>
                     <th>Vehicle</th>
-                    <th>Start Time</th>
-                    <th>End Time</th>
-                    <th>Effective Status</th>
+                    <th>Start time</th>
+                    <th>End time</th>
+                    <th>Status</th>
                     <th>Amount</th>
                     <th>Action</th>
                   </tr>
@@ -158,7 +158,9 @@ export const MyBookingsPage: React.FC = () => {
                       <td className="font-mono font-semibold">{b.reference}</td>
                       <td>
                         <strong>{b.lot_name}</strong>
-                        <div className="text-muted" style={{ fontSize: '0.75rem' }}>{b.lot_code}</div>
+                        <div className="text-muted" style={{ fontSize: '0.75rem' }}>
+                          {b.lot_code}
+                        </div>
                       </td>
                       <td>Slot {b.slot_number}</td>
                       <td className="font-mono">{b.vehicle_plate}</td>
@@ -170,7 +172,7 @@ export const MyBookingsPage: React.FC = () => {
                       <td className="font-semibold">{formatMoney(b.base_amount)}</td>
                       <td>
                         <Link to={`/consumer/bookings/${b.id}`} className="btn btn-outline btn-sm">
-                          Details →
+                          Details <Icon name="arrowRight" size={14} />
                         </Link>
                       </td>
                     </tr>
@@ -193,4 +195,3 @@ export const MyBookingsPage: React.FC = () => {
     </div>
   )
 }
-

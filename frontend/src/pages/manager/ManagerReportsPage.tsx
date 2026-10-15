@@ -6,6 +6,9 @@ import { usePaginated } from '../../hooks/usePaginated'
 import type { BookingsReport, RevenueReport, OccupancyReport, ParkingLot } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
+import { StatTile } from '../../components/common/StatTile'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { ErrorState } from '../../components/common/ErrorState'
 import { formatMoney } from '../../lib/format'
@@ -57,22 +60,17 @@ export const ManagerReportsPage: React.FC = () => {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Operations Reports & Analytics</h1>
-          <p className="page-subtitle">Real-time statistics for bookings, revenue, and bay utilization</p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Analytics"
+        title="Operations reports"
+        subtitle="Bookings, revenue and bay-utilization statistics for your facilities"
+      />
 
       {/* Date & Facility Filters */}
       <form onSubmit={handleApplyFilter} className="filter-bar">
-        <div style={{ minWidth: '180px' }}>
-          <select
-            className="form-control"
-            value={lot}
-            onChange={(e) => setLot(e.target.value)}
-          >
-            <option value="">All Assigned Facilities</option>
+        <div style={{ minWidth: '200px' }}>
+          <select className="form-control" value={lot} onChange={(e) => setLot(e.target.value)}>
+            <option value="">All assigned facilities</option>
             {lots.map((l) => (
               <option key={l.id} value={l.id}>
                 {l.name} ({l.code})
@@ -85,7 +83,7 @@ export const ManagerReportsPage: React.FC = () => {
           <input
             type="date"
             className="form-control"
-            placeholder="From Date"
+            placeholder="From date"
             value={from}
             onChange={(e) => setFrom(e.target.value)}
           />
@@ -95,69 +93,71 @@ export const ManagerReportsPage: React.FC = () => {
           <input
             type="date"
             className="form-control"
-            placeholder="To Date"
+            placeholder="To date"
             value={to}
             onChange={(e) => setTo(e.target.value)}
           />
         </div>
 
         <Button type="submit" variant="primary">
-          Generate Report
+          <Icon name="chart" size={16} /> Generate report
         </Button>
 
         {(lotParam || fromParam || toParam) && (
           <Button type="button" variant="outline" onClick={handleReset}>
-            Reset (Trailing 30d)
+            <Icon name="close" size={16} /> Reset (trailing 30d)
           </Button>
         )}
       </form>
 
       {/* Revenue Section */}
-      <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem' }}>Financial Revenue Performance</h2>
+      <h2 className="section-title">Financial revenue performance</h2>
       {errorRevenue ? (
         <ErrorState error={errorRevenue} title="Revenue report unavailable" onRetry={refetchRevenue} />
       ) : loadingRevenue ? (
         <LoadingSpinner message="Aggregating revenue ledger..." />
       ) : (
         <div className="grid grid-cols-4 mb-4">
-          <div className="stat-card" style={{ borderColor: 'var(--success-border)' }}>
-            <div className="stat-label" style={{ color: 'var(--success)' }}>Net Revenue</div>
-            <div className="stat-value" style={{ color: 'var(--success)' }}>
-              {formatMoney(revenueData?.net ?? '0')}
-            </div>
-            <div className="stat-meta">Settled minus refunds</div>
-          </div>
-
-          <div className="stat-card">
-            <div className="stat-label">Gross Collected</div>
-            <div className="stat-value">{formatMoney(revenueData?.gross ?? '0')}</div>
-            <div className="stat-meta">
-              Bookings: {formatMoney(revenueData?.by_purpose.BOOKING ?? '0')} · Ext: {formatMoney(revenueData?.by_purpose.EXTENSION ?? '0')}
-            </div>
-          </div>
-
-          <div className="stat-card">
-            <div className="stat-label">Refunded Amount</div>
-            <div className="stat-value" style={{ color: 'var(--danger)' }}>
-              {formatMoney(revenueData?.refunded ?? '0')}
-            </div>
-            <div className="stat-meta">Via cancellation cutoff</div>
-          </div>
-
-          <div className="stat-card" style={{ background: '#fffbeb', borderColor: '#fde68a' }}>
-            <div className="stat-label" style={{ color: '#92400e' }}>Overstay Recorded</div>
-            <div className="stat-value" style={{ color: '#92400e' }}>
-              {formatMoney(revenueData?.overstay_recorded ?? '0')}
-            </div>
-            <div className="stat-meta">Recorded debt (not collected)</div>
-          </div>
+          <StatTile
+            label="Net revenue"
+            value={formatMoney(revenueData?.net ?? '0')}
+            icon="wallet"
+            tone="success"
+            meta="Settled minus refunds"
+          />
+          <StatTile
+            label="Gross collected"
+            value={formatMoney(revenueData?.gross ?? '0')}
+            icon="receipt"
+            tone="default"
+            meta={
+              <>
+                Bookings {formatMoney(revenueData?.by_purpose.BOOKING ?? '0')} · Ext{' '}
+                {formatMoney(revenueData?.by_purpose.EXTENSION ?? '0')}
+              </>
+            }
+          />
+          <StatTile
+            label="Refunded amount"
+            value={formatMoney(revenueData?.refunded ?? '0')}
+            icon="logout"
+            tone="danger"
+            meta="Via cancellation cutoff"
+          />
+          <StatTile
+            label="Overstay recorded"
+            value={formatMoney(revenueData?.overstay_recorded ?? '0')}
+            icon="clock"
+            tone="warning"
+            meta="Recorded debt (not collected)"
+          />
         </div>
       )}
 
       {/* Bookings & Utilization Grid */}
       <div className="grid grid-cols-2 mb-4">
         {/* Bookings Cohort Breakdown */}
-        <Card title="Bookings Cohort Breakdown" subtitle="Current status of reservations created in selected period">
+        <Card title="Bookings cohort" subtitle="Status of reservations created in the selected period">
           {errorBookings ? (
             <ErrorState error={errorBookings} title="Bookings report unavailable" onRetry={refetchBookings} />
           ) : loadingBookings ? (
@@ -165,15 +165,13 @@ export const ManagerReportsPage: React.FC = () => {
           ) : (
             <div>
               <div className="grid grid-cols-2 mb-3">
-                <div className="p-3" style={{ background: '#f8fafc', borderRadius: '4px' }}>
-                  <div className="text-muted" style={{ fontSize: '0.75rem' }}>TOTAL CREATED</div>
-                  <div style={{ fontSize: '1.5rem', fontWeight: 700 }}>{bookingsData?.total ?? 0}</div>
+                <div className="mini-stat">
+                  <div className="mini-stat-label">Total created</div>
+                  <div className="mini-stat-value">{bookingsData?.total ?? 0}</div>
                 </div>
-                <div className="p-3" style={{ background: '#eff6ff', borderRadius: '4px' }}>
-                  <div className="text-muted" style={{ fontSize: '0.75rem' }}>ACTIVE NOW IN LOT</div>
-                  <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--primary)' }}>
-                    {bookingsData?.active_now ?? 0}
-                  </div>
+                <div className="mini-stat">
+                  <div className="mini-stat-label">Active now in lot</div>
+                  <div className="mini-stat-value text-primary">{bookingsData?.active_now ?? 0}</div>
                 </div>
               </div>
 
@@ -202,30 +200,33 @@ export const ManagerReportsPage: React.FC = () => {
         </Card>
 
         {/* Occupancy Utilization */}
-        <Card title="Bay Occupancy Metrics" subtitle="Real-time physical rate vs windowed reservation proxy">
+        <Card title="Bay occupancy" subtitle="Live physical rate vs windowed reservation proxy">
           {errorOccupancy ? (
             <ErrorState error={errorOccupancy} title="Occupancy metrics unavailable" onRetry={refetchOccupancy} />
           ) : loadingOccupancy ? (
             <LoadingSpinner size="sm" />
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div style={{ padding: '1rem', background: '#f8fafc', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
-                <div className="text-muted" style={{ fontSize: '0.8125rem' }}>LIVE OCCUPANCY RATE</div>
-                <div style={{ fontSize: '2rem', fontWeight: 800, color: 'var(--primary)', margin: '0.25rem 0' }}>
+            <div className="stack">
+              <div className="mini-stat">
+                <div className="mini-stat-label">Live occupancy rate</div>
+                <div className="mini-stat-value text-primary">
                   {((occupancyData?.current.rate ?? 0) * 100).toFixed(1)}%
                 </div>
-                <p style={{ fontSize: '0.8125rem', color: '#64748b' }}>
-                  {occupancyData?.current.occupied ?? 0} bays occupied of {occupancyData?.current.total ?? 0} total configured bays right now.
+                <p className="muted-sm mb-0">
+                  {occupancyData?.current.occupied ?? 0} bays occupied of{' '}
+                  {occupancyData?.current.total ?? 0} configured bays right now.
                 </p>
               </div>
 
-              <div style={{ padding: '1rem', background: '#f8fafc', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
-                <div className="text-muted" style={{ fontSize: '0.8125rem' }}>WINDOW BOOKED-HOURS PROXY</div>
-                <div style={{ fontSize: '2rem', fontWeight: 800, color: 'var(--warning)', margin: '0.25rem 0' }}>
+              <div className="mini-stat">
+                <div className="mini-stat-label">Window booked-hours proxy</div>
+                <div className="mini-stat-value" style={{ color: 'var(--warning)' }}>
                   {((occupancyData?.window.booked_rate ?? 0) * 100).toFixed(1)}%
                 </div>
-                <p style={{ fontSize: '0.8125rem', color: '#64748b' }}>
-                  {occupancyData?.window.booked_hours ?? 0} hours booked across {occupancyData?.window.bookings ?? 0} reservations within the window ({occupancyData?.window.bookable_hours ?? 0} total bookable slot hours).
+                <p className="muted-sm mb-0">
+                  {occupancyData?.window.booked_hours ?? 0} hours booked across{' '}
+                  {occupancyData?.window.bookings ?? 0} reservations within the window (
+                  {occupancyData?.window.bookable_hours ?? 0} total bookable slot hours).
                 </p>
               </div>
             </div>
@@ -235,4 +236,3 @@ export const ManagerReportsPage: React.FC = () => {
     </div>
   )
 }
-

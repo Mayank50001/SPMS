@@ -6,6 +6,10 @@ import { useApi } from '../../hooks/useApi'
 import { usePaginated } from '../../hooks/usePaginated'
 import type { BookingsReport, RevenueReport, OccupancyReport, ParkingLot } from '../../api/types'
 import { Card } from '../../components/common/Card'
+import { Badge } from '../../components/common/Badge'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
+import { StatTile } from '../../components/common/StatTile'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { formatMoney } from '../../lib/format'
 
@@ -20,81 +24,145 @@ export const ManagerDashboardPage: React.FC = () => {
   // Manager's assigned lots
   const { results: lots, loading: loadingLots } = usePaginated<ParkingLot>('/parking-lots/', { pageSize: 5 })
 
+  const occ = occupancyReport?.current
+  const occTotal = occ?.total ?? 0
+  const pct = (n: number) => (occTotal > 0 ? `${(n / occTotal) * 100}%` : '0%')
+
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Manager Workspace</h1>
-          <p className="page-subtitle">Logged in as {user?.full_name} · Operations Dashboard</p>
-        </div>
-        <div className="page-actions">
-          <Link to="/manager/bookings" className="btn btn-primary">
-            Gate Check-in / Out
-          </Link>
-          <Link to="/manager/lots" className="btn btn-secondary">
-            Manage Assigned Lots
-          </Link>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Manager workspace"
+        title={`Welcome, ${user?.full_name || 'Manager'}`}
+        subtitle="Operations dashboard for your assigned parking facilities"
+        actions={
+          <>
+            <Link to="/manager/bookings" className="btn btn-primary btn-md">
+              <Icon name="ticket" size={16} /> Gate check-in / out
+            </Link>
+            <Link to="/manager/lots" className="btn btn-outline btn-md">
+              <Icon name="building" size={16} /> My facilities
+            </Link>
+          </>
+        }
+      />
 
       {/* Primary KPI Metrics */}
       <div className="grid grid-cols-4 mb-4">
-        <div className="stat-card" style={errorBookings ? { borderColor: 'var(--danger)' } : undefined}>
-          <div className="stat-label">Currently Parked</div>
-          <div className="stat-value" style={{ color: errorBookings ? 'var(--danger)' : 'var(--primary)', fontSize: errorBookings ? '1.25rem' : undefined }}>
-            {errorBookings ? 'Unavailable' : loadingBookings ? '...' : bookingsReport?.active_now ?? 0}
-          </div>
-          <div className="stat-meta">{errorBookings ? 'Failed to load metric' : 'Active vehicles in bays'}</div>
-        </div>
+        <StatTile
+          label="Currently parked"
+          icon="car"
+          tone="primary"
+          value={
+            errorBookings ? (
+              <span className="text-danger" style={{ fontSize: '1.1rem' }}>Unavailable</span>
+            ) : loadingBookings ? (
+              '…'
+            ) : (
+              bookingsReport?.active_now ?? 0
+            )
+          }
+          meta={errorBookings ? 'Failed to load metric' : 'Active vehicles in bays'}
+        />
 
-        <div className="stat-card" style={errorOccupancy ? { borderColor: 'var(--danger)' } : undefined}>
-          <div className="stat-label">Live Occupancy Rate</div>
-          <div className="stat-value" style={{ color: errorOccupancy ? 'var(--danger)' : 'var(--warning)', fontSize: errorOccupancy ? '1.25rem' : undefined }}>
-            {errorOccupancy ? 'Unavailable' : loadingOccupancy ? '...' : `${((occupancyReport?.current.rate ?? 0) * 100).toFixed(1)}%`}
-          </div>
-          <div className="stat-meta">
-            {errorOccupancy ? 'Failed to load metric' : `${occupancyReport?.current.occupied ?? 0} of ${occupancyReport?.current.total ?? 0} bays`}
-          </div>
-        </div>
+        <StatTile
+          label="Live occupancy"
+          icon="grid"
+          tone="warning"
+          value={
+            errorOccupancy ? (
+              <span className="text-danger" style={{ fontSize: '1.1rem' }}>Unavailable</span>
+            ) : loadingOccupancy ? (
+              '…'
+            ) : (
+              `${((occupancyReport?.current.rate ?? 0) * 100).toFixed(1)}%`
+            )
+          }
+          meta={
+            errorOccupancy
+              ? 'Failed to load metric'
+              : `${occ?.occupied ?? 0} of ${occ?.total ?? 0} bays`
+          }
+        />
 
-        <div className="stat-card" style={errorRevenue ? { borderColor: 'var(--danger)' } : undefined}>
-          <div className="stat-label">Net Revenue (30d)</div>
-          <div className="stat-value" style={{ color: errorRevenue ? 'var(--danger)' : 'var(--success)', fontSize: errorRevenue ? '1.25rem' : undefined }}>
-            {errorRevenue ? 'Unavailable' : loadingRevenue ? '...' : formatMoney(revenueReport?.net ?? '0')}
-          </div>
-          <div className="stat-meta">{errorRevenue ? 'Failed to load metric' : `Gross: ${formatMoney(revenueReport?.gross ?? '0')}`}</div>
-        </div>
+        <StatTile
+          label="Net revenue (30d)"
+          icon="wallet"
+          tone="success"
+          value={
+            errorRevenue ? (
+              <span className="text-danger" style={{ fontSize: '1.1rem' }}>Unavailable</span>
+            ) : loadingRevenue ? (
+              '…'
+            ) : (
+              formatMoney(revenueReport?.net ?? '0')
+            )
+          }
+          meta={errorRevenue ? 'Failed to load metric' : `Gross: ${formatMoney(revenueReport?.gross ?? '0')}`}
+        />
 
-        <div className="stat-card" style={errorBookings ? { borderColor: 'var(--danger)' } : undefined}>
-          <div className="stat-label">Total Completed</div>
-          <div className="stat-value" style={{ color: errorBookings ? 'var(--danger)' : undefined, fontSize: errorBookings ? '1.25rem' : undefined }}>
-            {errorBookings ? 'Unavailable' : loadingBookings ? '...' : bookingsReport?.completed ?? 0}
-          </div>
-          <div className="stat-meta">{errorBookings ? 'Failed to load metric' : `${bookingsReport?.total ?? 0} created in period`}</div>
-        </div>
+        <StatTile
+          label="Total completed"
+          icon="check"
+          tone="info"
+          value={
+            errorBookings ? (
+              <span className="text-danger" style={{ fontSize: '1.1rem' }}>Unavailable</span>
+            ) : loadingBookings ? (
+              '…'
+            ) : (
+              bookingsReport?.completed ?? 0
+            )
+          }
+          meta={errorBookings ? 'Failed to load metric' : `${bookingsReport?.total ?? 0} created in period`}
+        />
       </div>
+
+      {/* Live occupancy breakdown */}
+      {!loadingOccupancy && !errorOccupancy && occ && occTotal > 0 && (
+        <Card
+          title="Live occupancy breakdown"
+          subtitle={`${occ.occupied} of ${occ.total} bays occupied · ${(occ.rate * 100).toFixed(1)}% full`}
+        >
+          <div className="occ-bar">
+            <div className="occ-seg occ-seg-occupied" style={{ width: pct(occ.occupied) }} />
+            <div className="occ-seg occ-seg-available" style={{ width: pct(occ.available) }} />
+            <div className="occ-seg occ-seg-oos" style={{ width: pct(occ.out_of_service) }} />
+          </div>
+          <div className="legend">
+            <span className="legend-item">
+              <span className="legend-dot occ-seg-occupied" /> Occupied {occ.occupied}
+            </span>
+            <span className="legend-item">
+              <span className="legend-dot occ-seg-available" /> Available {occ.available}
+            </span>
+            <span className="legend-item">
+              <span className="legend-dot occ-seg-oos" /> Out of service {occ.out_of_service}
+            </span>
+          </div>
+        </Card>
+      )}
 
       {/* Assigned Lots List */}
       <Card
-        title="My Assigned Parking Facilities"
+        title="My assigned parking facilities"
         subtitle="Lots under your direct operational management"
         action={
           <Link to="/manager/lots" className="btn btn-outline btn-sm">
-            View All Lots
+            View all lots
           </Link>
         }
       >
         {loadingLots ? (
           <LoadingSpinner message="Loading assigned lots..." />
         ) : lots.length === 0 ? (
-          <p className="text-muted">No parking facilities currently assigned to your manager account.</p>
+          <p className="text-muted">No parking facilities are currently assigned to your manager account.</p>
         ) : (
           <div className="table-wrapper">
             <table className="table">
               <thead>
                 <tr>
                   <th>Code</th>
-                  <th>Facility Name</th>
+                  <th>Facility name</th>
                   <th>City</th>
                   <th>Status</th>
                   <th>Actions</th>
@@ -107,14 +175,14 @@ export const ManagerDashboardPage: React.FC = () => {
                     <td>{lot.name}</td>
                     <td>{lot.city.name}</td>
                     <td>
-                      <span className={`badge ${lot.is_active ? 'badge-success' : 'badge-danger'}`}>
+                      <Badge variant={lot.is_active ? 'success' : 'danger'}>
                         {lot.is_active ? 'Active' : 'Inactive'}
-                      </span>
+                      </Badge>
                     </td>
                     <td>
-                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <div className="toolbar">
                         <Link to={`/manager/lots/${lot.id}/occupancy`} className="btn btn-primary btn-sm">
-                          Live Board
+                          Live board
                         </Link>
                         <Link to={`/manager/lots/${lot.id}/slots`} className="btn btn-outline btn-sm">
                           Slots
@@ -134,4 +202,3 @@ export const ManagerDashboardPage: React.FC = () => {
     </div>
   )
 }
-

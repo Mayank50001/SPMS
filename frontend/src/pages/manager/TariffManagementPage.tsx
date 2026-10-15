@@ -8,6 +8,9 @@ import { ApiError, getFriendlyErrorMessage } from '../../api/errors'
 import type { Tariff, SlotType, BusinessRules, ParkingLot } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
+import { Badge } from '../../components/common/Badge'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { Modal } from '../../components/common/Modal'
 import { Pagination } from '../../components/common/Pagination'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
@@ -127,32 +130,38 @@ export const TariffManagementPage: React.FC = () => {
 
   return (
     <div>
-      <div className="mb-2">
-        <Link to={`/manager/lots/${lotId}`} className="text-muted" style={{ fontSize: '0.875rem' }}>
-          ← Back to Facility Overview
-        </Link>
-      </div>
+      <Link to={`/manager/lots/${lotId}`} className="link-back mb-3">
+        <span aria-hidden="true">←</span> Back to facility overview
+      </Link>
 
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Tariffs & Pricing</h1>
-          <p className="page-subtitle">
-            {lot?.name} ({lot?.code}) · Configure hourly pricing per slot category
-          </p>
-        </div>
-        <div className="page-actions">
+      <PageHeader
+        eyebrow="Pricing"
+        title="Tariffs &amp; pricing"
+        subtitle={
+          <>
+            {lot?.name} ({lot?.code}) · Hourly pricing per slot category
+          </>
+        }
+        actions={
           <Button variant="primary" onClick={handleOpenAdd}>
-            + Add Tariff Rate
+            <Icon name="plus" size={16} /> Add tariff rate
           </Button>
-        </div>
-      </div>
+        }
+      />
 
       {rules && (
-        <div className="mb-4 p-3" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '6px' }}>
-          <strong style={{ fontSize: '0.8125rem', color: '#334155' }}>Platform Pricing Policy: </strong>
-          <span style={{ fontSize: '0.8125rem', color: '#64748b' }}>
-            Maximum allowed hourly rate across all facilities is <strong>{formatMoney(rules.max_hourly_rate)}</strong>. Tariffs configured above this limit will be rejected.
+        <div className="alert alert-info">
+          <span className="alert-icon text-primary">
+            <Icon name="info" size={18} />
           </span>
+          <div className="alert-body">
+            <p className="alert-title">Platform pricing policy</p>
+            <p>
+              The maximum allowed hourly rate across all facilities is{' '}
+              <strong>{formatMoney(rules.max_hourly_rate)}</strong>. Tariffs configured above this
+              limit will be rejected.
+            </p>
+          </div>
         </div>
       )}
 
@@ -165,7 +174,7 @@ export const TariffManagementPage: React.FC = () => {
             message="Slots cannot be created or booked without a configured tariff rate for their slot type."
             action={
               <Button variant="primary" size="sm" onClick={handleOpenAdd}>
-                Add First Tariff
+                Add first tariff
               </Button>
             }
           />
@@ -175,9 +184,9 @@ export const TariffManagementPage: React.FC = () => {
               <table className="table">
                 <thead>
                   <tr>
-                    <th>Slot Category</th>
+                    <th>Slot category</th>
                     <th>Identifier</th>
-                    <th>Hourly Rate</th>
+                    <th>Hourly rate</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
@@ -188,14 +197,14 @@ export const TariffManagementPage: React.FC = () => {
                         <strong>{t.slot_type_label || t.slot_type}</strong>
                       </td>
                       <td>
-                        <span className="font-mono">{t.slot_type}</span>
+                        <Badge variant="neutral">{t.slot_type}</Badge>
                       </td>
                       <td className="font-semibold" style={{ fontSize: '1rem' }}>
                         {formatMoney(t.hourly_rate)} / hr
                       </td>
                       <td>
                         <Button variant="outline" size="sm" onClick={() => handleOpenEdit(t)}>
-                          Edit Rate
+                          Edit rate
                         </Button>
                       </td>
                     </tr>
@@ -219,7 +228,7 @@ export const TariffManagementPage: React.FC = () => {
       {/* Add Tariff Modal */}
       <Modal
         isOpen={showAddModal}
-        title="Add Pricing Tariff"
+        title="Add pricing tariff"
         onClose={() => setShowAddModal(false)}
         footer={
           <>
@@ -227,16 +236,18 @@ export const TariffManagementPage: React.FC = () => {
               Cancel
             </Button>
             <Button variant="primary" loading={saving} onClick={handleCreateTariff}>
-              Save Tariff
+              Save tariff
             </Button>
           </>
         }
       >
         {error && (
-          <div className="error-state mb-4" role="alert">
-            <div className="error-icon">⚠️</div>
-            <div className="error-content">
-              <p className="error-message">{error}</p>
+          <div className="alert alert-danger" role="alert">
+            <span className="alert-icon text-danger">
+              <Icon name="alert" size={18} />
+            </span>
+            <div className="alert-body">
+              <p>{error}</p>
             </div>
           </div>
         )}
@@ -244,7 +255,7 @@ export const TariffManagementPage: React.FC = () => {
         <form onSubmit={handleCreateTariff}>
           <div className="form-group">
             <label className="form-label">
-              Slot Type Category <span className="required">*</span>
+              Slot type category <span className="required">*</span>
             </label>
             <select
               className="form-control"
@@ -261,7 +272,7 @@ export const TariffManagementPage: React.FC = () => {
 
           <div className="form-group">
             <label className="form-label">
-              Hourly Rate (INR) <span className="required">*</span>
+              Hourly rate (INR) <span className="required">*</span>
             </label>
             <input
               type="text"
@@ -280,7 +291,7 @@ export const TariffManagementPage: React.FC = () => {
       {/* Edit Tariff Modal */}
       <Modal
         isOpen={editingTariff !== null}
-        title={`Edit Tariff: ${editingTariff?.slot_type_label || editingTariff?.slot_type}`}
+        title={`Edit tariff: ${editingTariff?.slot_type_label || editingTariff?.slot_type}`}
         onClose={() => setEditingTariff(null)}
         footer={
           <>
@@ -288,24 +299,26 @@ export const TariffManagementPage: React.FC = () => {
               Cancel
             </Button>
             <Button variant="primary" loading={saving} onClick={handleUpdateTariff}>
-              Update Rate
+              Update rate
             </Button>
           </>
         }
       >
         {error && (
-          <div className="error-state mb-4" role="alert">
-            <div className="error-icon">⚠️</div>
-            <div className="error-content">
-              <p className="error-message">{error}</p>
+          <div className="alert alert-danger" role="alert">
+            <span className="alert-icon text-danger">
+              <Icon name="alert" size={18} />
+            </span>
+            <div className="alert-body">
+              <p>{error}</p>
             </div>
           </div>
         )}
 
         <form onSubmit={handleUpdateTariff}>
-          <div className="form-group">
+          <div className="form-group mb-0">
             <label className="form-label">
-              Hourly Rate (INR) <span className="required">*</span>
+              Hourly rate (INR) <span className="required">*</span>
             </label>
             <input
               type="text"
@@ -321,4 +334,3 @@ export const TariffManagementPage: React.FC = () => {
     </div>
   )
 }
-

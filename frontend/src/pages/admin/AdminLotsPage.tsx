@@ -8,6 +8,9 @@ import { ApiError, getFriendlyErrorMessage } from '../../api/errors'
 import type { ParkingLot, City, User } from '../../api/types'
 import { Card } from '../../components/common/Card'
 import { Button } from '../../components/common/Button'
+import { Badge } from '../../components/common/Badge'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { Modal } from '../../components/common/Modal'
 import { Pagination } from '../../components/common/Pagination'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
@@ -50,6 +53,7 @@ export const AdminLotsPage: React.FC = () => {
   const [newCityCode, setNewCityCode] = useState('')
   const [newCityName, setNewCityName] = useState('')
   const [citySaving, setCitySaving] = useState(false)
+  const [cityError, setCityError] = useState<string | null>(null)
 
   // Edit Lot Modal
   const [editingLot, setEditingLot] = useState<ParkingLot | null>(null)
@@ -79,6 +83,7 @@ export const AdminLotsPage: React.FC = () => {
   const handleCreateCity = async (e: React.FormEvent) => {
     e.preventDefault()
     setCitySaving(true)
+    setCityError(null)
     try {
       await apiFetch<City>('/cities/', {
         method: 'POST',
@@ -93,7 +98,11 @@ export const AdminLotsPage: React.FC = () => {
       setNewCityCode('')
       setNewCityName('')
     } catch (err) {
-      alert(getFriendlyErrorMessage(err))
+      if (err instanceof ApiError) {
+        setCityError(getFriendlyErrorMessage(err))
+      } else {
+        setCityError('Failed to register city.')
+      }
     } finally {
       setCitySaving(false)
     }
@@ -178,20 +187,27 @@ export const AdminLotsPage: React.FC = () => {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Parking Facilities</h1>
-          <p className="page-subtitle">Configure parking lots, geographic codes, and manager assignments</p>
-        </div>
-        <div className="page-actions">
-          <Button variant="secondary" onClick={() => setShowCityModal(true)}>
-            + Add City
-          </Button>
-          <Button variant="primary" onClick={handleOpenAdd}>
-            + Add Parking Lot
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Governance"
+        title="Parking facilities"
+        subtitle="Configure parking lots, geographic codes and manager assignments"
+        actions={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setCityError(null)
+                setShowCityModal(true)
+              }}
+            >
+              <Icon name="plus" size={16} /> Add city
+            </Button>
+            <Button variant="primary" onClick={handleOpenAdd}>
+              <Icon name="plus" size={16} /> Add parking lot
+            </Button>
+          </>
+        }
+      />
 
       <Card>
         {loading ? (
@@ -202,7 +218,7 @@ export const AdminLotsPage: React.FC = () => {
             message="Get started by creating your first parking facility."
             action={
               <Button variant="primary" size="sm" onClick={handleOpenAdd}>
-                Add Facility
+                Add facility
               </Button>
             }
           />
@@ -212,10 +228,10 @@ export const AdminLotsPage: React.FC = () => {
               <table className="table">
                 <thead>
                   <tr>
-                    <th>Facility Code</th>
+                    <th>Facility code</th>
                     <th>Name</th>
-                    <th>City / Address</th>
-                    <th>Assigned Manager</th>
+                    <th>City / address</th>
+                    <th>Assigned manager</th>
                     <th>Status</th>
                     <th>Actions</th>
                   </tr>
@@ -225,8 +241,8 @@ export const AdminLotsPage: React.FC = () => {
                     const managerUser = managers.find((m) => m.id === lot.manager)
                     return (
                       <tr key={lot.id}>
-                        <td className="font-mono font-semibold" style={{ fontSize: '1rem' }}>
-                          {lot.code}
+                        <td>
+                          <span className="plate">{lot.code}</span>
                         </td>
                         <td>
                           <strong>{lot.name}</strong>
@@ -234,27 +250,31 @@ export const AdminLotsPage: React.FC = () => {
                         </td>
                         <td>
                           <div>{lot.city.name} ({lot.city.code})</div>
-                          <div className="text-muted" style={{ fontSize: '0.75rem' }}>{lot.address_line}</div>
+                          <div className="text-muted" style={{ fontSize: '0.75rem' }}>
+                            {lot.address_line}
+                          </div>
                         </td>
                         <td>
                           {managerUser ? (
                             <div>
                               <strong>{managerUser.full_name}</strong>
-                              <div className="text-muted" style={{ fontSize: '0.75rem' }}>{managerUser.email}</div>
+                              <div className="text-muted" style={{ fontSize: '0.75rem' }}>
+                                {managerUser.email}
+                              </div>
                             </div>
                           ) : (
                             <span className="text-muted">Unassigned</span>
                           )}
                         </td>
                         <td>
-                          <span className={`badge ${lot.is_active ? 'badge-success' : 'badge-danger'}`}>
+                          <Badge variant={lot.is_active ? 'success' : 'danger'}>
                             {lot.is_active ? 'Active' : 'Inactive'}
-                          </span>
+                          </Badge>
                         </td>
                         <td>
-                          <div style={{ display: 'flex', gap: '0.35rem' }}>
+                          <div className="toolbar" style={{ gap: '0.35rem' }}>
                             <Button variant="outline" size="sm" onClick={() => handleOpenEdit(lot)}>
-                              Edit / Assign
+                              Edit / assign
                             </Button>
                             <Link to={`/manager/lots/${lot.id}/slots`} className="btn btn-secondary btn-sm">
                               Slots
@@ -286,7 +306,7 @@ export const AdminLotsPage: React.FC = () => {
       {/* Add Lot Modal */}
       <Modal
         isOpen={showAddModal}
-        title="Add Parking Facility"
+        title="Add parking facility"
         onClose={() => setShowAddModal(false)}
         footer={
           <>
@@ -294,16 +314,18 @@ export const AdminLotsPage: React.FC = () => {
               Cancel
             </Button>
             <Button variant="primary" loading={saving} onClick={handleCreateLot}>
-              Save Facility
+              Save facility
             </Button>
           </>
         }
       >
         {error && (
-          <div className="error-state mb-4" role="alert">
-            <div className="error-icon">⚠️</div>
-            <div className="error-content">
-              <p className="error-message">{error}</p>
+          <div className="alert alert-danger" role="alert">
+            <span className="alert-icon text-danger">
+              <Icon name="alert" size={18} />
+            </span>
+            <div className="alert-body">
+              <p>{error}</p>
             </div>
           </div>
         )}
@@ -331,7 +353,7 @@ export const AdminLotsPage: React.FC = () => {
 
             <div className="form-col" style={{ maxWidth: '120px' }}>
               <label className="form-label">
-                Lot Number <span className="required">*</span>
+                Lot number <span className="required">*</span>
               </label>
               <input
                 type="number"
@@ -346,9 +368,9 @@ export const AdminLotsPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="form-group mt-2">
+          <div className="form-group mt-3">
             <label className="form-label">
-              Facility Name <span className="required">*</span>
+              Facility name <span className="required">*</span>
             </label>
             <input
               type="text"
@@ -363,7 +385,7 @@ export const AdminLotsPage: React.FC = () => {
 
           <div className="form-group">
             <label className="form-label">
-              Address Line <span className="required">*</span>
+              Address line <span className="required">*</span>
             </label>
             <input
               type="text"
@@ -389,7 +411,7 @@ export const AdminLotsPage: React.FC = () => {
             </div>
 
             <div className="form-col">
-              <label className="form-label">Postal Code</label>
+              <label className="form-label">Postal code</label>
               <input
                 type="text"
                 className="form-control"
@@ -400,15 +422,15 @@ export const AdminLotsPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="form-row mt-2">
+          <div className="form-row mt-3">
             <div className="form-col">
-              <label className="form-label">Assign Manager</label>
+              <label className="form-label">Assign manager</label>
               <select
                 className="form-control"
                 value={managerId}
                 onChange={(e) => setManagerId(e.target.value ? Number(e.target.value) : '')}
               >
-                <option value="">None (Unassigned)</option>
+                <option value="">None (unassigned)</option>
                 {managers.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.full_name} ({m.email})
@@ -418,13 +440,13 @@ export const AdminLotsPage: React.FC = () => {
             </div>
 
             <div className="form-col">
-              <label className="form-label">Active Status</label>
+              <label className="form-label">Active status</label>
               <select
                 className="form-control"
                 value={String(isActive)}
                 onChange={(e) => setIsActive(e.target.value === 'true')}
               >
-                <option value="true">Active (Accepts Bookings)</option>
+                <option value="true">Active (accepts bookings)</option>
                 <option value="false">Inactive</option>
               </select>
             </div>
@@ -435,7 +457,7 @@ export const AdminLotsPage: React.FC = () => {
       {/* Edit Lot Modal */}
       <Modal
         isOpen={editingLot !== null}
-        title={`Edit Facility: ${editingLot?.code}`}
+        title={`Edit facility: ${editingLot?.code}`}
         onClose={() => setEditingLot(null)}
         footer={
           <>
@@ -443,16 +465,18 @@ export const AdminLotsPage: React.FC = () => {
               Cancel
             </Button>
             <Button variant="primary" loading={saving} onClick={handleUpdateLot}>
-              Save Changes
+              Save changes
             </Button>
           </>
         }
       >
         {error && (
-          <div className="error-state mb-4" role="alert">
-            <div className="error-icon">⚠️</div>
-            <div className="error-content">
-              <p className="error-message">{error}</p>
+          <div className="alert alert-danger" role="alert">
+            <span className="alert-icon text-danger">
+              <Icon name="alert" size={18} />
+            </span>
+            <div className="alert-body">
+              <p>{error}</p>
             </div>
           </div>
         )}
@@ -460,7 +484,7 @@ export const AdminLotsPage: React.FC = () => {
         <form onSubmit={handleUpdateLot}>
           <div className="form-group">
             <label className="form-label">
-              Facility Name <span className="required">*</span>
+              Facility name <span className="required">*</span>
             </label>
             <input
               type="text"
@@ -473,7 +497,7 @@ export const AdminLotsPage: React.FC = () => {
 
           <div className="form-group">
             <label className="form-label">
-              Address Line <span className="required">*</span>
+              Address line <span className="required">*</span>
             </label>
             <input
               type="text"
@@ -486,13 +510,13 @@ export const AdminLotsPage: React.FC = () => {
 
           <div className="form-row">
             <div className="form-col">
-              <label className="form-label">Assign Manager</label>
+              <label className="form-label">Assign manager</label>
               <select
                 className="form-control"
                 value={editManagerId}
                 onChange={(e) => setEditManagerId(e.target.value ? Number(e.target.value) : '')}
               >
-                <option value="">None (Unassigned)</option>
+                <option value="">None (unassigned)</option>
                 {managers.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.full_name} ({m.email})
@@ -502,7 +526,7 @@ export const AdminLotsPage: React.FC = () => {
             </div>
 
             <div className="form-col">
-              <label className="form-label">Active Status</label>
+              <label className="form-label">Active status</label>
               <select
                 className="form-control"
                 value={String(editIsActive)}
@@ -519,7 +543,7 @@ export const AdminLotsPage: React.FC = () => {
       {/* Add City Modal */}
       <Modal
         isOpen={showCityModal}
-        title="Register New City"
+        title="Register new city"
         onClose={() => setShowCityModal(false)}
         footer={
           <>
@@ -527,15 +551,26 @@ export const AdminLotsPage: React.FC = () => {
               Cancel
             </Button>
             <Button variant="primary" loading={citySaving} onClick={handleCreateCity}>
-              Add City
+              Add city
             </Button>
           </>
         }
       >
+        {cityError && (
+          <div className="alert alert-danger" role="alert">
+            <span className="alert-icon text-danger">
+              <Icon name="alert" size={18} />
+            </span>
+            <div className="alert-body">
+              <p>{cityError}</p>
+            </div>
+          </div>
+        )}
+
         <form onSubmit={handleCreateCity}>
           <div className="form-group">
             <label className="form-label">
-              City Code (2-4 uppercase letters) <span className="required">*</span>
+              City code (2–4 uppercase letters) <span className="required">*</span>
             </label>
             <input
               type="text"
@@ -548,9 +583,9 @@ export const AdminLotsPage: React.FC = () => {
             />
           </div>
 
-          <div className="form-group">
+          <div className="form-group mb-0">
             <label className="form-label">
-              City Name <span className="required">*</span>
+              City name <span className="required">*</span>
             </label>
             <input
               type="text"
@@ -566,4 +601,3 @@ export const AdminLotsPage: React.FC = () => {
     </div>
   )
 }
-

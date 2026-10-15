@@ -4,6 +4,9 @@ import { Link } from 'react-router-dom'
 import { usePaginated } from '../../hooks/usePaginated'
 import type { User } from '../../api/types'
 import { Card } from '../../components/common/Card'
+import { Badge } from '../../components/common/Badge'
+import { Icon } from '../../components/common/Icon'
+import { PageHeader } from '../../components/common/PageHeader'
 import { Pagination } from '../../components/common/Pagination'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { EmptyState } from '../../components/common/EmptyState'
@@ -27,20 +30,21 @@ export const ManagersPage: React.FC = () => {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Facility Managers</h1>
-          <p className="page-subtitle">Roster of operational parking facility managers</p>
-        </div>
-        <div className="page-actions">
-          <Link to="/admin/users" className="btn btn-primary">
-            + Provision New Manager
-          </Link>
-          <Link to="/admin/lots" className="btn btn-secondary">
-            Assign Lots
-          </Link>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Governance"
+        title="Facility managers"
+        subtitle="Roster of operational parking facility managers"
+        actions={
+          <>
+            <Link to="/admin/users" className="btn btn-primary btn-md">
+              <Icon name="plus" size={16} /> Provision manager
+            </Link>
+            <Link to="/admin/lots" className="btn btn-outline btn-md">
+              <Icon name="building" size={16} /> Assign lots
+            </Link>
+          </>
+        }
+      />
 
       <Card>
         {error ? (
@@ -53,7 +57,7 @@ export const ManagersPage: React.FC = () => {
             message="Provision a user with the MANAGER role to assign facility operations."
             action={
               <Link to="/admin/users" className="btn btn-primary btn-sm">
-                Provision Manager
+                Provision manager
               </Link>
             }
           />
@@ -63,7 +67,7 @@ export const ManagersPage: React.FC = () => {
               <table className="table">
                 <thead>
                   <tr>
-                    <th>Manager Name</th>
+                    <th>Manager name</th>
                     <th>Email</th>
                     <th>Status</th>
                     <th>Joined</th>
@@ -79,14 +83,14 @@ export const ManagersPage: React.FC = () => {
                       </td>
                       <td>{m.email}</td>
                       <td>
-                        <span className={`badge ${m.is_active ? 'badge-success' : 'badge-danger'}`}>
+                        <Badge variant={m.is_active ? 'success' : 'danger'}>
                           {m.is_active ? 'Active' : 'Suspended'}
-                        </span>
+                        </Badge>
                       </td>
                       <td>{formatDate(m.created_at)}</td>
                       <td>
                         <Link to="/admin/lots" className="btn btn-outline btn-sm">
-                          Manage Facilities →
+                          Manage facilities <Icon name="arrowRight" size={14} />
                         </Link>
                       </td>
                     </tr>
@@ -109,4 +113,3 @@ export const ManagersPage: React.FC = () => {
     </div>
   )
 }
-
