@@ -6,6 +6,7 @@ import { ApiError, getFriendlyErrorMessage } from '../../api/errors'
 import type { RegisterResponse } from '../../api/types'
 import { Button } from '../../components/common/Button'
 import { Icon } from '../../components/common/Icon'
+import { AuthShell } from '../../components/layout/AuthShell'
 
 export const RegisterPage: React.FC = () => {
   const [email, setEmail] = useState('')
@@ -64,13 +65,37 @@ export const RegisterPage: React.FC = () => {
   }
 
   return (
-    <div className="auth-wrapper">
-      <div className="auth-header">
-        <span className="auth-logo">🅿️</span>
-        <h1 className="auth-title">Create your account</h1>
-        <p className="auth-subtitle">Register as an SPMS Consumer</p>
-      </div>
-
+    <AuthShell
+      title="Create your account"
+      subtitle="Register as an SPMS Consumer — it takes a minute"
+      asideTitle="Join SPMS and park smarter."
+      asideLead="Create a free account to reserve bays, pay online and keep every booking in one place."
+      points={[
+        {
+          icon: 'calendar',
+          title: 'Reserve in seconds',
+          text: 'Lock a slot before you arrive',
+        },
+        {
+          icon: 'receipt',
+          title: 'Instant receipts',
+          text: 'A record for every payment',
+        },
+        {
+          icon: 'shield',
+          title: 'No card data stored',
+          text: 'Payments are handled by Razorpay',
+        },
+      ]}
+      footer={
+        <>
+          Already have an account?{' '}
+          <Link to="/login" className="font-semibold text-primary">
+            Sign in
+          </Link>
+        </>
+      }
+    >
       {success && (
         <div className="alert alert-success" role="status">
           <span className="alert-icon">
@@ -194,13 +219,6 @@ export const RegisterPage: React.FC = () => {
           Create Account
         </Button>
       </form>
-
-      <div className="auth-footer">
-        Already have an account?{' '}
-        <Link to="/login" className="font-semibold text-primary">
-          Sign in
-        </Link>
-      </div>
-    </div>
+    </AuthShell>
   )
 }

@@ -7,6 +7,7 @@ import { ApiError, getFriendlyErrorMessage } from '../../api/errors'
 import type { AuthTokens } from '../../api/types'
 import { Button } from '../../components/common/Button'
 import { Icon } from '../../components/common/Icon'
+import { AuthShell } from '../../components/layout/AuthShell'
 
 export const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('')
@@ -59,13 +60,37 @@ export const LoginPage: React.FC = () => {
   }
 
   return (
-    <div className="auth-wrapper">
-      <div className="auth-header">
-        <span className="auth-logo">🅿️</span>
-        <h1 className="auth-title">Welcome back</h1>
-        <p className="auth-subtitle">Sign in to the Smart Parking Management System</p>
-      </div>
-
+    <AuthShell
+      title="Welcome back"
+      subtitle="Sign in to your Smart Parking account"
+      asideTitle="Parking, minus the search."
+      asideLead="Sign in to reserve bays, manage your bookings and drive straight to your slot."
+      points={[
+        {
+          icon: 'search',
+          title: 'Live bay availability',
+          text: 'See what is free before you drive',
+        },
+        {
+          icon: 'ticket',
+          title: 'Digital gate pass',
+          text: 'One reference gets you through',
+        },
+        {
+          icon: 'shield',
+          title: 'Secure payments',
+          text: 'Cashless checkout with instant receipts',
+        },
+      ]}
+      footer={
+        <>
+          Don&apos;t have an account?{' '}
+          <Link to="/register" className="font-semibold text-primary">
+            Create one
+          </Link>
+        </>
+      }
+    >
       {error && (
         <div className="alert alert-danger" role="alert">
           <span className="alert-icon text-danger">
@@ -125,13 +150,6 @@ export const LoginPage: React.FC = () => {
           Sign In
         </Button>
       </form>
-
-      <div className="auth-footer">
-        Don&apos;t have an account?{' '}
-        <Link to="/register" className="font-semibold text-primary">
-          Create one
-        </Link>
-      </div>
-    </div>
+    </AuthShell>
   )
 }

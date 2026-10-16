@@ -242,7 +242,7 @@ class RazorpayGateway(PaymentGateway):
             gateway_order_id=order["id"],
             client_payload={
                 "gateway": "razorpay",
-                "key_id": self._key_id,
+                "key": self._key_id,
                 "order_id": order["id"],
                 "amount": order["amount"],
                 "currency": order["currency"],

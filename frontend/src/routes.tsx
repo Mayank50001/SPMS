@@ -2,13 +2,14 @@
 import React from 'react'
 import { Routes, Route } from 'react-router-dom'
 import { AppLayout } from './components/layout/AppLayout'
-import { RequireAuth, RequireRole, RoleRedirect } from './auth/guards'
+import { RequireAuth, RequireRole } from './auth/guards'
 
 // Auth Pages
 import { LoginPage } from './pages/auth/LoginPage'
 import { RegisterPage } from './pages/auth/RegisterPage'
 import { ProfilePage } from './pages/common/ProfilePage'
 import { NotFoundPage } from './pages/NotFoundPage'
+import { LandingPage } from './pages/LandingPage'
 
 // Consumer Pages
 import { ConsumerDashboardPage } from './pages/consumer/ConsumerDashboardPage'
@@ -45,8 +46,8 @@ import { AuditLogsStubPage } from './pages/admin/AuditLogsStubPage'
 export const AppRoutes: React.FC = () => {
   return (
     <Routes>
-      {/* Root redirect to appropriate role portal */}
-      <Route path="/" element={<RoleRedirect />} />
+      {/* Public landing page (signed-in users are redirected to their portal) */}
+      <Route path="/" element={<LandingPage />} />
 
       {/* Public Auth Routes */}
       <Route path="/login" element={<LoginPage />} />
